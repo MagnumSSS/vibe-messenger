@@ -27,13 +27,31 @@
         .message.sent { align-self: flex-end; background: #0084ff; color: white; }
         .message.received { align-self: flex-start; background: #e4e6eb; color: #333; }
         .message-time { font-size: 0.75rem; opacity: 0.7; margin-top: 0.25rem; }
-        .input-area { padding: 1rem; border-top: 1px solid #eee; display: flex; gap: 0.5rem; }
+        .message-attachments { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
+        .attachment-image { max-width: 200px; max-height: 200px; border-radius: 8px; cursor: zoom-in; }
+        .attachment-file { background: rgba(255,255,255,0.2); padding: 0.5rem 0.75rem; border-radius: 8px; display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; }
+        .attachment-file a { color: inherit; text-decoration: underline; }
+        .input-area { padding: 1rem; border-top: 1px solid #eee; display: flex; flex-direction: column; gap: 0.5rem; }
+        .chips-container { display: flex; flex-wrap: wrap; gap: 0.5rem; min-height: 20px; }
+        .chip { background: #e4e6eb; padding: 0.25rem 0.5rem; border-radius: 12px; font-size: 0.85rem; display: flex; align-items: center; gap: 0.25rem; }
+        .chip-remove { cursor: pointer; font-weight: bold; }
+        .input-row { display: flex; gap: 0.5rem; align-items: center; }
         .input-area input { flex: 1; padding: 0.75rem 1rem; border: 1px solid #ddd; border-radius: 20px; font-size: 1rem; outline: none; }
         .input-area input:focus { border-color: #0084ff; }
         .input-area button { padding: 0.75rem 1.5rem; background: #0084ff; color: white; border: none; border-radius: 20px; cursor: pointer; font-weight: 600; }
         .input-area button:hover { background: #0073e6; }
         .input-area button:disabled { background: #ccc; cursor: not-allowed; }
+        .attach-btn { background: #e4e6eb; color: #333; border: none; padding: 0.75rem; border-radius: 50%; cursor: pointer; font-size: 1.2rem; }
+        .attach-btn:hover { background: #d0d2d5; }
         .no-chat { display: flex; align-items: center; justify-content: center; height: 100%; color: #888; }
+        
+        /* Modal styles */
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1000; align-items: center; justify-content: center; }
+        .modal.active { display: flex; }
+        .modal-content { position: relative; max-width: 90%; max-height: 90%; }
+        .modal-img { max-width: 100%; max-height: 90vh; border-radius: 8px; }
+        .modal-close { position: absolute; top: -40px; right: 0; background: none; border: none; color: white; font-size: 2rem; cursor: pointer; }
+        .modal-download { position: absolute; bottom: -40px; right: 0; background: #0084ff; color: white; border: none; padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer; text-decoration: none; font-size: 0.9rem; }
         
         @media (max-width: 768px) {
             .main { flex-direction: column; }
@@ -65,9 +83,23 @@
             <div class="chat-header" id="chatHeader">Select a contact to start chatting</div>
             <div class="messages" id="messages"></div>
             <div class="input-area" id="inputArea" style="display: none;">
-                <input type="text" id="messageInput" placeholder="Type a message..." autocomplete="off">
-                <button id="sendBtn">Send</button>
+                <div class="chips-container" id="chipsContainer"></div>
+                <div class="input-row">
+                    <button type="button" id="attachBtn" class="attach-btn" title="Attach files">📎</button>
+                    <input type="file" id="fileInput" multiple style="display: none;" accept="image/*,*/*">
+                    <input type="text" id="messageInput" placeholder="Type a message..." autocomplete="off">
+                    <button id="sendBtn">Send</button>
+                </div>
             </div>
+        </div>
+    </div>
+    
+    <!-- Image Modal -->
+    <div class="modal" id="imageModal">
+        <div class="modal-content">
+            <button class="modal-close" id="modalClose">&times;</button>
+            <img class="modal-img" id="modalImg" src="" alt="">
+            <a class="modal-download" id="modalDownload" download>Download</a>
         </div>
     </div>
 
@@ -75,6 +107,8 @@
         const currentUser = {{ user.id | tojson }};
         let selectedUserId = null;
         let ws = null;
+        let attachedFiles = [];
+        const MAX_FILE_SIZE = {{ max_upload_bytes | tojson }};
         
         const userList = document.getElementById('userList');
         const chatHeader = document.getElementById('chatHeader');
@@ -82,6 +116,68 @@
         const inputArea = document.getElementById('inputArea');
         const messageInput = document.getElementById('messageInput');
         const sendBtn = document.getElementById('sendBtn');
+        const attachBtn = document.getElementById('attachBtn');
+        const fileInput = document.getElementById('fileInput');
+        const chipsContainer = document.getElementById('chipsContainer');
+        const imageModal = document.getElementById('imageModal');
+        const modalImg = document.getElementById('modalImg');
+        const modalClose = document.getElementById('modalClose');
+        const modalDownload = document.getElementById('modalDownload');
+        
+        // Format file size
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+        
+        // Check if file is an image
+        function isImage(mime) {
+            return mime && mime.startsWith('image/');
+        }
+        
+        // Update chips display
+        function updateChips() {
+            chipsContainer.innerHTML = '';
+            attachedFiles.forEach((file, index) => {
+                const chip = document.createElement('div');
+                chip.className = 'chip';
+                chip.innerHTML = `
+                    <span>${escapeHtml(file.name)} (${formatFileSize(file.size)})</span>
+                    <span class="chip-remove" data-index="${index}">&times;</span>
+                `;
+                chipsContainer.appendChild(chip);
+            });
+            
+            // Add remove handlers
+            chipsContainer.querySelectorAll('.chip-remove').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const index = parseInt(e.target.dataset.index);
+                    attachedFiles.splice(index, 1);
+                    updateChips();
+                });
+            });
+        }
+        
+        // Handle file selection
+        fileInput.addEventListener('change', (e) => {
+            const files = Array.from(e.target.files);
+            for (const file of files) {
+                if (file.size > MAX_FILE_SIZE) {
+                    alert(`File "${file.name}" exceeds size limit (${formatFileSize(MAX_FILE_SIZE)})`);
+                    continue;
+                }
+                attachedFiles.push(file);
+            }
+            updateChips();
+            fileInput.value = ''; // Reset so same file can be selected again
+        });
+        
+        attachBtn.addEventListener('click', () => {
+            fileInput.click();
+        });
         
         // Connect WebSocket
         function connectWebSocket() {
@@ -123,11 +219,60 @@
         function appendMessage(msg) {
             const div = document.createElement('div');
             div.className = `message ${msg.sender_id === currentUser ? 'sent' : 'received'}`;
-            div.innerHTML = `${escapeHtml(msg.text)}<div class="message-time">${formatTime(msg.created_at)}</div>`;
+            
+            let html = escapeHtml(msg.text);
+            
+            // Add attachments
+            if (msg.attachments && msg.attachments.length > 0) {
+                html += '<div class="message-attachments">';
+                msg.attachments.forEach(att => {
+                    const attUrl = `/api/attachment/${att.id}`;
+                    if (isImage(att.mime)) {
+                        html += `<img class="attachment-image" src="${attUrl}" alt="${escapeHtml(att.orig_name)}" data-url="${attUrl}" data-orig-name="${escapeHtml(att.orig_name)}">`;
+                    } else {
+                        html += `
+                            <div class="attachment-file">
+                                <span>📄 ${escapeHtml(att.orig_name)} (${formatFileSize(att.size)})</span>
+                                <a href="${attUrl}" download="${escapeHtml(att.orig_name)}">⬇️</a>
+                            </div>
+                        `;
+                    }
+                });
+                html += '</div>';
+            }
+            
+            html += `<div class="message-time">${formatTime(msg.created_at)}</div>`;
+            div.innerHTML = html;
             messagesDiv.appendChild(div);
+            
+            // Add click handlers for images
+            div.querySelectorAll('.attachment-image').forEach(img => {
+                img.addEventListener('click', () => {
+                    openModal(img.src, img.dataset.origName);
+                });
+            });
         }
         
+        // Modal functions
+        function openModal(src, origName) {
+            modalImg.src = src;
+            modalDownload.href = src;
+            modalDownload.download = origName || '';
+            imageModal.classList.add('active');
+        }
+        
+        modalClose.addEventListener('click', () => {
+            imageModal.classList.remove('active');
+        });
+        
+        imageModal.addEventListener('click', (e) => {
+            if (e.target === imageModal) {
+                imageModal.classList.remove('active');
+            }
+        });
+        
         function escapeHtml(text) {
+            if (!text) return '';
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
@@ -145,11 +290,15 @@
         // Send message
         async function sendMessage() {
             const text = messageInput.value.trim();
-            if (!text || !selectedUserId) return;
+            if (!text && attachedFiles.length === 0) return;
             
             const formData = new FormData();
             formData.append('recipient_id', selectedUserId);
             formData.append('text', text);
+            
+            attachedFiles.forEach(file => {
+                formData.append('files', file);
+            });
             
             try {
                 const res = await fetch('/api/send', { method: 'POST', body: formData });
@@ -158,9 +307,15 @@
                     appendMessage(msg);
                     scrollToBottom();
                     messageInput.value = '';
+                    attachedFiles = [];
+                    updateChips();
+                } else {
+                    const err = await res.json();
+                    alert(err.detail || 'Failed to send message');
                 }
             } catch (err) {
                 console.error('Send error:', err);
+                alert('Failed to send message');
             }
         }
         

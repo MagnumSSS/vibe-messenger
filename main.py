@@ -2,23 +2,30 @@ import os
 import sqlite3
 import hashlib
 import secrets
-from datetime import datetime
+import uuid
+import mimetypes
+from datetime import datetime, timezone
 from contextlib import contextmanager
+from pathlib import Path
 
-from fastapi import FastAPI, Request, Form, Depends, HTTPException, status, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+import aiofiles
+import aiofiles.os
+from fastapi import FastAPI, Request, Form, Depends, HTTPException, status, WebSocket, WebSocketDisconnect, UploadFile, File
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
 # Config from env
 SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-key")
 FIRST_USER_ADMIN = os.environ.get("FIRST_USER_ADMIN", "1") == "1"
-MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", "1048576"))
+MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", "10485760"))  # 10MB default
 PORT = int(os.environ.get("PORT", "8000"))
 DATA_DIR = os.environ.get("DATA_DIR", "./data")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_PATH = os.path.join(DATA_DIR, "messenger.db")
+UPLOADS_DIR = os.path.join(DATA_DIR, "uploads")
+os.makedirs(UPLOADS_DIR, exist_ok=True)
 
 app = FastAPI()
 app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY)
@@ -57,6 +64,18 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (sender_id) REFERENCES users(id),
                 FOREIGN KEY (recipient_id) REFERENCES users(id)
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_id INTEGER NOT NULL,
+                uuid_name TEXT NOT NULL,
+                orig_name TEXT NOT NULL,
+                mime TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (message_id) REFERENCES messages(id)
             )
         """)
         conn.commit()
@@ -165,7 +184,8 @@ async def chat_page(request: Request):
     
     return templates.TemplateResponse(request, "chat.html", {
         "user": user,
-        "users": [dict(u) for u in users]
+        "users": [dict(u) for u in users],
+        "max_upload_bytes": MAX_UPLOAD_BYTES
     })
 
 
@@ -194,8 +214,19 @@ async def api_messages(request: Request, recipient_id: int):
             WHERE (sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?)
             ORDER BY created_at ASC
         """, (user["id"], recipient_id, recipient_id, user["id"])).fetchall()
+        
+        # Build response with attachments for each message
+        result = []
+        for msg in messages:
+            msg_dict = dict(msg)
+            attachments = conn.execute(
+                "SELECT id, uuid_name, orig_name, mime, size, created_at FROM attachments WHERE message_id = ?",
+                (msg_dict["id"],)
+            ).fetchall()
+            msg_dict["attachments"] = [dict(a) for a in attachments]
+            result.append(msg_dict)
     
-    return JSONResponse([dict(m) for m in messages])
+    return JSONResponse(result)
 
 
 @app.websocket("/ws")
@@ -239,13 +270,41 @@ async def websocket_endpoint(websocket: WebSocket):
 app.state.connections = {}
 
 
+def is_participant(user_id, recipient_id):
+    """Check if user is participant in a dialog with recipient_id"""
+    with get_db() as conn:
+        # Check if there are any messages between these users
+        msg = conn.execute("""
+            SELECT 1 FROM messages 
+            WHERE (sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?)
+            LIMIT 1
+        """, (user_id, recipient_id, recipient_id, user_id)).fetchone()
+        return msg is not None or user_id == recipient_id
+
+
+async def stream_file(file_path: str):
+    """Stream file in chunks using aiofiles"""
+    async with aiofiles.open(file_path, 'rb') as f:
+        while True:
+            chunk = await f.read(65536)  # 64KB chunks
+            if not chunk:
+                break
+            yield chunk
+
+
 @app.post("/api/send")
-async def send_message(request: Request, recipient_id: int = Form(...), text: str = Form(...)):
+async def send_message(
+    request: Request,
+    recipient_id: int = Form(...),
+    text: str = Form(""),
+    files: list[UploadFile] = File(default=[])
+):
     user = get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
     
-    if not text.strip():
+    # Allow empty text only if there are attachments
+    if not text.strip() and not files:
         raise HTTPException(status_code=400, detail="Empty message")
     
     if len(text) > MAX_UPLOAD_BYTES:
@@ -261,21 +320,122 @@ async def send_message(request: Request, recipient_id: int = Form(...), text: st
             "INSERT INTO messages (sender_id, recipient_id, text) VALUES (?, ?, ?)",
             (user["id"], recipient_id, text)
         )
+        message_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        
+        # Handle file uploads
+        attachment_ids = []
+        for file in files:
+            if file.filename:
+                # Check file size limit
+                file_data = await file.read()
+                if len(file_data) > MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=400, detail=f"File '{file.filename}' exceeds size limit")
+                
+                # Generate UUID filename with extension
+                ext = Path(file.filename).suffix.lower()
+                uuid_name = f"{uuid.uuid4().hex}{ext}"
+                file_path = os.path.join(UPLOADS_DIR, uuid_name)
+                
+                # Save file using aiofiles (streaming write)
+                async with aiofiles.open(file_path, 'wb') as f:
+                    await f.write(file_data)
+                
+                # Detect mime type
+                mime_type = file.content_type or mimetypes.guess_type(file.filename)[0] or "application/octet-stream"
+                
+                # Store attachment in DB
+                conn.execute(
+                    "INSERT INTO attachments (message_id, uuid_name, orig_name, mime, size) VALUES (?, ?, ?, ?, ?)",
+                    (message_id, uuid_name, file.filename, mime_type, len(file_data))
+                )
+                attachment_ids.append(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+        
         conn.commit()
         
-        # Get the inserted message
+        # Get the inserted message with attachments
         msg = conn.execute(
-            "SELECT id, sender_id, recipient_id, text, created_at FROM messages WHERE id = last_insert_rowid()"
+            "SELECT id, sender_id, recipient_id, text, created_at FROM messages WHERE id = ?",
+            (message_id,)
         ).fetchone()
+        
+        # Get attachments for this message
+        attachments = conn.execute(
+            "SELECT id, uuid_name, orig_name, mime, size, created_at FROM attachments WHERE message_id = ?",
+            (message_id,)
+        ).fetchall()
+    
+    # Build response with attachments
+    msg_dict = dict(msg)
+    msg_dict["attachments"] = [dict(a) for a in attachments]
     
     # Send via WebSocket if recipient is online
     if recipient_id in app.state.connections:
         try:
-            await app.state.connections[recipient_id].send_json(dict(msg))
+            await app.state.connections[recipient_id].send_json(msg_dict)
         except:
             pass  # Connection might have closed
     
-    return JSONResponse(dict(msg))
+    return JSONResponse(msg_dict)
+
+
+@app.get("/api/attachment/{attachment_id}")
+async def get_attachment(request: Request, attachment_id: int):
+    """Serve attachment file - requires auth and dialog participation"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    with get_db() as conn:
+        # Get attachment info
+        att = conn.execute("""
+            SELECT a.id, a.uuid_name, a.orig_name, a.mime, a.size, m.sender_id, m.recipient_id
+            FROM attachments a
+            JOIN messages m ON a.message_id = m.id
+            WHERE a.id = ?
+        """, (attachment_id,)).fetchone()
+        
+        if not att:
+            raise HTTPException(status_code=404, detail="Attachment not found")
+        
+        # Check if user is participant in the dialog
+        if user["id"] != att["sender_id"] and user["id"] != att["recipient_id"]:
+            raise HTTPException(status_code=403, detail="Forbidden")
+    
+    # Serve the file
+    file_path = os.path.join(UPLOADS_DIR, att["uuid_name"])
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found on disk")
+    
+    return StreamingResponse(
+        stream_file(file_path),
+        media_type=att["mime"],
+        headers={"Content-Disposition": f'attachment; filename="{att["orig_name"]}"'}
+    )
+
+
+@app.get("/api/attachment/{attachment_id}/info")
+async def get_attachment_info(request: Request, attachment_id: int):
+    """Get attachment metadata - requires auth and dialog participation"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    with get_db() as conn:
+        att = conn.execute("""
+            SELECT a.id, a.uuid_name, a.orig_name, a.mime, a.size, a.created_at, m.sender_id, m.recipient_id
+            FROM attachments a
+            JOIN messages m ON a.message_id = m.id
+            WHERE a.id = ?
+        """, (attachment_id,)).fetchone()
+        
+        if not att:
+            raise HTTPException(status_code=404, detail="Attachment not found")
+        
+        # Check if user is participant in the dialog
+        if user["id"] != att["sender_id"] and user["id"] != att["recipient_id"]:
+            raise HTTPException(status_code=403, detail="Forbidden")
+    
+    return JSONResponse(dict(att))
 
 
 if __name__ == "__main__":
