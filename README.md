@@ -73,3 +73,5 @@ python main.py
 ## License
 
 Private use only.
+
+- phase 1 complete
