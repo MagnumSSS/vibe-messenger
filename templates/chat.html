@@ -164,6 +164,59 @@
             bg: '#f0f2f5'
         };
         
+        // DOM elements - declared BEFORE any addEventListener calls
+        const userList = document.getElementById('userList');
+        const chatHeader = document.getElementById('chatHeader');
+        const chatHeaderName = document.getElementById('chatHeaderName');
+        const chatHeaderActions = document.getElementById('chatHeaderActions');
+        const messagesDiv = document.getElementById('messages');
+        const inputArea = document.getElementById('inputArea');
+        const messageInput = document.getElementById('messageInput');
+        const sendBtn = document.getElementById('sendBtn');
+        const attachBtn = document.getElementById('attachBtn');
+        const fileInput = document.getElementById('fileInput');
+        const chipsContainer = document.getElementById('chipsContainer');
+        const imageModal = document.getElementById('imageModal');
+        const modalImg = document.getElementById('modalImg');
+        const modalClose = document.getElementById('modalClose');
+        const modalDownload = document.getElementById('modalDownload');
+        const searchInput = document.getElementById('searchInput');
+        
+        // Profile modal elements
+        const profileModal = document.getElementById('profileModal');
+        const profileBtn = document.getElementById('profileBtn');
+        const profileAvatarPreview = document.getElementById('profileAvatarPreview');
+        const avatarInput = document.getElementById('avatarInput');
+        const changeAvatarBtn = document.getElementById('changeAvatarBtn');
+        const profileName = document.getElementById('profileName');
+        const profileBio = document.getElementById('profileBio');
+        const saveProfileBtn = document.getElementById('saveProfileBtn');
+        const deleteAccountBtn = document.getElementById('deleteAccountBtn');
+        
+        // Settings modal elements
+        const settingsModal = document.getElementById('settingsModal');
+        const settingsBtn = document.getElementById('settingsBtn');
+        const primaryColorPicker = document.getElementById('primaryColorPicker');
+        const sentColorPicker = document.getElementById('sentColorPicker');
+        const receivedColorPicker = document.getElementById('receivedColorPicker');
+        const bgColorPicker = document.getElementById('bgColorPicker');
+        const resetThemeBtn = document.getElementById('resetThemeBtn');
+        const saveThemeBtn = document.getElementById('saveThemeBtn');
+        
+        // Delete chat modal
+        const deleteChatModal = document.getElementById('deleteChatModal');
+        const deleteChatBtn = document.getElementById('deleteChatBtn');
+        const deleteChatUserName = document.getElementById('deleteChatUserName');
+        const cancelDeleteChatBtn = document.getElementById('cancelDeleteChatBtn');
+        const confirmDeleteChatBtn = document.getElementById('confirmDeleteChatBtn');
+        
+        // Delete account modal
+        const deleteAccountModal = document.getElementById('deleteAccountModal');
+        const confirmUsernameDisplay = document.getElementById('confirmUsernameDisplay');
+        const deleteAccountConfirm = document.getElementById('deleteAccountConfirm');
+        const cancelDeleteAccountBtn = document.getElementById('cancelDeleteAccountBtn');
+        const confirmDeleteAccountBtn = document.getElementById('confirmDeleteAccountBtn');
+        
         // Apply theme from user.theme_json on page load (safe parse)
         try {
             if (userThemeJson && typeof userThemeJson === 'string') {
@@ -240,212 +293,163 @@
             }
         }
         
-        // Open profile modal
-        profileBtn.addEventListener('click', async () => {
-            await loadProfile();
-            profileModal.classList.add('active');
-            deleteAccountConfirm.value = '';
-        });
-        
-        // Open settings modal
-        settingsBtn.addEventListener('click', async () => {
-            await loadTheme();
-            settingsModal.classList.add('active');
-        });
-        
-        // Close profile modal when clicking outside
-        profileModal.addEventListener('click', (e) => {
-            if (e.target === profileModal) {
-                profileModal.classList.remove('active');
-            }
-        });
-        
-        // Close settings modal when clicking outside
-        settingsModal.addEventListener('click', (e) => {
-            if (e.target === settingsModal) {
-                settingsModal.classList.remove('active');
-            }
-        });
-        
-        // Change avatar button
-        changeAvatarBtn.addEventListener('click', () => {
-            avatarInput.click();
-        });
-        
-        // Avatar preview on selection
-        avatarInput.addEventListener('change', async (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
+        // Initialize event listeners after DOM is ready
+        document.addEventListener('DOMContentLoaded', () => {
+            // Open profile modal
+            profileBtn.addEventListener('click', async () => {
+                await loadProfile();
+                profileModal.classList.add('active');
+                deleteAccountConfirm.value = '';
+            });
             
-            const formData = new FormData();
-            formData.append('avatar', file);
+            // Open settings modal
+            settingsBtn.addEventListener('click', async () => {
+                await loadTheme();
+                settingsModal.classList.add('active');
+            });
             
-            try {
-                const res = await fetch('/api/profile/avatar', { method: 'POST', body: formData });
-                if (res.ok) {
-                    const data = await res.json();
-                    profileAvatarPreview.src = '/api/avatar/' + data.avatar_uuid;
-                } else {
+            // Close profile modal when clicking outside
+            profileModal.addEventListener('click', (e) => {
+                if (e.target === profileModal) {
+                    profileModal.classList.remove('active');
+                }
+            });
+            
+            // Close settings modal when clicking outside
+            settingsModal.addEventListener('click', (e) => {
+                if (e.target === settingsModal) {
+                    settingsModal.classList.remove('active');
+                }
+            });
+            
+            // Change avatar button
+            changeAvatarBtn.addEventListener('click', () => {
+                avatarInput.click();
+            });
+            
+            // Avatar preview on selection
+            avatarInput.addEventListener('change', async (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                
+                const formData = new FormData();
+                formData.append('avatar', file);
+                
+                try {
+                    const res = await fetch('/api/profile/avatar', { method: 'POST', body: formData });
+                    if (res.ok) {
+                        const data = await res.json();
+                        profileAvatarPreview.src = '/api/avatar/' + data.avatar_uuid;
+                    } else {
+                        alert('Failed to upload avatar');
+                    }
+                } catch (err) {
+                    console.error('Upload error:', err);
                     alert('Failed to upload avatar');
                 }
-            } catch (err) {
-                console.error('Upload error:', err);
-                alert('Failed to upload avatar');
-            }
-        });
-        
-        // Save profile
-        saveProfileBtn.addEventListener('click', async () => {
-            const name = profileName.value.trim();
-            const bio = profileBio.value.trim();
+            });
             
-            if (!name) {
-                alert('Name is required');
-                return;
-            }
-            
-            const formData = new FormData();
-            formData.append('name', name);
-            formData.append('bio', bio);
-            
-            try {
-                const res = await fetch('/api/profile', { method: 'POST', body: formData });
-                if (res.ok) {
-                    profileModal.classList.remove('active');
-                    location.reload(); // Reload to update header
-                } else {
+            // Save profile
+            saveProfileBtn.addEventListener('click', async () => {
+                const name = profileName.value.trim();
+                const bio = profileBio.value.trim();
+                
+                if (!name) {
+                    alert('Name is required');
+                    return;
+                }
+                
+                const formData = new FormData();
+                formData.append('name', name);
+                formData.append('bio', bio);
+                
+                try {
+                    const res = await fetch('/api/profile', { method: 'POST', body: formData });
+                    if (res.ok) {
+                        profileModal.classList.remove('active');
+                        location.reload(); // Reload to update header
+                    } else {
+                        alert('Failed to save profile');
+                    }
+                } catch (err) {
+                    console.error('Save error:', err);
                     alert('Failed to save profile');
                 }
-            } catch (err) {
-                console.error('Save error:', err);
-                alert('Failed to save profile');
-            }
-        });
-        
-        // Delete account
-        deleteAccountBtn.addEventListener('click', () => {
-            confirmUsernameDisplay.textContent = '@' + currentUsername;
-            profileModal.classList.remove('active');
-            deleteAccountModal.classList.add('active');
-            deleteAccountConfirm.value = '';
-        });
-        
-        cancelDeleteAccountBtn.addEventListener('click', () => {
-            deleteAccountModal.classList.remove('active');
-        });
-        
-        deleteAccountModal.addEventListener('click', (e) => {
-            if (e.target === deleteAccountModal) {
-                deleteAccountModal.classList.remove('active');
-            }
-        });
-        
-        confirmDeleteAccountBtn.addEventListener('click', async () => {
-            const entered = deleteAccountConfirm.value.trim();
-            if (entered !== '@' + currentUsername && entered !== currentUsername) {
-                alert('Username does not match');
-                return;
-            }
+            });
             
-            try {
-                const res = await fetch('/api/delete-account', { method: 'POST' });
-                if (res.ok) {
-                    window.location.href = '/';
-                } else {
+            // Delete account
+            deleteAccountBtn.addEventListener('click', () => {
+                confirmUsernameDisplay.textContent = '@' + currentUsername;
+                profileModal.classList.remove('active');
+                deleteAccountModal.classList.add('active');
+                deleteAccountConfirm.value = '';
+            });
+            
+            cancelDeleteAccountBtn.addEventListener('click', () => {
+                deleteAccountModal.classList.remove('active');
+            });
+            
+            deleteAccountModal.addEventListener('click', (e) => {
+                if (e.target === deleteAccountModal) {
+                    deleteAccountModal.classList.remove('active');
+                }
+            });
+            
+            confirmDeleteAccountBtn.addEventListener('click', async () => {
+                const entered = deleteAccountConfirm.value.trim();
+                if (entered !== '@' + currentUsername && entered !== currentUsername) {
+                    alert('Username does not match');
+                    return;
+                }
+                
+                try {
+                    const res = await fetch('/api/delete-account', { method: 'POST' });
+                    if (res.ok) {
+                        window.location.href = '/';
+                    } else {
+                        alert('Failed to delete account');
+                    }
+                } catch (err) {
+                    console.error('Delete error:', err);
                     alert('Failed to delete account');
                 }
-            } catch (err) {
-                console.error('Delete error:', err);
-                alert('Failed to delete account');
-            }
-        });
-        
-        // Reset theme
-        resetThemeBtn.addEventListener('click', () => {
-            primaryColorPicker.value = defaultTheme.primary;
-            sentColorPicker.value = defaultTheme.sent;
-            receivedColorPicker.value = defaultTheme.received;
-            bgColorPicker.value = defaultTheme.bg;
-        });
-        
-        // Save theme
-        saveThemeBtn.addEventListener('click', async () => {
-            const theme = {
-                primary: primaryColorPicker.value,
-                sent: sentColorPicker.value,
-                received: receivedColorPicker.value,
-                bg: bgColorPicker.value
-            };
+            });
             
-            const formData = new FormData();
-            formData.append('theme_json', JSON.stringify(theme));
+            // Reset theme
+            resetThemeBtn.addEventListener('click', () => {
+                primaryColorPicker.value = defaultTheme.primary;
+                sentColorPicker.value = defaultTheme.sent;
+                receivedColorPicker.value = defaultTheme.received;
+                bgColorPicker.value = defaultTheme.bg;
+            });
             
-            try {
-                const res = await fetch('/api/theme', { method: 'POST', body: formData });
-                if (res.ok) {
-                    applyTheme(JSON.stringify(theme));
-                    settingsModal.classList.remove('active');
-                } else {
+            // Save theme
+            saveThemeBtn.addEventListener('click', async () => {
+                const theme = {
+                    primary: primaryColorPicker.value,
+                    sent: sentColorPicker.value,
+                    received: receivedColorPicker.value,
+                    bg: bgColorPicker.value
+                };
+                
+                const formData = new FormData();
+                formData.append('theme_json', JSON.stringify(theme));
+                
+                try {
+                    const res = await fetch('/api/theme', { method: 'POST', body: formData });
+                    if (res.ok) {
+                        applyTheme(JSON.stringify(theme));
+                        settingsModal.classList.remove('active');
+                    } else {
+                        alert('Failed to save theme');
+                    }
+                } catch (err) {
+                    console.error('Save theme error:', err);
                     alert('Failed to save theme');
                 }
-            } catch (err) {
-                console.error('Save theme error:', err);
-                alert('Failed to save theme');
-            }
+            });
         });
 
-        const userList = document.getElementById('userList');
-        const chatHeader = document.getElementById('chatHeader');
-        const chatHeaderName = document.getElementById('chatHeaderName');
-        const chatHeaderActions = document.getElementById('chatHeaderActions');
-        const messagesDiv = document.getElementById('messages');
-        const inputArea = document.getElementById('inputArea');
-        const messageInput = document.getElementById('messageInput');
-        const sendBtn = document.getElementById('sendBtn');
-        const attachBtn = document.getElementById('attachBtn');
-        const fileInput = document.getElementById('fileInput');
-        const chipsContainer = document.getElementById('chipsContainer');
-        const imageModal = document.getElementById('imageModal');
-        const modalImg = document.getElementById('modalImg');
-        const modalClose = document.getElementById('modalClose');
-        const modalDownload = document.getElementById('modalDownload');
-        const searchInput = document.getElementById('searchInput');
-        
-        // Profile modal elements
-        const profileModal = document.getElementById('profileModal');
-        const profileBtn = document.getElementById('profileBtn');
-        const profileAvatarPreview = document.getElementById('profileAvatarPreview');
-        const avatarInput = document.getElementById('avatarInput');
-        const changeAvatarBtn = document.getElementById('changeAvatarBtn');
-        const profileName = document.getElementById('profileName');
-        const profileBio = document.getElementById('profileBio');
-        const saveProfileBtn = document.getElementById('saveProfileBtn');
-        const deleteAccountBtn = document.getElementById('deleteAccountBtn');
-        
-        // Settings modal elements
-        const settingsModal = document.getElementById('settingsModal');
-        const settingsBtn = document.getElementById('settingsBtn');
-        const primaryColorPicker = document.getElementById('primaryColorPicker');
-        const sentColorPicker = document.getElementById('sentColorPicker');
-        const receivedColorPicker = document.getElementById('receivedColorPicker');
-        const bgColorPicker = document.getElementById('bgColorPicker');
-        const resetThemeBtn = document.getElementById('resetThemeBtn');
-        const saveThemeBtn = document.getElementById('saveThemeBtn');
-        
-        // Delete chat modal
-        const deleteChatModal = document.getElementById('deleteChatModal');
-        const deleteChatBtn = document.getElementById('deleteChatBtn');
-        const deleteChatUserName = document.getElementById('deleteChatUserName');
-        const cancelDeleteChatBtn = document.getElementById('cancelDeleteChatBtn');
-        const confirmDeleteChatBtn = document.getElementById('confirmDeleteChatBtn');
-        
-        // Delete account modal
-        const deleteAccountModal = document.getElementById('deleteAccountModal');
-        const confirmUsernameDisplay = document.getElementById('confirmUsernameDisplay');
-        const deleteAccountConfirm = document.getElementById('deleteAccountConfirm');
-        const cancelDeleteAccountBtn = document.getElementById('cancelDeleteAccountBtn');
-        const confirmDeleteAccountBtn = document.getElementById('confirmDeleteAccountBtn');
-        
         // Search functionality
         searchInput.addEventListener('input', (e) => {
             const query = e.target.value.toLowerCase().trim();
@@ -658,6 +662,7 @@
             }
         }
         
+        // Event listeners for send button (outside DOMContentLoaded since these are critical)
         sendBtn.addEventListener('click', sendMessage);
         messageInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') sendMessage();
