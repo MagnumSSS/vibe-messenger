@@ -338,9 +338,25 @@ async def api_users(request: Request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
     with get_db() as conn:
-        users = conn.execute("SELECT id, name, username FROM users WHERE id != ?", (user["id"],)).fetchall()
+        users = conn.execute("SELECT id, name, username, avatar_uuid, bio FROM users WHERE id != ?", (user["id"],)).fetchall()
     
     return JSONResponse([dict(u) for u in users])
+
+
+@app.get("/api/user/{user_id}/profile")
+async def api_user_profile(request: Request, user_id: int):
+    """Get another user's profile (name, username, bio, avatar_uuid) - requires auth"""
+    current_user = get_current_user(request)
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    with get_db() as conn:
+        row = conn.execute("SELECT id, name, username, avatar_uuid, bio FROM users WHERE id = ?", (user_id,)).fetchone()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    return JSONResponse(dict(row))
 
 
 @app.get("/api/messages/{recipient_id}")
