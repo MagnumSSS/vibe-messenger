@@ -147,7 +147,7 @@
     <script>
         const currentUser = {{ user.id | tojson }};
         const currentUsername = {{ user.username | tojson }};
-        const userThemeJson = {{ user.theme_json | tojson }};
+        const userThemeJson = {{ user.theme_json | tojson }} || '{}';
         let selectedUserId = null;
         let selectedUserName = null;
         let ws = null;
@@ -164,23 +164,36 @@
             bg: '#f0f2f5'
         };
         
-        // Apply theme from user.theme_json on page load
-        if (userThemeJson) {
-            applyTheme(userThemeJson);
+        // Apply theme from user.theme_json on page load (safe parse)
+        try {
+            if (userThemeJson && typeof userThemeJson === 'string') {
+                applyTheme(userThemeJson);
+            } else if (userThemeJson && typeof userThemeJson === 'object') {
+                // Already parsed, apply directly
+                applyThemeDirect(userThemeJson);
+            }
+        } catch (e) {
+            console.error('Failed to apply initial theme:', e);
         }
         
-        // Apply theme function
+        // Apply theme function (parse JSON string)
         function applyTheme(themeJson) {
             if (!themeJson) return;
             try {
                 const theme = JSON.parse(themeJson);
-                document.documentElement.style.setProperty('--primary-color', theme.primary || defaultTheme.primary);
-                document.documentElement.style.setProperty('--message-sent-bg', theme.sent || defaultTheme.sent);
-                document.documentElement.style.setProperty('--message-received-bg', theme.received || defaultTheme.received);
-                document.documentElement.style.setProperty('--bg-color', theme.bg || defaultTheme.bg);
+                applyThemeDirect(theme);
             } catch (e) {
                 console.error('Failed to parse theme:', e);
             }
+        }
+        
+        // Apply theme object directly
+        function applyThemeDirect(theme) {
+            if (!theme || typeof theme !== 'object') return;
+            document.documentElement.style.setProperty('--primary-color', theme.primary || defaultTheme.primary);
+            document.documentElement.style.setProperty('--message-sent-bg', theme.sent || defaultTheme.sent);
+            document.documentElement.style.setProperty('--message-received-bg', theme.received || defaultTheme.received);
+            document.documentElement.style.setProperty('--bg-color', theme.bg || defaultTheme.bg);
         }
         
         // Load profile data
@@ -209,7 +222,13 @@
                 if (res.ok) {
                     const data = await res.json();
                     if (data.theme_json) {
-                        const theme = JSON.parse(data.theme_json);
+                        let theme;
+                        try {
+                            theme = typeof data.theme_json === 'string' ? JSON.parse(data.theme_json) : data.theme_json;
+                        } catch (e) {
+                            console.error('Failed to parse theme from API:', e);
+                            theme = defaultTheme;
+                        }
                         primaryColorPicker.value = theme.primary || defaultTheme.primary;
                         sentColorPicker.value = theme.sent || defaultTheme.sent;
                         receivedColorPicker.value = theme.received || defaultTheme.received;
