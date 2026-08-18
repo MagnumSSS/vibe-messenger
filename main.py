@@ -908,6 +908,34 @@ async def update_profile(request: Request, name: str = Form(...), bio: str = For
     return JSONResponse({"success": True})
 
 
+@app.put("/api/profile")
+async def update_profile_put(request: Request, name: str = Form(...), bio: str = Form("")):
+    """Update current user's profile (PUT method)"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    with get_db() as conn:
+        conn.execute("UPDATE users SET name = ?, bio = ? WHERE id = ?", (name, bio, user["id"]))
+        conn.commit()
+    
+    return JSONResponse({"success": True})
+
+
+@app.put("/api/theme")
+async def save_theme_put(request: Request, theme_json: str = Form(...)):
+    """Save theme settings for current user (PUT method)"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    with get_db() as conn:
+        conn.execute("UPDATE users SET theme_json = ? WHERE id = ?", (theme_json, user["id"]))
+        conn.commit()
+    
+    return JSONResponse({"success": True})
+
+
 @app.post("/api/profile/avatar")
 async def upload_avatar(request: Request, avatar: UploadFile = File(...)):
     """Upload avatar for current user"""
