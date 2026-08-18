@@ -878,3 +878,183 @@ async def unblock_user(request: Request, target_user_id: int = Form(...)):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
+
+# ========== PROFILE ENDPOINTS ==========
+@app.get("/api/profile")
+async def get_profile(request: Request):
+    """Get current user's profile data"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    with get_db() as conn:
+        row = conn.execute("SELECT id, name, username, avatar_uuid, bio FROM users WHERE id = ?", (user["id"],)).fetchone()
+    
+    return JSONResponse(dict(row))
+
+
+@app.post("/api/profile")
+async def update_profile(request: Request, name: str = Form(...), bio: str = Form("")):
+    """Update current user's profile (name and bio)"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    with get_db() as conn:
+        conn.execute("UPDATE users SET name = ?, bio = ? WHERE id = ?", (name, bio, user["id"]))
+        conn.commit()
+    
+    return JSONResponse({"success": True})
+
+
+@app.post("/api/profile/avatar")
+async def upload_avatar(request: Request, avatar: UploadFile = File(...)):
+    """Upload avatar for current user"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    # Validate file
+    if not avatar.filename:
+        raise HTTPException(status_code=400, detail="No file provided")
+    
+    # Check if image
+    mime_type = avatar.content_type or mimetypes.guess_type(avatar.filename)[0]
+    if not mime_type or not mime_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Only image files are allowed")
+    
+    # Generate UUID filename
+    ext = Path(avatar.filename).suffix.lower()
+    uuid_name = f"{uuid.uuid4().hex}{ext}"
+    file_path = os.path.join(UPLOADS_DIR, "avatars", uuid_name)
+    
+    # Ensure avatars directory exists
+    os.makedirs(os.path.join(UPLOADS_DIR, "avatars"), exist_ok=True)
+    
+    # Save file
+    file_data = await avatar.read()
+    async with aiofiles.open(file_path, 'wb') as f:
+        await f.write(file_data)
+    
+    # Update user record
+    with get_db() as conn:
+        conn.execute("UPDATE users SET avatar_uuid = ? WHERE id = ?", (uuid_name, user["id"]))
+        conn.commit()
+    
+    return JSONResponse({"avatar_uuid": uuid_name})
+
+
+@app.get("/api/avatar/{avatar_uuid}")
+async def get_avatar(avatar_uuid: str):
+    """Serve user avatar"""
+    file_path = os.path.join(UPLOADS_DIR, "avatars", avatar_uuid)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Avatar not found")
+    
+    return StreamingResponse(
+        stream_file(file_path),
+        media_type="image/jpeg"
+    )
+
+
+@app.post("/api/delete-account")
+async def delete_account(request: Request):
+    """Delete current user's account"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    with get_db() as conn:
+        conn.execute("UPDATE messages SET deleted_for_sender = 1 WHERE sender_id = ?", (user["id"],))
+        conn.execute("UPDATE messages SET deleted_for_recipient = 1 WHERE recipient_id = ?", (user["id"],))
+        conn.execute("DELETE FROM users WHERE id = ?", (user["id"],))
+        conn.commit()
+    
+    return JSONResponse({"success": True})
+
+
+# ========== THEME ENDPOINTS ==========
+@app.get("/api/theme")
+async def get_theme(request: Request):
+    """Get current user's theme settings"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    with get_db() as conn:
+        row = conn.execute("SELECT theme_json FROM users WHERE id = ?", (user["id"],)).fetchone()
+    
+    return JSONResponse({"theme_json": row["theme_json"] if row else None})
+
+
+@app.post("/api/theme")
+async def save_theme(request: Request, theme_json: str = Form(...)):
+    """Save theme settings for current user"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    with get_db() as conn:
+        conn.execute("UPDATE users SET theme_json = ? WHERE id = ?", (theme_json, user["id"]))
+        conn.commit()
+    
+    return JSONResponse({"success": True})
+
+
+# ========== MESSAGE DELETE ENDPOINT ==========
+@app.post("/api/delete-message")
+async def delete_message_endpoint(request: Request, message_id: int = Form(...), mode: str = Form("self")):
+    """Delete a message - either for self or for all (admin only)"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    with get_db() as conn:
+        msg = conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone()
+        if not msg:
+            raise HTTPException(status_code=404, detail="Message not found")
+        
+        if msg["sender_id"] != user["id"] and msg["recipient_id"] != user["id"]:
+            raise HTTPException(status_code=403, detail="Not authorized to delete this message")
+        
+        if mode == "all":
+            if not user["is_admin"]:
+                raise HTTPException(status_code=403, detail="Only admins can delete messages for all")
+            conn.execute("UPDATE messages SET deleted_for_sender = 1, deleted_for_recipient = 1 WHERE id = ?", (message_id,))
+        else:
+            if msg["sender_id"] == user["id"]:
+                conn.execute("UPDATE messages SET deleted_for_sender = 1 WHERE id = ?", (message_id,))
+            else:
+                conn.execute("UPDATE messages SET deleted_for_recipient = 1 WHERE id = ?", (message_id,))
+        
+        conn.commit()
+    
+    return JSONResponse({"success": True})
+
+
+# ========== DELETE CHAT ENDPOINT ==========
+@app.post("/api/delete-chat")
+async def delete_chat_endpoint(request: Request, recipient_id: int = Form(...)):
+    """Delete entire chat with a user (marks all messages as deleted for current user)"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    with get_db() as conn:
+        conn.execute("""
+            UPDATE messages 
+            SET deleted_for_sender = 1 
+            WHERE sender_id = ? AND recipient_id = ?
+        """, (user["id"], recipient_id))
+        
+        conn.execute("""
+            UPDATE messages 
+            SET deleted_for_recipient = 1 
+            WHERE sender_id = ? AND recipient_id = ?
+        """, (recipient_id, user["id"]))
+        
+        conn.commit()
+    
+    return JSONResponse({"success": True})
+
