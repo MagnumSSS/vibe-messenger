@@ -41,8 +41,8 @@
         
         <div class="chat-area">
             <div class="chat-header" id="chatHeader" style="display: none;">
-                <img class="chat-header-avatar" id="chatHeaderAvatar" src="/static/default-avatar.png" alt="" style="width: 32px; height: 32px; border-radius: 50%; margin-right: 8px;">
-                <span id="chatHeaderName">Select a contact</span>
+                <img class="chat-header-avatar" id="chatHeaderAvatar" src="/static/default-avatar.png" alt="" title="View profile" style="width: 32px; height: 32px; border-radius: 50%; margin-right: 8px; cursor: pointer;">
+                <span id="chatHeaderName" style="cursor: pointer;" title="View profile">Select a contact</span>
                 <div class="chat-header-actions" id="chatHeaderActions" style="display: none;">
                     <button id="deleteChatBtn" class="delete-chat-btn" title="Delete chat">🗑️</button>
                 </div>
@@ -716,18 +716,10 @@
             if (e.key === 'Enter') sendMessage();
         });
         
-        // Click on user avatar or name to open other user's profile
+        // Click on user avatar to open other user's profile modal
+        // The rest of the user-item row opens the chat dialog
         document.querySelectorAll('.user-item').forEach(item => {
-            const userInfo = item.querySelector('.user-info');
             const userAvatar = item.querySelector('.user-avatar');
-            
-            if (userInfo) {
-                userInfo.addEventListener('click', async (e) => {
-                    e.stopPropagation(); // Don't trigger chat selection
-                    const userId = parseInt(item.dataset.id);
-                    await openOtherUserProfile(userId);
-                });
-            }
             
             if (userAvatar) {
                 userAvatar.addEventListener('click', async (e) => {
@@ -767,6 +759,19 @@
         otherProfileModal.addEventListener('click', (e) => {
             if (e.target === otherProfileModal) {
                 otherProfileModal.classList.remove('active');
+            }
+        });
+        
+        // Click on chat header avatar or name to open other user's profile modal
+        chatHeaderAvatar.addEventListener('click', async () => {
+            if (selectedUserId) {
+                await openOtherUserProfile(selectedUserId);
+            }
+        });
+        
+        chatHeaderName.addEventListener('click', async () => {
+            if (selectedUserId) {
+                await openOtherUserProfile(selectedUserId);
             }
         });
     </script>
