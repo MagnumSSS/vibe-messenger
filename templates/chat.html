@@ -147,6 +147,7 @@
     <script>
         const currentUser = {{ user.id | tojson }};
         const currentUsername = {{ user.username | tojson }};
+        const userThemeJson = {{ user.theme_json | tojson }};
         let selectedUserId = null;
         let selectedUserName = null;
         let ws = null;
@@ -154,6 +155,225 @@
         const MAX_FILE_SIZE = {{ max_upload_bytes | tojson }};
         let searchResults = [];
         let currentSearchIndex = -1;
+        
+        // Default theme colors
+        const defaultTheme = {
+            primary: '#0084ff',
+            sent: '#0084ff',
+            received: '#e4e6eb',
+            bg: '#f0f2f5'
+        };
+        
+        // Apply theme from user.theme_json on page load
+        if (userThemeJson) {
+            applyTheme(userThemeJson);
+        }
+        
+        // Apply theme function
+        function applyTheme(themeJson) {
+            if (!themeJson) return;
+            try {
+                const theme = JSON.parse(themeJson);
+                document.documentElement.style.setProperty('--primary-color', theme.primary || defaultTheme.primary);
+                document.documentElement.style.setProperty('--message-sent-bg', theme.sent || defaultTheme.sent);
+                document.documentElement.style.setProperty('--message-received-bg', theme.received || defaultTheme.received);
+                document.documentElement.style.setProperty('--bg-color', theme.bg || defaultTheme.bg);
+            } catch (e) {
+                console.error('Failed to parse theme:', e);
+            }
+        }
+        
+        // Load profile data
+        async function loadProfile() {
+            try {
+                const res = await fetch('/api/profile');
+                if (res.ok) {
+                    const data = await res.json();
+                    profileName.value = data.name || '';
+                    profileBio.value = data.bio || '';
+                    if (data.avatar_uuid) {
+                        profileAvatarPreview.src = '/api/avatar/' + data.avatar_uuid;
+                    } else {
+                        profileAvatarPreview.src = '/static/default-avatar.png';
+                    }
+                }
+            } catch (e) {
+                console.error('Failed to load profile:', e);
+            }
+        }
+        
+        // Load theme data
+        async function loadTheme() {
+            try {
+                const res = await fetch('/api/theme');
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.theme_json) {
+                        const theme = JSON.parse(data.theme_json);
+                        primaryColorPicker.value = theme.primary || defaultTheme.primary;
+                        sentColorPicker.value = theme.sent || defaultTheme.sent;
+                        receivedColorPicker.value = theme.received || defaultTheme.received;
+                        bgColorPicker.value = theme.bg || defaultTheme.bg;
+                    }
+                }
+            } catch (e) {
+                console.error('Failed to load theme:', e);
+            }
+        }
+        
+        // Open profile modal
+        profileBtn.addEventListener('click', async () => {
+            await loadProfile();
+            profileModal.classList.add('active');
+            deleteAccountConfirm.value = '';
+        });
+        
+        // Open settings modal
+        settingsBtn.addEventListener('click', async () => {
+            await loadTheme();
+            settingsModal.classList.add('active');
+        });
+        
+        // Close profile modal when clicking outside
+        profileModal.addEventListener('click', (e) => {
+            if (e.target === profileModal) {
+                profileModal.classList.remove('active');
+            }
+        });
+        
+        // Close settings modal when clicking outside
+        settingsModal.addEventListener('click', (e) => {
+            if (e.target === settingsModal) {
+                settingsModal.classList.remove('active');
+            }
+        });
+        
+        // Change avatar button
+        changeAvatarBtn.addEventListener('click', () => {
+            avatarInput.click();
+        });
+        
+        // Avatar preview on selection
+        avatarInput.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            
+            const formData = new FormData();
+            formData.append('avatar', file);
+            
+            try {
+                const res = await fetch('/api/profile/avatar', { method: 'POST', body: formData });
+                if (res.ok) {
+                    const data = await res.json();
+                    profileAvatarPreview.src = '/api/avatar/' + data.avatar_uuid;
+                } else {
+                    alert('Failed to upload avatar');
+                }
+            } catch (err) {
+                console.error('Upload error:', err);
+                alert('Failed to upload avatar');
+            }
+        });
+        
+        // Save profile
+        saveProfileBtn.addEventListener('click', async () => {
+            const name = profileName.value.trim();
+            const bio = profileBio.value.trim();
+            
+            if (!name) {
+                alert('Name is required');
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('name', name);
+            formData.append('bio', bio);
+            
+            try {
+                const res = await fetch('/api/profile', { method: 'POST', body: formData });
+                if (res.ok) {
+                    profileModal.classList.remove('active');
+                    location.reload(); // Reload to update header
+                } else {
+                    alert('Failed to save profile');
+                }
+            } catch (err) {
+                console.error('Save error:', err);
+                alert('Failed to save profile');
+            }
+        });
+        
+        // Delete account
+        deleteAccountBtn.addEventListener('click', () => {
+            confirmUsernameDisplay.textContent = '@' + currentUsername;
+            profileModal.classList.remove('active');
+            deleteAccountModal.classList.add('active');
+            deleteAccountConfirm.value = '';
+        });
+        
+        cancelDeleteAccountBtn.addEventListener('click', () => {
+            deleteAccountModal.classList.remove('active');
+        });
+        
+        deleteAccountModal.addEventListener('click', (e) => {
+            if (e.target === deleteAccountModal) {
+                deleteAccountModal.classList.remove('active');
+            }
+        });
+        
+        confirmDeleteAccountBtn.addEventListener('click', async () => {
+            const entered = deleteAccountConfirm.value.trim();
+            if (entered !== '@' + currentUsername && entered !== currentUsername) {
+                alert('Username does not match');
+                return;
+            }
+            
+            try {
+                const res = await fetch('/api/delete-account', { method: 'POST' });
+                if (res.ok) {
+                    window.location.href = '/';
+                } else {
+                    alert('Failed to delete account');
+                }
+            } catch (err) {
+                console.error('Delete error:', err);
+                alert('Failed to delete account');
+            }
+        });
+        
+        // Reset theme
+        resetThemeBtn.addEventListener('click', () => {
+            primaryColorPicker.value = defaultTheme.primary;
+            sentColorPicker.value = defaultTheme.sent;
+            receivedColorPicker.value = defaultTheme.received;
+            bgColorPicker.value = defaultTheme.bg;
+        });
+        
+        // Save theme
+        saveThemeBtn.addEventListener('click', async () => {
+            const theme = {
+                primary: primaryColorPicker.value,
+                sent: sentColorPicker.value,
+                received: receivedColorPicker.value,
+                bg: bgColorPicker.value
+            };
+            
+            const formData = new FormData();
+            formData.append('theme_json', JSON.stringify(theme));
+            
+            try {
+                const res = await fetch('/api/theme', { method: 'POST', body: formData });
+                if (res.ok) {
+                    applyTheme(JSON.stringify(theme));
+                    settingsModal.classList.remove('active');
+                } else {
+                    alert('Failed to save theme');
+                }
+            } catch (err) {
+                console.error('Save theme error:', err);
+                alert('Failed to save theme');
+            }
+        });
 
         const userList = document.getElementById('userList');
         const chatHeader = document.getElementById('chatHeader');
