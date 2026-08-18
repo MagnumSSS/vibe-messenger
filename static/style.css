@@ -95,6 +95,13 @@ header h1 { font-size: 1.25rem; }
     border-radius: 50%;
     object-fit: cover;
     flex-shrink: 0;
+    cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.user-avatar:hover {
+    transform: scale(1.05);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
 }
 
 .user-info { flex: 1; min-width: 0; }
