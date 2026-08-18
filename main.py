@@ -72,6 +72,18 @@ def init_db():
         if "banned_until" not in columns:
             conn.execute("ALTER TABLE users ADD COLUMN banned_until TIMESTAMP NULL")
         
+        # Add avatar_uuid column if not exists (Phase 4)
+        if "avatar_uuid" not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN avatar_uuid TEXT NULL")
+        
+        # Add bio column if not exists (Phase 4)
+        if "bio" not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN bio TEXT NULL")
+        
+        # Add theme_json column if not exists (Phase 4)
+        if "theme_json" not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN theme_json TEXT NULL")
+        
         # Create messages table if not exists
         conn.execute("""
             CREATE TABLE IF NOT EXISTS messages (
@@ -84,6 +96,13 @@ def init_db():
                 FOREIGN KEY (recipient_id) REFERENCES users(id)
             )
         """)
+        
+        # Check if deleted_for_self column exists (Phase 4 - soft delete for own view)
+        msg_columns = [col[1] for col in conn.execute("PRAGMA table_info(messages)").fetchall()]
+        if "deleted_for_sender" not in msg_columns:
+            conn.execute("ALTER TABLE messages ADD COLUMN deleted_for_sender INTEGER DEFAULT 0")
+        if "deleted_for_recipient" not in msg_columns:
+            conn.execute("ALTER TABLE messages ADD COLUMN deleted_for_recipient INTEGER DEFAULT 0")
         
         # Create attachments table if not exists
         conn.execute("""
@@ -460,6 +479,17 @@ async def send_message(
         recipient = conn.execute("SELECT id FROM users WHERE id = ?", (recipient_id,)).fetchone()
         if not recipient:
             raise HTTPException(status_code=404, detail="Recipient not found")
+
+        # FIX BAN: Check if recipient is banned - cannot send to banned user
+        recipient_row = conn.execute("SELECT banned_until FROM users WHERE id = ?", (recipient_id,)).fetchone()
+        if recipient_row and recipient_row[0]:
+            try:
+                banned_until = datetime.fromisoformat(recipient_row[0].replace("Z", "+00:00").replace("+00:00", ""))
+                if banned_until > datetime.now():
+                    raise HTTPException(status_code=403, detail="Пользователь недоступен")
+            except (ValueError, AttributeError):
+                pass
+
         
         conn.execute(
             "INSERT INTO messages (sender_id, recipient_id, text) VALUES (?, ?, ?)",
@@ -843,102 +873,6 @@ async def unblock_user(request: Request, target_user_id: int = Form(...)):
         conn.commit()
     
     return JSONResponse({"success": True})
-
-
-# Modified send_message to check for bans and blocks
-@app.post("/api/send")
-async def send_message(
-    request: Request,
-    recipient_id: int = Form(...),
-    text: str = Form(""),
-    files: list[UploadFile] = File(default=[])
-):
-    user = get_current_user_fresh(request)  # Use fresh data to catch ban status
-    if not user:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    
-    # Check if user is banned
-    if is_banned(user):
-        banned_until = datetime.fromisoformat(user["banned_until"].replace("Z", "+00:00").replace("+00:00", ""))
-        raise HTTPException(status_code=403, detail=f"You are banned until {banned_until.strftime('%Y-%m-%d %H:%M')}")
-    
-    # Check if there's a block between users
-    if check_block(user["id"], recipient_id):
-        raise HTTPException(status_code=403, detail="Communication is blocked")
-    
-    # Allow empty text only if there are attachments
-    if not text.strip() and not files:
-        raise HTTPException(status_code=400, detail="Empty message")
-    
-    if len(text) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=400, detail="Message too long")
-    
-    with get_db() as conn:
-        # Verify recipient exists
-        recipient = conn.execute("SELECT id FROM users WHERE id = ?", (recipient_id,)).fetchone()
-        if not recipient:
-            raise HTTPException(status_code=404, detail="Recipient not found")
-        
-        conn.execute(
-            "INSERT INTO messages (sender_id, recipient_id, text) VALUES (?, ?, ?)",
-            (user["id"], recipient_id, text)
-        )
-        message_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-        
-        # Handle file uploads
-        attachment_ids = []
-        for file in files:
-            if file.filename:
-                # Check file size limit
-                file_data = await file.read()
-                if len(file_data) > MAX_UPLOAD_BYTES:
-                    raise HTTPException(status_code=400, detail=f"File '{file.filename}' exceeds size limit")
-                
-                # Generate UUID filename with extension
-                ext = Path(file.filename).suffix.lower()
-                uuid_name = f"{uuid.uuid4().hex}{ext}"
-                file_path = os.path.join(UPLOADS_DIR, uuid_name)
-                
-                # Save file using aiofiles (streaming write)
-                async with aiofiles.open(file_path, 'wb') as f:
-                    await f.write(file_data)
-                
-                # Detect mime type
-                mime_type = file.content_type or mimetypes.guess_type(file.filename)[0] or "application/octet-stream"
-                
-                # Store attachment in DB
-                conn.execute(
-                    "INSERT INTO attachments (message_id, uuid_name, orig_name, mime, size) VALUES (?, ?, ?, ?, ?)",
-                    (message_id, uuid_name, file.filename, mime_type, len(file_data))
-                )
-                attachment_ids.append(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
-        
-        conn.commit()
-        
-        # Get the inserted message with attachments
-        msg = conn.execute(
-            "SELECT id, sender_id, recipient_id, text, created_at FROM messages WHERE id = ?",
-            (message_id,)
-        ).fetchone()
-        
-        # Get attachments for this message
-        attachments = conn.execute(
-            "SELECT id, uuid_name, orig_name, mime, size, created_at FROM attachments WHERE message_id = ?",
-            (message_id,)
-        ).fetchall()
-    
-    # Build response with attachments
-    msg_dict = dict(msg)
-    msg_dict["attachments"] = [dict(a) for a in attachments]
-    
-    # Send via WebSocket if recipient is online
-    if recipient_id in app.state.connections:
-        try:
-            await app.state.connections[recipient_id].send_json(msg_dict)
-        except:
-            pass  # Connection might have closed
-    
-    return JSONResponse(msg_dict)
 
 
 if __name__ == "__main__":
