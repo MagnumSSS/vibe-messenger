@@ -320,6 +320,10 @@ async def chat_page(request: Request):
     with get_db() as conn:
         users = conn.execute("SELECT id, name, username FROM users WHERE id != ?", (user["id"],)).fetchall()
     
+    # Ensure theme_json is never None - default to '{}'
+    if user.get("theme_json") is None:
+        user["theme_json"] = "{}"
+    
     return templates.TemplateResponse(request, "chat.html", {
         "user": user,
         "users": [dict(u) for u in users],
@@ -1013,7 +1017,7 @@ async def get_theme(request: Request):
     with get_db() as conn:
         row = conn.execute("SELECT theme_json FROM users WHERE id = ?", (user["id"],)).fetchone()
     
-    return JSONResponse({"theme_json": row["theme_json"] if row else None})
+    return JSONResponse({"theme_json": row["theme_json"] if row and row["theme_json"] else "{}"})
 
 
 @app.post("/api/theme")
