@@ -28,8 +28,8 @@
             </div>
             <ul class="user-list" id="userList">
                 {% for u in users %}
-                <li class="user-item" data-id="{{ u.id }}" data-name="{{ u.name }}" data-username="{{ u.username }}">
-                    <img class="user-avatar" src="/static/default-avatar.png" alt="" data-avatar="{{ u.avatar_uuid }}">
+                <li class="user-item" data-id="{{ u.id }}" data-name="{{ u.name }}" data-username="{{ u.username }}" data-avatar="{{ u.avatar_uuid or '' }}">
+                    <img class="user-avatar" src="/static/default-avatar.png" alt="" data-avatar="{{ u.avatar_uuid or '' }}">
                     <div class="user-info">
                         <div class="user-name">{{ u.name }}</div>
                         <div class="user-username">@{{ u.username }}</div>
@@ -41,6 +41,7 @@
         
         <div class="chat-area">
             <div class="chat-header" id="chatHeader" style="display: none;">
+                <img class="chat-header-avatar" id="chatHeaderAvatar" src="/static/default-avatar.png" alt="" style="width: 32px; height: 32px; border-radius: 50%; margin-right: 8px;">
                 <span id="chatHeaderName">Select a contact</span>
                 <div class="chat-header-actions" id="chatHeaderActions" style="display: none;">
                     <button id="deleteChatBtn" class="delete-chat-btn" title="Delete chat">🗑️</button>
@@ -87,6 +88,18 @@
             <hr style="margin: 1.5rem 0; border: none; border-top: 1px solid #eee;">
             <h3 style="color: #dc3545; margin-bottom: 0.5rem;">Опасная зона</h3>
             <button id="deleteAccountBtn" style="background: #dc3545; color: white; border: none; padding: 0.75rem 1.5rem; border-radius: 8px; cursor: pointer; width: 100%;">Удалить аккаунт</button>
+        </div>
+    </div>
+    
+    <!-- Other User Profile Modal -->
+    <div class="modal" id="otherProfileModal">
+        <div class="profile-modal-content">
+            <h2>Профиль пользователя</h2>
+            <img class="profile-avatar-preview" id="otherProfileAvatar" src="/static/default-avatar.png" alt="" style="width: 120px; height: 120px; border-radius: 50%; margin-bottom: 1rem;">
+            <h3 id="otherProfileName" style="margin: 0.5rem 0;"></h3>
+            <p id="otherProfileUsername" style="color: #666; margin: 0.5rem 0;"></p>
+            <p id="otherProfileBio" style="color: #444; margin-top: 1rem; font-style: italic;"></p>
+            <button class="profile-save-btn" id="closeOtherProfileBtn" style="margin-top: 1rem;">Закрыть</button>
         </div>
     </div>
     
@@ -168,6 +181,7 @@
         const userList = document.getElementById('userList');
         const chatHeader = document.getElementById('chatHeader');
         const chatHeaderName = document.getElementById('chatHeaderName');
+        const chatHeaderAvatar = document.getElementById('chatHeaderAvatar');
         const chatHeaderActions = document.getElementById('chatHeaderActions');
         const messagesDiv = document.getElementById('messages');
         const inputArea = document.getElementById('inputArea');
@@ -192,6 +206,14 @@
         const profileBio = document.getElementById('profileBio');
         const saveProfileBtn = document.getElementById('saveProfileBtn');
         const deleteAccountBtn = document.getElementById('deleteAccountBtn');
+        
+        // Other user profile modal elements
+        const otherProfileModal = document.getElementById('otherProfileModal');
+        const otherProfileAvatar = document.getElementById('otherProfileAvatar');
+        const otherProfileName = document.getElementById('otherProfileName');
+        const otherProfileUsername = document.getElementById('otherProfileUsername');
+        const otherProfileBio = document.getElementById('otherProfileBio');
+        const closeOtherProfileBtn = document.getElementById('closeOtherProfileBtn');
         
         // Settings modal elements
         const settingsModal = document.getElementById('settingsModal');
@@ -540,6 +562,28 @@
         }
         connectWebSocket();
         
+        // Helper function to get avatar URL
+        function getAvatarUrl(avatarUuid) {
+            if (avatarUuid && avatarUuid.trim() !== '') {
+                return '/api/avatar/' + avatarUuid;
+            }
+            return '/static/default-avatar.png';
+        }
+        
+        // Helper function to set avatar on user list items
+        function renderUserAvatars() {
+            document.querySelectorAll('.user-item').forEach(item => {
+                const avatarUuid = item.dataset.avatar;
+                const img = item.querySelector('.user-avatar');
+                if (img && avatarUuid) {
+                    img.src = getAvatarUrl(avatarUuid);
+                }
+            });
+        }
+        
+        // Render avatars on page load
+        renderUserAvatars();
+        
         // Load users and handle selection
         document.querySelectorAll('.user-item').forEach(item => {
             item.addEventListener('click', async () => {
@@ -547,7 +591,11 @@
                 item.classList.add('active');
                 
                 selectedUserId = parseInt(item.dataset.id);
-                chatHeader.textContent = item.dataset.name;
+                const userName = item.dataset.name;
+                const userAvatar = item.dataset.avatar;
+                
+                chatHeaderName.textContent = userName;
+                chatHeaderAvatar.src = getAvatarUrl(userAvatar);
                 inputArea.style.display = 'flex';
                 
                 // Load messages
@@ -666,6 +714,60 @@
         sendBtn.addEventListener('click', sendMessage);
         messageInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') sendMessage();
+        });
+        
+        // Click on user avatar or name to open other user's profile
+        document.querySelectorAll('.user-item').forEach(item => {
+            const userInfo = item.querySelector('.user-info');
+            const userAvatar = item.querySelector('.user-avatar');
+            
+            if (userInfo) {
+                userInfo.addEventListener('click', async (e) => {
+                    e.stopPropagation(); // Don't trigger chat selection
+                    const userId = parseInt(item.dataset.id);
+                    await openOtherUserProfile(userId);
+                });
+            }
+            
+            if (userAvatar) {
+                userAvatar.addEventListener('click', async (e) => {
+                    e.stopPropagation(); // Don't trigger chat selection
+                    const userId = parseInt(item.dataset.id);
+                    await openOtherUserProfile(userId);
+                });
+            }
+        });
+        
+        // Open other user profile modal
+        async function openOtherUserProfile(userId) {
+            try {
+                const res = await fetch(`/api/user/${userId}/profile`);
+                if (!res.ok) {
+                    console.error('Failed to load user profile');
+                    return;
+                }
+                const data = await res.json();
+                
+                otherProfileAvatar.src = getAvatarUrl(data.avatar_uuid);
+                otherProfileName.textContent = data.name;
+                otherProfileUsername.textContent = '@' + data.username;
+                otherProfileBio.textContent = data.bio || 'Нет информации';
+                
+                otherProfileModal.classList.add('active');
+            } catch (err) {
+                console.error('Error loading profile:', err);
+            }
+        }
+        
+        // Close other profile modal
+        closeOtherProfileBtn.addEventListener('click', () => {
+            otherProfileModal.classList.remove('active');
+        });
+        
+        otherProfileModal.addEventListener('click', (e) => {
+            if (e.target === otherProfileModal) {
+                otherProfileModal.classList.remove('active');
+            }
         });
     </script>
 </body>
