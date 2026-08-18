@@ -19,6 +19,7 @@
         .link { text-align: center; margin-top: 1rem; color: #666; }
         .link a { color: #0084ff; text-decoration: none; }
         .link a:hover { text-decoration: underline; }
+        .hint { font-size: 0.8rem; color: #888; margin-top: 0.25rem; }
     </style>
 </head>
 <body>
@@ -30,11 +31,12 @@
         <form method="POST" action="/register">
             <div class="form-group">
                 <label for="name">Display Name</label>
-                <input type="text" id="name" name="name" required autocomplete="name">
+                <input type="text" id="name" name="name" required autocomplete="name" value="{{ name or '' }}">
             </div>
             <div class="form-group">
-                <label for="username">Username (@)</label>
-                <input type="text" id="username" name="username" required autocomplete="username">
+                <label for="username">Username</label>
+                <input type="text" id="username" name="username" required autocomplete="username" value="{{ username or '' }}" placeholder="ivan">
+                <div class="hint">Latin letters, digits, underscore only. Will be stored as @username</div>
             </div>
             <div class="form-group">
                 <label for="password">Password</label>
@@ -45,7 +47,7 @@
             {% else %}
             <div class="form-group">
                 <label for="invite_code">Invite Code</label>
-                <input type="text" id="invite_code" name="invite_code" placeholder="Enter invite code" autocomplete="off">
+                <input type="text" id="invite_code" name="invite_code" placeholder="Enter invite code" autocomplete="off" value="{{ invite_code or '' }}">
             </div>
             {% endif %}
             <button type="submit">Register</button>

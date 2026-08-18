@@ -63,15 +63,24 @@
 <body>
     <header>
         <h1>Messenger</h1>
-        <a href="/logout" class="logout-btn">Logout</a>
+        <div style="display: flex; align-items: center; gap: 0.5rem;">
+            {% if user.is_admin %}
+            <span style="background: #ffc107; color: #333; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600;">admin</span>
+            <a href="/admin" class="logout-btn" style="background: rgba(255,255,255,0.3);">Админ-панель</a>
+            {% endif %}
+            <a href="/logout" class="logout-btn">Logout</a>
+        </div>
     </header>
     
     <div class="main">
         <div class="sidebar">
             <h2>Contacts</h2>
+            <div style="padding: 1rem; border-bottom: 1px solid #eee;">
+                <input type="text" id="searchInput" placeholder="Search by name or @username..." style="width: 100%; padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9rem;">
+            </div>
             <ul class="user-list" id="userList">
                 {% for u in users %}
-                <li class="user-item" data-id="{{ u.id }}" data-name="{{ u.name }}">
+                <li class="user-item" data-id="{{ u.id }}" data-name="{{ u.name }}" data-username="{{ u.username }}">
                     <div class="user-name">{{ u.name }}</div>
                     <div class="user-username">@{{ u.username }}</div>
                 </li>
@@ -109,7 +118,7 @@
         let ws = null;
         let attachedFiles = [];
         const MAX_FILE_SIZE = {{ max_upload_bytes | tojson }};
-        
+
         const userList = document.getElementById('userList');
         const chatHeader = document.getElementById('chatHeader');
         const messagesDiv = document.getElementById('messages');
@@ -123,6 +132,24 @@
         const modalImg = document.getElementById('modalImg');
         const modalClose = document.getElementById('modalClose');
         const modalDownload = document.getElementById('modalDownload');
+        const searchInput = document.getElementById('searchInput');
+        
+        // Search functionality
+        searchInput.addEventListener('input', (e) => {
+            const query = e.target.value.toLowerCase().trim();
+            const users = document.querySelectorAll('.user-item');
+            users.forEach(item => {
+                const name = item.dataset.name.toLowerCase();
+                const username = item.dataset.username.toLowerCase();
+                // Search by display name or @username (with or without @)
+                const queryClean = query.startsWith('@') ? query.slice(1) : query;
+                if (name.includes(queryClean) || username.includes(queryClean)) {
+                    item.style.display = '';
+                } else {
+                    item.style.display = 'none';
+                }
+            });
+        });
         
         // Format file size
         function formatFileSize(bytes) {
