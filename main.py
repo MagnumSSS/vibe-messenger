@@ -7,6 +7,7 @@ import mimetypes
 from datetime import datetime, timezone
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 import aiofiles
 import aiofiles.os
@@ -406,10 +407,15 @@ async def get_attachment(request: Request, attachment_id: int):
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found on disk")
     
+    safe_ascii = att["orig_name"].encode("ascii", "ignore").decode("ascii") or "file"
+    headers = {
+        "Content-Disposition": f"attachment; filename=\"{safe_ascii}\"; filename*=UTF-8''{quote(att['orig_name'], safe='')}"
+    }
+
     return StreamingResponse(
         stream_file(file_path),
         media_type=att["mime"],
-        headers={"Content-Disposition": f'attachment; filename="{att["orig_name"]}"'}
+        headers=headers
     )
 
 
