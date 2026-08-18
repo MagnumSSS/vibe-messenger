@@ -367,10 +367,12 @@ async def api_messages(request: Request, recipient_id: int):
     
     with get_db() as conn:
         messages = conn.execute("""
-            SELECT id, sender_id, recipient_id, text, created_at 
-            FROM messages 
-            WHERE (sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?)
-            ORDER BY created_at ASC
+            SELECT m.id, m.sender_id, m.recipient_id, m.text, m.created_at, 
+                   sender.avatar_uuid as sender_avatar_uuid
+            FROM messages m
+            JOIN users sender ON m.sender_id = sender.id
+            WHERE (m.sender_id = ? AND m.recipient_id = ?) OR (m.sender_id = ? AND m.recipient_id = ?)
+            ORDER BY m.created_at ASC
         """, (user["id"], recipient_id, recipient_id, user["id"])).fetchall()
         
         # Build response with attachments for each message
