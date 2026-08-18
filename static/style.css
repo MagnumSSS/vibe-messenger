@@ -169,6 +169,17 @@ header h1 { font-size: 1.25rem; }
     align-self: flex-start; 
     background: var(--message-received-bg); 
     color: var(--message-received-text); 
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+}
+
+.message-avatar {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    object-fit: cover;
+    flex-shrink: 0;
 }
 
 .message-time { 

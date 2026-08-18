@@ -318,7 +318,7 @@ async def chat_page(request: Request):
         return RedirectResponse(url="/")
     
     with get_db() as conn:
-        users = conn.execute("SELECT id, name, username FROM users WHERE id != ?", (user["id"],)).fetchall()
+        users = conn.execute("SELECT id, name, username, avatar_uuid FROM users WHERE id != ?", (user["id"],)).fetchall()
     
     # Ensure theme_json is never None - default to '{}'
     if user.get("theme_json") is None:
