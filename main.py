@@ -17,7 +17,16 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
 # Config from env
-SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-key")
+SECRET_KEY = os.environ.get("SECRET_KEY")
+if SECRET_KEY is None:
+    # Fixed dev key for development - DO NOT use in production
+    SECRET_KEY = "dev-secret-key-change-in-production"
+    import sys
+    print("=" * 80, file=sys.stderr)
+    print("WARNING: SECRET_KEY not set! Using fixed development key.", file=sys.stderr)
+    print("All sessions will persist across restarts, but this is INSECURE for production.", file=sys.stderr)
+    print("Please set the SECRET_KEY environment variable in production.", file=sys.stderr)
+    print("=" * 80, file=sys.stderr)
 FIRST_USER_ADMIN = os.environ.get("FIRST_USER_ADMIN", "1") == "1"
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", "10485760"))  # 10MB default
 PORT = int(os.environ.get("PORT", "8000"))
@@ -185,21 +194,47 @@ async def register_page(request: Request):
 
 @app.post("/register")
 async def register(request: Request, name: str = Form(...), username: str = Form(...), password: str = Form(...), invite_code: str = Form("")):
-    if not name or not username or not password:
-        return templates.TemplateResponse(request, "register.html", {"error": "All fields are required", "invite_code": invite_code})
+    import re
     
-    if len(username) < 3:
-        return templates.TemplateResponse(request, "register.html", {"error": "Username must be at least 3 characters", "invite_code": invite_code})
+    # Strip @ prefix if user entered it
+    username_clean = username.lstrip('@')
+    
+    # Validate username format: only latin letters, digits, underscore
+    if not re.match(r'^[a-zA-Z0-9_]+$', username_clean):
+        return templates.TemplateResponse(request, "register.html", {
+            "error": "Username must contain only Latin letters, digits, and underscore",
+            "invite_code": invite_code,
+            "name": name,
+            "username": username_clean
+        })
+    
+    if len(username_clean) < 3:
+        return templates.TemplateResponse(request, "register.html", {
+            "error": "Username must be at least 3 characters",
+            "invite_code": invite_code,
+            "name": name,
+            "username": username_clean
+        })
     
     if len(password) < 4:
-        return templates.TemplateResponse(request, "register.html", {"error": "Password must be at least 4 characters", "invite_code": invite_code})
+        return templates.TemplateResponse(request, "register.html", {
+            "error": "Password must be at least 4 characters",
+            "invite_code": invite_code,
+            "name": name,
+            "username": username_clean
+        })
     
     password_hash = hash_password(password)
     
     with get_db() as conn:
-        existing = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+        existing = conn.execute("SELECT id FROM users WHERE username = ?", (username_clean,)).fetchone()
         if existing:
-            return templates.TemplateResponse(request, "register.html", {"error": "Username already exists", "invite_code": invite_code})
+            return templates.TemplateResponse(request, "register.html", {
+                "error": "Username already exists",
+                "invite_code": invite_code,
+                "name": name,
+                "username": username_clean
+            })
         
         # Check if this is the first user
         count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
@@ -208,15 +243,25 @@ async def register(request: Request, name: str = Form(...), username: str = Form
         # Validate invite code (not required for first user)
         if count > 0 or not FIRST_USER_ADMIN:
             if not invite_code:
-                return templates.TemplateResponse(request, "register.html", {"error": "Invite code is required", "invite_code": invite_code})
+                return templates.TemplateResponse(request, "register.html", {
+                    "error": "Invite code is required",
+                    "invite_code": invite_code,
+                    "name": name,
+                    "username": username_clean
+                })
             
             invite = conn.execute("SELECT * FROM invites WHERE code = ? AND used_by IS NULL", (invite_code,)).fetchone()
             if not invite:
-                return templates.TemplateResponse(request, "register.html", {"error": "Invalid or expired invite code", "invite_code": invite_code})
+                return templates.TemplateResponse(request, "register.html", {
+                    "error": "Invalid or expired invite code",
+                    "invite_code": invite_code,
+                    "name": name,
+                    "username": username_clean
+                })
         
         conn.execute(
             "INSERT INTO users (name, username, password_hash, is_admin) VALUES (?, ?, ?, ?)",
-            (name, username, password_hash, is_admin)
+            (name, username_clean, password_hash, is_admin)
         )
         new_user_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         
@@ -305,14 +350,21 @@ async def api_messages(request: Request, recipient_id: int):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
+    try:
+        await websocket.accept()
+    except Exception:
+        # Connection closed before handshake completed
+        return
     
     # Get user from session cookie
     cookies = websocket.cookies
     session_data = cookies.get("session")
     
     if not session_data:
-        await websocket.close(code=4001)
+        try:
+            await websocket.close(code=4001)
+        except Exception:
+            pass  # Already closed
         return
     
     # Parse session to get user_id (simplified - in production use itsdangerous)
@@ -322,11 +374,17 @@ async def websocket_endpoint(websocket: WebSocket):
         session = serializer.loads(session_data)
         user_id = session.get("user_id")
     except BadSignature:
-        await websocket.close(code=4001)
+        try:
+            await websocket.close(code=4001)
+        except Exception:
+            pass
         return
     
     if not user_id:
-        await websocket.close(code=4001)
+        try:
+            await websocket.close(code=4001)
+        except Exception:
+            pass
         return
     
     # Store connection
@@ -337,7 +395,11 @@ async def websocket_endpoint(websocket: WebSocket):
             data = await websocket.receive_json()
             # Handle incoming messages if needed
     except WebSocketDisconnect:
-        del app.state.connections[user_id]
+        if user_id in app.state.connections:
+            del app.state.connections[user_id]
+    except Exception:
+        if user_id in app.state.connections:
+            del app.state.connections[user_id]
 
 
 # Store active connections

@@ -36,7 +36,7 @@ DATA_DIR=./data
 
 | Variable | Description |
 |----------|-------------|
-| `SECRET_KEY` | Secret key for session signing |
+| `SECRET_KEY` | Secret key for session signing. **Must be set in production!** If not set, a fixed development key is used with a warning (sessions persist across restarts but this is insecure). |
 | `FIRST_USER_ADMIN` | If `1`, first registered user becomes admin |
 | `MAX_UPLOAD_BYTES` | Maximum message length in bytes |
 | `PORT` | Server port |
@@ -75,3 +75,5 @@ python main.py
 Private use only.
 
 - phase 1 complete
+
+- phase 3.5 complete
