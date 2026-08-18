@@ -611,7 +611,16 @@
             const div = document.createElement('div');
             div.className = `message ${msg.sender_id === currentUser ? 'sent' : 'received'}`;
             
-            let html = escapeHtml(msg.text);
+            // Build avatar URL for received messages
+            let avatarHtml = '';
+            if (msg.sender_id !== currentUser && msg.sender_avatar_uuid) {
+                const avatarSrc = getAvatarUrl(msg.sender_avatar_uuid);
+                avatarHtml = `<img class="message-avatar" src="${avatarSrc}" alt="" onerror="this.src='/static/default-avatar.png'">`;
+            } else if (msg.sender_id !== currentUser) {
+                avatarHtml = `<img class="message-avatar" src="/static/default-avatar.png" alt="">`;
+            }
+            
+            let html = avatarHtml + escapeHtml(msg.text);
             
             // Add attachments
             if (msg.attachments && msg.attachments.length > 0) {
