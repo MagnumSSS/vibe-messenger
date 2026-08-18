@@ -4,7 +4,7 @@ import hashlib
 import secrets
 import uuid
 import mimetypes
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import quote
@@ -46,6 +46,7 @@ def get_db():
 
 def init_db():
     with get_db() as conn:
+        # Create users table if not exists
         conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,6 +57,13 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        
+        # Check if banned_until column exists in users table
+        columns = [col[1] for col in conn.execute("PRAGMA table_info(users)").fetchall()]
+        if "banned_until" not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN banned_until TIMESTAMP NULL")
+        
+        # Create messages table if not exists
         conn.execute("""
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,6 +75,8 @@ def init_db():
                 FOREIGN KEY (recipient_id) REFERENCES users(id)
             )
         """)
+        
+        # Create attachments table if not exists
         conn.execute("""
             CREATE TABLE IF NOT EXISTS attachments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,6 +89,44 @@ def init_db():
                 FOREIGN KEY (message_id) REFERENCES messages(id)
             )
         """)
+        
+        # Create warns table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS warns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                by_admin_id INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (by_admin_id) REFERENCES users(id)
+            )
+        """)
+        
+        # Create invites table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS invites (
+                code TEXT PRIMARY KEY,
+                created_by INTEGER NOT NULL,
+                used_by INTEGER NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (created_by) REFERENCES users(id),
+                FOREIGN KEY (used_by) REFERENCES users(id)
+            )
+        """)
+        
+        # Create blocks table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS blocks (
+                blocker_id INTEGER NOT NULL,
+                blocked_id INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (blocker_id, blocked_id),
+                FOREIGN KEY (blocker_id) REFERENCES users(id),
+                FOREIGN KEY (blocked_id) REFERENCES users(id)
+            )
+        """)
+        
         conn.commit()
 
 
@@ -109,6 +157,16 @@ def get_current_user(request: Request):
     return dict(row) if row else None
 
 
+def get_current_user_fresh(request: Request):
+    """Get current user with fresh data from DB (for ban check)"""
+    user_id = request.session.get("user_id")
+    if not user_id:
+        return None
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    return dict(row) if row else None
+
+
 @app.get("/")
 async def index(request: Request):
     user = get_current_user(request)
@@ -122,35 +180,50 @@ async def register_page(request: Request):
     user = get_current_user(request)
     if user:
         return RedirectResponse(url="/chat")
-    return templates.TemplateResponse(request, "register.html", {"error": None})
+    return templates.TemplateResponse(request, "register.html", {"error": None, "invite_code": request.query_params.get("invite", "")})
 
 
 @app.post("/register")
-async def register(request: Request, name: str = Form(...), username: str = Form(...), password: str = Form(...)):
+async def register(request: Request, name: str = Form(...), username: str = Form(...), password: str = Form(...), invite_code: str = Form("")):
     if not name or not username or not password:
-        return templates.TemplateResponse(request, "register.html", {"error": "All fields are required"})
+        return templates.TemplateResponse(request, "register.html", {"error": "All fields are required", "invite_code": invite_code})
     
     if len(username) < 3:
-        return templates.TemplateResponse(request, "register.html", {"error": "Username must be at least 3 characters"})
+        return templates.TemplateResponse(request, "register.html", {"error": "Username must be at least 3 characters", "invite_code": invite_code})
     
     if len(password) < 4:
-        return templates.TemplateResponse(request, "register.html", {"error": "Password must be at least 4 characters"})
+        return templates.TemplateResponse(request, "register.html", {"error": "Password must be at least 4 characters", "invite_code": invite_code})
     
     password_hash = hash_password(password)
     
     with get_db() as conn:
         existing = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
         if existing:
-            return templates.TemplateResponse(request, "register.html", {"error": "Username already exists"})
+            return templates.TemplateResponse(request, "register.html", {"error": "Username already exists", "invite_code": invite_code})
         
         # Check if this is the first user
         count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         is_admin = 1 if (count == 0 and FIRST_USER_ADMIN) else 0
         
+        # Validate invite code (not required for first user)
+        if count > 0 or not FIRST_USER_ADMIN:
+            if not invite_code:
+                return templates.TemplateResponse(request, "register.html", {"error": "Invite code is required", "invite_code": invite_code})
+            
+            invite = conn.execute("SELECT * FROM invites WHERE code = ? AND used_by IS NULL", (invite_code,)).fetchone()
+            if not invite:
+                return templates.TemplateResponse(request, "register.html", {"error": "Invalid or expired invite code", "invite_code": invite_code})
+        
         conn.execute(
             "INSERT INTO users (name, username, password_hash, is_admin) VALUES (?, ?, ?, ?)",
             (name, username, password_hash, is_admin)
         )
+        new_user_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        
+        # Mark invite as used
+        if invite_code and count > 0:
+            conn.execute("UPDATE invites SET used_by = ? WHERE code = ?", (new_user_id, invite_code))
+        
         conn.commit()
     
     return RedirectResponse(url="/", status_code=303)
@@ -300,9 +373,18 @@ async def send_message(
     text: str = Form(""),
     files: list[UploadFile] = File(default=[])
 ):
-    user = get_current_user(request)
+    user = get_current_user_fresh(request)  # Use fresh data to catch ban status
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    # Check if user is banned
+    if is_banned(user):
+        banned_until = datetime.fromisoformat(user["banned_until"].replace("Z", "+00:00").replace("+00:00", ""))
+        raise HTTPException(status_code=403, detail=f"You are banned until {banned_until.strftime('%Y-%m-%d %H:%M')}")
+    
+    # Check if there's a block between users
+    if check_block(user["id"], recipient_id):
+        raise HTTPException(status_code=403, detail="Communication is blocked")
     
     # Allow empty text only if there are attachments
     if not text.strip() and not files:
@@ -442,6 +524,359 @@ async def get_attachment_info(request: Request, attachment_id: int):
             raise HTTPException(status_code=403, detail="Forbidden")
     
     return JSONResponse(dict(att))
+
+
+# ============== Phase 3: Admin Panel, Invites, Bans, Blocks ==============
+
+def require_admin(user):
+    """Check if user is admin, raise 403 if not"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if not user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+
+def is_banned(user):
+    """Check if user is currently banned"""
+    if not user.get("banned_until"):
+        return False
+    banned_until = datetime.fromisoformat(user["banned_until"].replace("Z", "+00:00").replace("+00:00", ""))
+    if banned_until > datetime.now():
+        return True
+    return False
+
+
+def check_block(sender_id, recipient_id):
+    """Check if there's a block between two users (either direction)"""
+    with get_db() as conn:
+        block = conn.execute("""
+            SELECT 1 FROM blocks 
+            WHERE (blocker_id = ? AND blocked_id = ?) OR (blocker_id = ? AND blocked_id = ?)
+        """, (sender_id, recipient_id, recipient_id, sender_id)).fetchone()
+        return block is not None
+
+
+@app.get("/admin")
+async def admin_page(request: Request):
+    """Admin panel - list all users"""
+    user = get_current_user(request)
+    require_admin(user)
+    
+    with get_db() as conn:
+        all_users = conn.execute("""
+            SELECT id, name, username, is_admin, banned_until, created_at 
+            FROM users 
+            ORDER BY created_at DESC
+        """).fetchall()
+        
+        # Get warn counts for each user
+        users_with_warns = []
+        for u in all_users:
+            user_dict = dict(u)
+            warn_count = conn.execute("SELECT COUNT(*) FROM warns WHERE user_id = ?", (user_dict["id"],)).fetchone()[0]
+            user_dict["warn_count"] = warn_count
+            user_dict["is_banned"] = is_banned(user_dict)
+            users_with_warns.append(user_dict)
+    
+    return templates.TemplateResponse(request, "admin.html", {
+        "user": user,
+        "users": users_with_warns
+    })
+
+
+@app.post("/admin/invite")
+async def create_invite(request: Request):
+    """Create a new invite code"""
+    user = get_current_user(request)
+    require_admin(user)
+    
+    # Generate random invite code
+    invite_code = secrets.token_urlsafe(8)
+    
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO invites (code, created_by) VALUES (?, ?)",
+            (invite_code, user["id"])
+        )
+        conn.commit()
+    
+    return JSONResponse({"invite_code": invite_code})
+
+
+@app.get("/api/admin/invites")
+async def get_invites(request: Request):
+    """Get all invite codes"""
+    user = get_current_user(request)
+    require_admin(user)
+    
+    with get_db() as conn:
+        invites = conn.execute("""
+            SELECT i.code, i.created_by, i.used_by, i.created_at, u.username as used_by_username
+            FROM invites i
+            LEFT JOIN users u ON i.used_by = u.id
+            ORDER BY i.created_at DESC
+        """).fetchall()
+    
+    return JSONResponse([dict(i) for i in invites])
+
+
+@app.post("/admin/warn")
+async def warn_user(request: Request, target_user_id: int = Form(...), reason: str = Form(...)):
+    """Issue a warning to a user. 3 warnings = auto-ban"""
+    user = get_current_user(request)
+    require_admin(user)
+    
+    with get_db() as conn:
+        # Check target exists
+        target = conn.execute("SELECT id, username FROM users WHERE id = ?", (target_user_id,)).fetchone()
+        if not target:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Add warning
+        conn.execute(
+            "INSERT INTO warns (user_id, by_admin_id, reason) VALUES (?, ?, ?)",
+            (target_user_id, user["id"], reason)
+        )
+        
+        # Count warnings
+        warn_count = conn.execute("SELECT COUNT(*) FROM warns WHERE user_id = ?", (target_user_id,)).fetchone()[0]
+        
+        # Auto-ban if 3 warnings
+        if warn_count >= 3:
+            banned_until = datetime.now() + timedelta(days=7)  # Default 7 day ban
+            conn.execute("UPDATE users SET banned_until = ? WHERE id = ?", (banned_until.isoformat(), target_user_id))
+            conn.commit()
+            return JSONResponse({"warn_count": warn_count, "auto_banned": True, "banned_until": banned_until.isoformat()})
+        
+        conn.commit()
+    
+    return JSONResponse({"warn_count": warn_count, "auto_banned": False})
+
+
+@app.post("/admin/ban")
+async def ban_user(request: Request, target_user_id: int = Form(...), days: int = Form(7)):
+    """Ban a user for N days"""
+    user = get_current_user(request)
+    require_admin(user)
+    
+    with get_db() as conn:
+        target = conn.execute("SELECT id, username FROM users WHERE id = ?", (target_user_id,)).fetchone()
+        if not target:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        banned_until = datetime.now() + timedelta(days=days)
+        conn.execute("UPDATE users SET banned_until = ? WHERE id = ?", (banned_until.isoformat(), target_user_id))
+        conn.commit()
+    
+    return JSONResponse({"banned_until": banned_until.isoformat()})
+
+
+@app.post("/admin/unban")
+async def unban_user(request: Request, target_user_id: int = Form(...)):
+    """Unban a user"""
+    user = get_current_user(request)
+    require_admin(user)
+    
+    with get_db() as conn:
+        target = conn.execute("SELECT id, username FROM users WHERE id = ?", (target_user_id,)).fetchone()
+        if not target:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        conn.execute("UPDATE users SET banned_until = NULL WHERE id = ?", (target_user_id,))
+        conn.commit()
+    
+    return JSONResponse({"success": True})
+
+
+@app.post("/admin/grant-admin")
+async def grant_admin(request: Request, target_user_id: int = Form(...)):
+    """Grant admin privileges to a user"""
+    user = get_current_user(request)
+    require_admin(user)
+    
+    with get_db() as conn:
+        target = conn.execute("SELECT id, username FROM users WHERE id = ?", (target_user_id,)).fetchone()
+        if not target:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        conn.execute("UPDATE users SET is_admin = 1 WHERE id = ?", (target_user_id,))
+        conn.commit()
+    
+    return JSONResponse({"success": True})
+
+
+@app.post("/admin/revoke-admin")
+async def revoke_admin(request: Request, target_user_id: int = Form(...)):
+    """Revoke admin privileges from a user"""
+    user = get_current_user(request)
+    require_admin(user)
+    
+    # Don't allow revoking own admin
+    if target_user_id == user["id"]:
+        raise HTTPException(status_code=400, detail="Cannot revoke your own admin privileges")
+    
+    with get_db() as conn:
+        target = conn.execute("SELECT id, username FROM users WHERE id = ?", (target_user_id,)).fetchone()
+        if not target:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        conn.execute("UPDATE users SET is_admin = 0 WHERE id = ?", (target_user_id,))
+        conn.commit()
+    
+    return JSONResponse({"success": True})
+
+
+@app.get("/api/settings/blocks")
+async def get_blocks(request: Request):
+    """Get list of users that current user has blocked"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    with get_db() as conn:
+        blocks = conn.execute("""
+            SELECT u.id, u.username, u.name, b.created_at
+            FROM blocks b
+            JOIN users u ON b.blocked_id = u.id
+            WHERE b.blocker_id = ?
+            ORDER BY b.created_at DESC
+        """, (user["id"],)).fetchall()
+    
+    return JSONResponse([dict(b) for b in blocks])
+
+
+@app.post("/api/block")
+async def block_user(request: Request, target_user_id: int = Form(...)):
+    """Block another user"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    if target_user_id == user["id"]:
+        raise HTTPException(status_code=400, detail="Cannot block yourself")
+    
+    with get_db() as conn:
+        target = conn.execute("SELECT id FROM users WHERE id = ?", (target_user_id,)).fetchone()
+        if not target:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        conn.execute("""
+            INSERT OR REPLACE INTO blocks (blocker_id, blocked_id, created_at) 
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+        """, (user["id"], target_user_id))
+        conn.commit()
+    
+    return JSONResponse({"success": True})
+
+
+@app.post("/api/unblock")
+async def unblock_user(request: Request, target_user_id: int = Form(...)):
+    """Unblock a user"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    with get_db() as conn:
+        conn.execute("DELETE FROM blocks WHERE blocker_id = ? AND blocked_id = ?", (user["id"], target_user_id))
+        conn.commit()
+    
+    return JSONResponse({"success": True})
+
+
+# Modified send_message to check for bans and blocks
+@app.post("/api/send")
+async def send_message(
+    request: Request,
+    recipient_id: int = Form(...),
+    text: str = Form(""),
+    files: list[UploadFile] = File(default=[])
+):
+    user = get_current_user_fresh(request)  # Use fresh data to catch ban status
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    # Check if user is banned
+    if is_banned(user):
+        banned_until = datetime.fromisoformat(user["banned_until"].replace("Z", "+00:00").replace("+00:00", ""))
+        raise HTTPException(status_code=403, detail=f"You are banned until {banned_until.strftime('%Y-%m-%d %H:%M')}")
+    
+    # Check if there's a block between users
+    if check_block(user["id"], recipient_id):
+        raise HTTPException(status_code=403, detail="Communication is blocked")
+    
+    # Allow empty text only if there are attachments
+    if not text.strip() and not files:
+        raise HTTPException(status_code=400, detail="Empty message")
+    
+    if len(text) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=400, detail="Message too long")
+    
+    with get_db() as conn:
+        # Verify recipient exists
+        recipient = conn.execute("SELECT id FROM users WHERE id = ?", (recipient_id,)).fetchone()
+        if not recipient:
+            raise HTTPException(status_code=404, detail="Recipient not found")
+        
+        conn.execute(
+            "INSERT INTO messages (sender_id, recipient_id, text) VALUES (?, ?, ?)",
+            (user["id"], recipient_id, text)
+        )
+        message_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        
+        # Handle file uploads
+        attachment_ids = []
+        for file in files:
+            if file.filename:
+                # Check file size limit
+                file_data = await file.read()
+                if len(file_data) > MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=400, detail=f"File '{file.filename}' exceeds size limit")
+                
+                # Generate UUID filename with extension
+                ext = Path(file.filename).suffix.lower()
+                uuid_name = f"{uuid.uuid4().hex}{ext}"
+                file_path = os.path.join(UPLOADS_DIR, uuid_name)
+                
+                # Save file using aiofiles (streaming write)
+                async with aiofiles.open(file_path, 'wb') as f:
+                    await f.write(file_data)
+                
+                # Detect mime type
+                mime_type = file.content_type or mimetypes.guess_type(file.filename)[0] or "application/octet-stream"
+                
+                # Store attachment in DB
+                conn.execute(
+                    "INSERT INTO attachments (message_id, uuid_name, orig_name, mime, size) VALUES (?, ?, ?, ?, ?)",
+                    (message_id, uuid_name, file.filename, mime_type, len(file_data))
+                )
+                attachment_ids.append(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+        
+        conn.commit()
+        
+        # Get the inserted message with attachments
+        msg = conn.execute(
+            "SELECT id, sender_id, recipient_id, text, created_at FROM messages WHERE id = ?",
+            (message_id,)
+        ).fetchone()
+        
+        # Get attachments for this message
+        attachments = conn.execute(
+            "SELECT id, uuid_name, orig_name, mime, size, created_at FROM attachments WHERE message_id = ?",
+            (message_id,)
+        ).fetchall()
+    
+    # Build response with attachments
+    msg_dict = dict(msg)
+    msg_dict["attachments"] = [dict(a) for a in attachments]
+    
+    # Send via WebSocket if recipient is online
+    if recipient_id in app.state.connections:
+        try:
+            await app.state.connections[recipient_id].send_json(msg_dict)
+        except:
+            pass  # Connection might have closed
+    
+    return JSONResponse(msg_dict)
 
 
 if __name__ == "__main__":

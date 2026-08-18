@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Panel - Messenger</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f0f2f5; min-height: 100vh; }
+        header { background: #0084ff; color: white; padding: 1rem; display: flex; justify-content: space-between; align-items: center; }
+        header h1 { font-size: 1.25rem; }
+        .logout-btn { background: rgba(255,255,255,0.2); border: none; color: white; padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer; text-decoration: none; font-size: 0.9rem; }
+        .logout-btn:hover { background: rgba(255,255,255,0.3); }
+        .container { max-width: 1200px; margin: 0 auto; padding: 1rem; }
+        .section { background: white; border-radius: 8px; padding: 1.5rem; margin-bottom: 1rem; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .section h2 { margin-bottom: 1rem; color: #333; font-size: 1.1rem; }
+        
+        .invite-section { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+        .invite-btn { background: #0084ff; color: white; border: none; padding: 0.75rem 1.5rem; border-radius: 4px; cursor: pointer; font-weight: 600; }
+        .invite-btn:hover { background: #0073e6; }
+        .invite-code { background: #f0f2f5; padding: 0.75rem 1rem; border-radius: 4px; font-family: monospace; font-size: 1rem; }
+        .invite-list { margin-top: 1rem; }
+        .invite-item { padding: 0.5rem; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
+        .invite-item:last-child { border-bottom: none; }
+        .invite-status { font-size: 0.85rem; }
+        .invite-status.used { color: #28a745; }
+        .invite-status.unused { color: #ffc107; }
+        
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 0.75rem; text-align: left; border-bottom: 1px solid #eee; }
+        th { background: #f8f9fa; font-weight: 600; color: #555; }
+        tr:hover { background: #f8f9fa; }
+        .admin-badge { background: #ffc107; color: #333; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
+        .banned-badge { background: #dc3545; color: white; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.75rem; }
+        .warn-count { background: #ffc107; color: #333; padding: 0.25rem 0.5rem; border-radius: 12px; font-size: 0.75rem; font-weight: 600; }
+        
+        .action-btn { padding: 0.25rem 0.5rem; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem; margin-right: 0.25rem; }
+        .btn-warn { background: #ffc107; color: #333; }
+        .btn-ban { background: #dc3545; color: white; }
+        .btn-unban { background: #28a745; color: white; }
+        .btn-admin { background: #007bff; color: white; }
+        .btn-revoke { background: #6c757d; color: white; }
+        .btn-block { background: #343a40; color: white; }
+        
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center; }
+        .modal.active { display: flex; }
+        .modal-content { background: white; padding: 1.5rem; border-radius: 8px; max-width: 400px; width: 90%; }
+        .modal-content h3 { margin-bottom: 1rem; }
+        .modal-content input, .modal-content select { width: 100%; padding: 0.75rem; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 1rem; }
+        .modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; }
+        .modal-actions button { padding: 0.5rem 1rem; border: none; border-radius: 4px; cursor: pointer; }
+        .btn-cancel { background: #e4e6eb; color: #333; }
+        .btn-confirm { background: #0084ff; color: white; }
+        
+        @media (max-width: 768px) {
+            .container { padding: 0.5rem; }
+            table { font-size: 0.85rem; }
+            .action-btn { padding: 0.2rem 0.3rem; font-size: 0.75rem; }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Admin Panel</h1>
+        <div>
+            <a href="/chat" class="logout-btn">Back to Chat</a>
+            <a href="/logout" class="logout-btn">Logout</a>
+        </div>
+    </header>
+    
+    <div class="container">
+        <!-- Invite Section -->
+        <div class="section">
+            <h2>Invite Codes</h2>
+            <div class="invite-section">
+                <button class="invite-btn" id="createInviteBtn">Generate New Invite</button>
+                <span class="invite-code" id="newInviteCode"></span>
+            </div>
+            <div class="invite-list" id="inviteList"></div>
+        </div>
+        
+        <!-- Users Table -->
+        <div class="section">
+            <h2>Users</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Name</th>
+                        <th>Username</th>
+                        <th>Admin</th>
+                        <th>Warns</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="usersTable">
+                    {% for u in users %}
+                    <tr data-user-id="{{ u.id }}">
+                        <td>{{ u.id }}</td>
+                        <td>{{ u.name }}</td>
+                        <td>@{{ u.username }}</td>
+                        <td>{% if u.is_admin %}<span class="admin-badge">Admin</span>{% endif %}</td>
+                        <td><span class="warn-count">{{ u.warn_count }}/3</span></td>
+                        <td>{% if u.is_banned %}<span class="banned-badge">Banned</span>{% else %}Active{% endif %}</td>
+                        <td>
+                            <button class="action-btn btn-warn" onclick="openWarnModal({{ u.id }}, '{{ u.username }}')">Warn</button>
+                            {% if u.is_banned %}
+                            <button class="action-btn btn-unban" onclick="unbanUser({{ u.id }})">Unban</button>
+                            {% else %}
+                            <button class="action-btn btn-ban" onclick="openBanModal({{ u.id }}, '{{ u.username }}')">Ban</button>
+                            {% endif %}
+                            {% if u.is_admin %}
+                            <button class="action-btn btn-revoke" onclick="revokeAdmin({{ u.id }})">Revoke Admin</button>
+                            {% else %}
+                            <button class="action-btn btn-admin" onclick="grantAdmin({{ u.id }})">Make Admin</button>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    
+    <!-- Warn Modal -->
+    <div class="modal" id="warnModal">
+        <div class="modal-content">
+            <h3>Warn User</h3>
+            <p id="warnTargetName"></p>
+            <input type="hidden" id="warnTargetId">
+            <input type="text" id="warnReason" placeholder="Reason for warning" required>
+            <div class="modal-actions">
+                <button class="btn-cancel" onclick="closeWarnModal()">Cancel</button>
+                <button class="btn-confirm" onclick="submitWarn()">Submit Warning</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Ban Modal -->
+    <div class="modal" id="banModal">
+        <div class="modal-content">
+            <h3>Ban User</h3>
+            <p id="banTargetName"></p>
+            <input type="hidden" id="banTargetId">
+            <label>Duration (days)</label>
+            <input type="number" id="banDays" value="7" min="1" max="365">
+            <div class="modal-actions">
+                <button class="btn-cancel" onclick="closeBanModal()">Cancel</button>
+                <button class="btn-confirm" onclick="submitBan()">Submit Ban</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Load invites on page load
+        loadInvites();
+        
+        async function loadInvites() {
+            try {
+                const res = await fetch('/api/admin/invites');
+                const invites = await res.json();
+                const list = document.getElementById('inviteList');
+                list.innerHTML = '<h3 style="margin-top: 1rem; font-size: 0.9rem;">Existing Invites:</h3>';
+                invites.forEach(inv => {
+                    const div = document.createElement('div');
+                    div.className = 'invite-item';
+                    div.innerHTML = `
+                        <span><code>${inv.code}</code></span>
+                        <span class="invite-status ${inv.used_by ? 'used' : 'unused'}">
+                            ${inv.used_by ? 'Used by @' + inv.used_by_username : 'Unused'}
+                        </span>
+                    `;
+                    list.appendChild(div);
+                });
+            } catch (err) {
+                console.error('Failed to load invites:', err);
+            }
+        }
+        
+        // Create new invite
+        document.getElementById('createInviteBtn').addEventListener('click', async () => {
+            try {
+                const res = await fetch('/admin/invite', { method: 'POST' });
+                const data = await res.json();
+                document.getElementById('newInviteCode').textContent = data.invite_code;
+                loadInvites();
+            } catch (err) {
+                alert('Failed to create invite');
+            }
+        });
+        
+        // Warn modal functions
+        function openWarnModal(userId, username) {
+            document.getElementById('warnTargetId').value = userId;
+            document.getElementById('warnTargetName').textContent = '@' + username;
+            document.getElementById('warnReason').value = '';
+            document.getElementById('warnModal').classList.add('active');
+        }
+        
+        function closeWarnModal() {
+            document.getElementById('warnModal').classList.remove('active');
+        }
+        
+        async function submitWarn() {
+            const userId = document.getElementById('warnTargetId').value;
+            const reason = document.getElementById('warnReason').value.trim();
+            
+            if (!reason) {
+                alert('Please enter a reason');
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('target_user_id', userId);
+            formData.append('reason', reason);
+            
+            try {
+                const res = await fetch('/admin/warn', { method: 'POST', body: formData });
+                const data = await res.json();
+                
+                if (data.auto_banned) {
+                    alert(`User warned and auto-banned until ${new Date(data.banned_until).toLocaleDateString()}`);
+                } else {
+                    alert(`Warning issued (${data.warn_count}/3)`);
+                }
+                
+                closeWarnModal();
+                location.reload();
+            } catch (err) {
+                alert('Failed to warn user');
+            }
+        }
+        
+        // Ban modal functions
+        function openBanModal(userId, username) {
+            document.getElementById('banTargetId').value = userId;
+            document.getElementById('banTargetName').textContent = '@' + username;
+            document.getElementById('banDays').value = 7;
+            document.getElementById('banModal').classList.add('active');
+        }
+        
+        function closeBanModal() {
+            document.getElementById('banModal').classList.remove('active');
+        }
+        
+        async function submitBan() {
+            const userId = document.getElementById('banTargetId').value;
+            const days = document.getElementById('banDays').value;
+            
+            const formData = new FormData();
+            formData.append('target_user_id', userId);
+            formData.append('days', days);
+            
+            try {
+                const res = await fetch('/admin/ban', { method: 'POST', body: formData });
+                await res.json();
+                alert('User banned');
+                closeBanModal();
+                location.reload();
+            } catch (err) {
+                alert('Failed to ban user');
+            }
+        }
+        
+        async function unbanUser(userId) {
+            if (!confirm('Unban this user?')) return;
+            
+            const formData = new FormData();
+            formData.append('target_user_id', userId);
+            
+            try {
+                await fetch('/admin/unban', { method: 'POST', body: formData });
+                location.reload();
+            } catch (err) {
+                alert('Failed to unban user');
+            }
+        }
+        
+        async function grantAdmin(userId) {
+            if (!confirm('Grant admin privileges to this user?')) return;
+            
+            const formData = new FormData();
+            formData.append('target_user_id', userId);
+            
+            try {
+                await fetch('/admin/grant-admin', { method: 'POST', body: formData });
+                location.reload();
+            } catch (err) {
+                alert('Failed to grant admin');
+            }
+        }
+        
+        async function revokeAdmin(userId) {
+            if (!confirm('Revoke admin privileges from this user?')) return;
+            
+            const formData = new FormData();
+            formData.append('target_user_id', userId);
+            
+            try {
+                await fetch('/admin/revoke-admin', { method: 'POST', body: formData });
+                location.reload();
+            } catch (err) {
+                alert('Failed to revoke admin');
+            }
+        }
+    </script>
+</body>
+</html>
