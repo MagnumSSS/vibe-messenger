@@ -53,7 +53,14 @@ def get_db():
         conn.close()
 
 
-def init_db():
+
+
+def ensure_schema():
+    """
+    Ensure database schema is up-to-date by adding missing tables and columns.
+    Called on every startup to handle migrations from older versions.
+    Uses a declarative approach: list of (table, column, type) tuples.
+    """
     with get_db() as conn:
         # Create users table if not exists
         conn.execute("""
@@ -67,22 +74,20 @@ def init_db():
             )
         """)
         
-        # Check if banned_until column exists in users table
-        columns = [col[1] for col in conn.execute("PRAGMA table_info(users)").fetchall()]
-        if "banned_until" not in columns:
-            conn.execute("ALTER TABLE users ADD COLUMN banned_until TIMESTAMP NULL")
+        # Get current columns in users table
+        user_columns = {col[1] for col in conn.execute("PRAGMA table_info(users)").fetchall()}
         
-        # Add avatar_uuid column if not exists (Phase 4)
-        if "avatar_uuid" not in columns:
-            conn.execute("ALTER TABLE users ADD COLUMN avatar_uuid TEXT NULL")
-        
-        # Add bio column if not exists (Phase 4)
-        if "bio" not in columns:
-            conn.execute("ALTER TABLE users ADD COLUMN bio TEXT NULL")
-        
-        # Add theme_json column if not exists (Phase 4)
-        if "theme_json" not in columns:
-            conn.execute("ALTER TABLE users ADD COLUMN theme_json TEXT NULL")
+        # Add missing columns to users table (Phase 3-4 additions)
+        user_column_additions = [
+            ("banned_until", "TIMESTAMP NULL"),      # Phase 3: ban functionality
+            ("avatar_uuid", "TEXT NULL"),            # Phase 4: profile avatar
+            ("bio", "TEXT NULL"),                    # Phase 4: profile bio
+            ("theme_json", "TEXT NULL"),             # Phase 4: RGB themes
+        ]
+        for col_name, col_type in user_column_additions:
+            if col_name not in user_columns:
+                conn.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}")
+                print(f"Added column users.{col_name}")
         
         # Create messages table if not exists
         conn.execute("""
@@ -97,14 +102,20 @@ def init_db():
             )
         """)
         
-        # Check if deleted_for_self column exists (Phase 4 - soft delete for own view)
-        msg_columns = [col[1] for col in conn.execute("PRAGMA table_info(messages)").fetchall()]
-        if "deleted_for_sender" not in msg_columns:
-            conn.execute("ALTER TABLE messages ADD COLUMN deleted_for_sender INTEGER DEFAULT 0")
-        if "deleted_for_recipient" not in msg_columns:
-            conn.execute("ALTER TABLE messages ADD COLUMN deleted_for_recipient INTEGER DEFAULT 0")
+        # Get current columns in messages table
+        msg_columns = {col[1] for col in conn.execute("PRAGMA table_info(messages)").fetchall()}
         
-        # Create attachments table if not exists
+        # Add missing columns to messages table (Phase 4: soft delete)
+        msg_column_additions = [
+            ("deleted_for_sender", "INTEGER DEFAULT 0"),
+            ("deleted_for_recipient", "INTEGER DEFAULT 0"),
+        ]
+        for col_name, col_type in msg_column_additions:
+            if col_name not in msg_columns:
+                conn.execute(f"ALTER TABLE messages ADD COLUMN {col_name} {col_type}")
+                print(f"Added column messages.{col_name}")
+        
+        # Create attachments table if not exists (Phase 2)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS attachments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -118,7 +129,7 @@ def init_db():
             )
         """)
         
-        # Create warns table
+        # Create warns table if not exists (Phase 3)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS warns (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -131,7 +142,7 @@ def init_db():
             )
         """)
         
-        # Create invites table
+        # Create invites table if not exists (Phase 3)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS invites (
                 code TEXT PRIMARY KEY,
@@ -143,7 +154,7 @@ def init_db():
             )
         """)
         
-        # Create blocks table
+        # Create blocks table if not exists (Phase 3)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS blocks (
                 blocker_id INTEGER NOT NULL,
@@ -158,7 +169,7 @@ def init_db():
         conn.commit()
 
 
-init_db()
+ensure_schema()
 
 
 def hash_password(password: str) -> str:
@@ -193,6 +204,12 @@ def get_current_user_fresh(request: Request):
     with get_db() as conn:
         row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     return dict(row) if row else None
+
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for monitoring and load balancers."""
+    return JSONResponse({"status": "ok", "version": "5.0"})
 
 
 @app.get("/")
@@ -519,31 +536,37 @@ async def send_message(
         )
         message_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         
-        # Handle file uploads
+        # Handle file uploads with chunked streaming (64KB chunks)
         attachment_ids = []
         for file in files:
             if file.filename:
-                # Check file size limit
-                file_data = await file.read()
-                if len(file_data) > MAX_UPLOAD_BYTES:
-                    raise HTTPException(status_code=400, detail=f"File '{file.filename}' exceeds size limit")
-                
                 # Generate UUID filename with extension
                 ext = Path(file.filename).suffix.lower()
                 uuid_name = f"{uuid.uuid4().hex}{ext}"
                 file_path = os.path.join(UPLOADS_DIR, uuid_name)
                 
-                # Save file using aiofiles (streaming write)
+                # Stream file to disk in 64KB chunks while counting bytes
+                total_bytes = 0
+                chunk_size = 64 * 1024  # 64KB
                 async with aiofiles.open(file_path, 'wb') as f:
-                    await f.write(file_data)
+                    while True:
+                        chunk = await file.file.read(chunk_size)
+                        if not chunk:
+                            break
+                        total_bytes += len(chunk)
+                        if total_bytes > MAX_UPLOAD_BYTES:
+                            # Delete partial file on exceed
+                            await aiofiles.os.remove(file_path)
+                            raise HTTPException(status_code=400, detail=f"File '{file.filename}' exceeds size limit")
+                        await f.write(chunk)
                 
-                # Detect mime type
-                mime_type = file.content_type or mimetypes.guess_type(file.filename)[0] or "application/octet-stream"
+                # Detect mime type from extension
+                mime_type = mimetypes.guess_type(file.filename)[0] or file.content_type or "application/octet-stream"
                 
                 # Store attachment in DB
                 conn.execute(
                     "INSERT INTO attachments (message_id, uuid_name, orig_name, mime, size) VALUES (?, ?, ?, ?, ?)",
-                    (message_id, uuid_name, file.filename, mime_type, len(file_data))
+                    (message_id, uuid_name, file.filename, mime_type, total_bytes)
                 )
                 attachment_ids.append(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
         
@@ -897,11 +920,6 @@ async def unblock_user(request: Request, target_user_id: int = Form(...)):
     return JSONResponse({"success": True})
 
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
-
-
 # ========== PROFILE ENDPOINTS ==========
 @app.get("/api/profile")
 async def get_profile(request: Request):
@@ -1108,3 +1126,8 @@ async def delete_chat_endpoint(request: Request, recipient_id: int = Form(...)):
     
     return JSONResponse({"success": True})
 
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=PORT)

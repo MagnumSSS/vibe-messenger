@@ -1,0 +1,18 @@
+[Unit]
+Description=Private Messenger Service
+After=network.target
+
+[Service]
+Type=simple
+User=messenger
+Group=messenger
+EnvironmentFile=/etc/messenger/env
+WorkingDirectory=/opt/messenger
+ExecStart=/opt/messenger/venv/bin/uvicorn main:app --host 0.0.0.0 --port ${PORT}
+Restart=always
+RestartSec=2
+StandardOutput=journald
+StandardError=journald
+
+[Install]
+WantedBy=multi-user.target
