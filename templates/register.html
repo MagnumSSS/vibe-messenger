@@ -42,14 +42,10 @@
                 <label for="password">Password</label>
                 <input type="password" id="password" name="password" required autocomplete="new-password">
             </div>
-            {% if invite_code %}
-            <input type="hidden" name="invite_code" value="{{ invite_code }}">
-            {% else %}
             <div class="form-group">
                 <label for="invite_code">Invite Code</label>
                 <input type="text" id="invite_code" name="invite_code" placeholder="Enter invite code" autocomplete="off" value="{{ invite_code or '' }}">
             </div>
-            {% endif %}
             <button type="submit">Register</button>
         </form>
         <div class="link">

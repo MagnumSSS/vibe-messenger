@@ -37,7 +37,126 @@ DATA_DIR = os.environ.get("DATA_DIR", "./data")
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_PATH = os.path.join(DATA_DIR, "messenger.db")
 UPLOADS_DIR = os.path.join(DATA_DIR, "uploads")
+THEME_IMAGES_DIR = os.path.join(DATA_DIR, "theme_images")
 os.makedirs(UPLOADS_DIR, exist_ok=True)
+os.makedirs(THEME_IMAGES_DIR, exist_ok=True)
+
+# ========== THEME TOKENS MANIFEST (Phase 5.2) ==========
+# Data-driven theme engine: each token has key, css_var, default, type
+THEME_TOKENS = {
+    "colors": {
+        "bg": {"key": "bg", "css_var": "--bg-color", "default": "#f0f2f5", "type": "color"},
+        "panel": {"key": "panel", "css_var": "--panel-color", "default": "#ffffff", "type": "color"},
+        "header": {"key": "header", "css_var": "--header-color", "default": "#0084ff", "type": "color"},
+        "text": {"key": "text", "css_var": "--text-primary", "default": "#333333", "type": "color"},
+        "muted": {"key": "muted", "css_var": "--text-secondary", "default": "#666666", "type": "color"},
+        "accent": {"key": "accent", "css_var": "--accent-color", "default": "#0084ff", "type": "color"},
+        "btn_primary": {"key": "btn_primary", "css_var": "--btn-primary-bg", "default": "#0084ff", "type": "color"},
+        "btn_danger": {"key": "btn_danger", "css_var": "--btn-danger-bg", "default": "#dc3545", "type": "color"},
+        "bubble_sent": {"key": "bubble_sent", "css_var": "--bubble-sent-bg", "default": "#0084ff", "type": "color"},
+        "bubble_received": {"key": "bubble_received", "css_var": "--bubble-received-bg", "default": "#e4e6eb", "type": "color"},
+        "input_bg": {"key": "input_bg", "css_var": "--input-bg", "default": "#ffffff", "type": "color"},
+        "border": {"key": "border", "css_var": "--border-color", "default": "#dddddd", "type": "color"},
+        "modal_bg": {"key": "modal_bg", "css_var": "--modal-bg", "default": "#ffffff", "type": "color"},
+    },
+    "images": {
+        "header_img": {"key": "header_img", "css_var": "--header-img", "default": None, "type": "image"},
+        "wallpaper": {"key": "wallpaper", "css_var": "--wallpaper-img", "default": None, "type": "image"},
+        "bubble_img": {"key": "bubble_img", "css_var": "--bubble-img", "default": None, "type": "image"},
+    }
+}
+
+# Presets for quick theme switching
+THEME_PRESETS = {
+    "default": {
+        "colors": {
+            "bg": "#f0f2f5",
+            "panel": "#ffffff",
+            "header": "#0084ff",
+            "text": "#333333",
+            "muted": "#666666",
+            "accent": "#0084ff",
+            "btn_primary": "#0084ff",
+            "btn_danger": "#dc3545",
+            "bubble_sent": "#0084ff",
+            "bubble_received": "#e4e6eb",
+            "input_bg": "#ffffff",
+            "border": "#dddddd",
+            "modal_bg": "#ffffff",
+        },
+        "images": {}
+    },
+    "dark": {
+        "colors": {
+            "bg": "#1a1a2e",
+            "panel": "#16213e",
+            "header": "#0f3460",
+            "text": "#eaeaea",
+            "muted": "#a0a0a0",
+            "accent": "#e94560",
+            "btn_primary": "#e94560",
+            "btn_danger": "#c0392b",
+            "bubble_sent": "#0f3460",
+            "bubble_received": "#2d3436",
+            "input_bg": "#16213e",
+            "border": "#333333",
+            "modal_bg": "#16213e",
+        },
+        "images": {}
+    }
+}
+
+
+def merge_theme_with_defaults(theme_json_str):
+    """Merge user theme with defaults, handling v1->v2 migration"""
+    import json
+    try:
+        if not theme_json_str:
+            return THEME_PRESETS["default"]
+        theme = json.loads(theme_json_str)
+        # Handle v1 format (flat dict) -> v2 format (colors/images)
+        if isinstance(theme, dict) and "colors" not in theme:
+            # v1 format: {"primary": "#...", "sent": "#...", ...}
+            # Migrate to v2
+            v2_theme = {"colors": {}, "images": {}}
+            color_mapping = {
+                "primary": "accent",
+                "sent": "bubble_sent",
+                "received": "bubble_received",
+                "bg": "bg",
+            }
+            for old_key, new_key in color_mapping.items():
+                if old_key in theme:
+                    v2_theme["colors"][new_key] = theme[old_key]
+            theme = v2_theme
+        # Merge with defaults
+        result = {
+            "colors": {**THEME_PRESETS["default"]["colors"], **theme.get("colors", {})},
+            "images": {**THEME_PRESETS["default"]["images"], **theme.get("images", {})}
+        }
+        return result
+    except Exception as e:
+        print(f"Theme merge error: {e}")
+        return THEME_PRESETS["default"]
+
+
+def hex_to_rgb(hex_color):
+    """Convert hex color to RGB tuple"""
+    hex_color = hex_color.lstrip('#')
+    if len(hex_color) != 6:
+        return (51, 51, 51)  # Default dark gray
+    try:
+        return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+    except ValueError:
+        return (51, 51, 51)
+
+
+def calculate_yiq_contrast(hex_color):
+    """Calculate YIQ brightness and return appropriate text color (dark or light)"""
+    r, g, b = hex_to_rgb(hex_color)
+    yiq = (r * 299 + g * 587 + b * 114) / 1000
+    return "#000000" if yiq >= 128 else "#ffffff"
+
 
 app = FastAPI()
 app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY)
@@ -486,6 +605,121 @@ async def stream_file(file_path: str):
             if not chunk:
                 break
             yield chunk
+
+
+@app.get("/api/theme/image/{image_type}")
+async def get_theme_image(request: Request, image_type: str):
+    """Serve theme image (header_img, wallpaper, bubble_img) - requires auth"""
+    current_user = get_current_user(request)
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    valid_types = {"header_img", "wallpaper", "bubble_img"}
+    if image_type not in valid_types:
+        raise HTTPException(status_code=404, detail="Image type not found")
+    
+    # Get user's theme to find the image UUID
+    with get_db() as conn:
+        row = conn.execute("SELECT theme_json FROM users WHERE id = ?", (current_user["id"],)).fetchone()
+    
+    theme_data = merge_theme_with_defaults(row["theme_json"] if row else None)
+    image_uuid = theme_data.get("images", {}).get(image_type)
+    
+    if not image_uuid:
+        raise HTTPException(status_code=404, detail="Image not set")
+    
+    file_path = os.path.join(THEME_IMAGES_DIR, image_uuid)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Image file not found")
+    
+    # Guess mime type
+    mime_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+    
+    return StreamingResponse(
+        stream_file(file_path),
+        media_type=mime_type,
+        headers={"Content-Disposition": f'inline; filename="{image_uuid}"'}
+    )
+
+
+@app.post("/api/theme/image/{image_type}")
+async def upload_theme_image(request: Request, image_type: str, image: UploadFile = File(...)):
+    """Upload theme image (header_img, wallpaper, bubble_img) - requires auth"""
+    current_user = get_current_user(request)
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    valid_types = {"header_img", "wallpaper", "bubble_img"}
+    if image_type not in valid_types:
+        raise HTTPException(status_code=400, detail="Invalid image type")
+    
+    # Validate file
+    if not image.filename:
+        raise HTTPException(status_code=400, detail="No file provided")
+    
+    mime_type = image.content_type or mimetypes.guess_type(image.filename)[0]
+    if not mime_type or not mime_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Only image files are allowed")
+    
+    # Generate UUID filename
+    uuid_name = str(uuid.uuid4())
+    file_path = os.path.join(THEME_IMAGES_DIR, uuid_name)
+    
+    # Save file in chunks
+    async with aiofiles.open(file_path, 'wb') as out_file:
+        while True:
+            chunk = await image.read(65536)
+            if not chunk:
+                break
+            await out_file.write(chunk)
+    
+    # Update user's theme_json
+    with get_db() as conn:
+        row = conn.execute("SELECT theme_json FROM users WHERE id = ?", (current_user["id"],)).fetchone()
+        theme_data = merge_theme_with_defaults(row["theme_json"] if row else None)
+        theme_data["images"][image_type] = uuid_name
+        conn.execute("UPDATE users SET theme_json = ? WHERE id = ?", (
+            __import__('json').dumps(theme_data), current_user["id"]
+        ))
+        conn.commit()
+    
+    return JSONResponse({"success": True, "uuid": uuid_name})
+
+
+@app.delete("/api/theme/image/{image_type}")
+async def delete_theme_image(request: Request, image_type: str):
+    """Remove theme image - requires auth"""
+    current_user = get_current_user(request)
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    valid_types = {"header_img", "wallpaper", "bubble_img"}
+    if image_type not in valid_types:
+        raise HTTPException(status_code=400, detail="Invalid image type")
+    
+    with get_db() as conn:
+        row = conn.execute("SELECT theme_json FROM users WHERE id = ?", (current_user["id"],)).fetchone()
+        theme_data = merge_theme_with_defaults(row["theme_json"] if row else None)
+        
+        # Remove the image reference
+        old_uuid = theme_data.get("images", {}).get(image_type)
+        theme_data["images"][image_type] = None
+        
+        conn.execute("UPDATE users SET theme_json = ? WHERE id = ?", (
+            __import__('json').dumps(theme_data), current_user["id"]
+        ))
+        conn.commit()
+    
+    # Delete the actual file if exists
+    if old_uuid:
+        old_path = os.path.join(THEME_IMAGES_DIR, old_uuid)
+        if os.path.exists(old_path):
+            try:
+                await aiofiles.os.remove(old_path)
+            except Exception:
+                pass
+    
+    return JSONResponse({"success": True})
 
 
 @app.post("/api/send")
@@ -1050,10 +1284,23 @@ async def delete_account(request: Request):
     return JSONResponse({"success": True})
 
 
-# ========== THEME ENDPOINTS ==========
+# ========== THEME ENDPOINTS ===========
+
+@app.get("/api/theme/tokens")
+async def get_theme_tokens():
+    """Get theme token manifest for dynamic editor generation"""
+    return JSONResponse(THEME_TOKENS)
+
+
+@app.get("/api/theme/presets")
+async def get_theme_presets():
+    """Get available theme presets (default, dark, etc.)"""
+    return JSONResponse(THEME_PRESETS)
+
+
 @app.get("/api/theme")
 async def get_theme(request: Request):
-    """Get current user's theme settings"""
+    """Get current user's theme settings (v2 format with colors/images)"""
     user = get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -1061,12 +1308,14 @@ async def get_theme(request: Request):
     with get_db() as conn:
         row = conn.execute("SELECT theme_json FROM users WHERE id = ?", (user["id"],)).fetchone()
     
-    return JSONResponse({"theme_json": row["theme_json"] if row and row["theme_json"] else "{}"})
+    # Merge with defaults and return v2 format
+    theme_data = merge_theme_with_defaults(row["theme_json"] if row else None)
+    return JSONResponse(theme_data)
 
 
 @app.post("/api/theme")
 async def save_theme(request: Request, theme_json: str = Form(...)):
-    """Save theme settings for current user"""
+    """Save theme settings for current user (expects v2 format)"""
     user = get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")

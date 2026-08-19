@@ -1,41 +1,53 @@
-/* Base CSS Variables for theming */
+/* Base CSS Variables for theming - Phase 5.2 Theme Engine */
 :root {
-    --primary-color: #0084ff;
-    --primary-hover: #0073e6;
+    /* Color tokens from manifest */
     --bg-color: #f0f2f5;
-    --sidebar-bg: #ffffff;
-    --chat-bg: #ffffff;
-    --message-sent-bg: #0084ff;
-    --message-sent-text: #ffffff;
-    --message-received-bg: #e4e6eb;
-    --message-received-text: #333333;
+    --panel-color: #ffffff;
+    --header-color: #0084ff;
     --text-primary: #333333;
     --text-secondary: #666666;
+    --accent-color: #0084ff;
+    --btn-primary-bg: #0084ff;
+    --btn-danger-bg: #dc3545;
+    --bubble-sent-bg: #0084ff;
+    --bubble-received-bg: #e4e6eb;
+    --input-bg: #ffffff;
     --border-color: #dddddd;
-    --hover-bg: #f5f5f5;
-    --active-bg: #e6f2ff;
-    --chip-bg: #e4e6eb;
-    --admin-badge-bg: #ffc107;
-    --admin-badge-text: #333333;
+    --modal-bg: #ffffff;
+    
+    /* Image tokens from manifest */
+    --header-img: none;
+    --wallpaper-img: none;
+    --bubble-img: none;
+    
+    /* Auto-calculated text colors for contrast (YIQ) */
+    --bubble-sent-text: #ffffff;
+    --bubble-received-text: #333333;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 body { 
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
-    background: var(--bg-color); 
+    background: var(--bg-color);
+    background-image: var(--wallpaper-img);
+    background-size: cover;
+    background-attachment: fixed;
     height: 100vh; 
     display: flex; 
     flex-direction: column; 
 }
 
 header { 
-    background: var(--primary-color); 
+    background: var(--header-color);
     color: white; 
     padding: 1rem; 
     display: flex; 
     justify-content: space-between; 
-    align-items: center; 
+    align-items: center;
+    background-image: var(--header-img);
+    background-size: cover;
+    background-position: center;
 }
 
 header h1 { font-size: 1.25rem; }
@@ -60,7 +72,7 @@ header h1 { font-size: 1.25rem; }
 
 .sidebar { 
     width: 280px; 
-    background: var(--sidebar-bg); 
+    background: var(--panel-color); 
     border-right: 1px solid var(--border-color); 
     overflow-y: auto; 
     display: flex; 
@@ -69,7 +81,7 @@ header h1 { font-size: 1.25rem; }
 
 .sidebar h2 { 
     padding: 1rem; 
-    border-bottom: 1px solid #eee; 
+    border-bottom: 1px solid var(--border-color); 
     font-size: 1rem; 
     color: var(--text-secondary); 
 }
@@ -86,8 +98,8 @@ header h1 { font-size: 1.25rem; }
     gap: 0.75rem;
 }
 
-.user-item:hover { background: var(--hover-bg); }
-.user-item.active { background: var(--active-bg); }
+.user-item:hover { background: var(--hover-bg, #f5f5f5); }
+.user-item.active { background: var(--active-bg, #e6f2ff); }
 
 .user-avatar {
     width: 40px;
@@ -124,7 +136,7 @@ header h1 { font-size: 1.25rem; }
     flex: 1; 
     display: flex; 
     flex-direction: column; 
-    background: var(--chat-bg); 
+    background: var(--panel-color); 
 }
 
 .chat-header { 
@@ -161,14 +173,14 @@ header h1 { font-size: 1.25rem; }
 
 .message.sent { 
     align-self: flex-end; 
-    background: var(--message-sent-bg); 
-    color: var(--message-sent-text); 
+    background: var(--bubble-sent-bg); 
+    color: var(--bubble-sent-text); 
 }
 
 .message.received { 
     align-self: flex-start; 
-    background: var(--message-received-bg); 
-    color: var(--message-received-text); 
+    background: var(--bubble-received-bg); 
+    color: var(--bubble-received-text); 
     display: flex;
     align-items: flex-start;
     gap: 0.5rem;
@@ -238,7 +250,7 @@ header h1 { font-size: 1.25rem; }
 }
 
 .chip { 
-    background: var(--chip-bg); 
+    background: var(--input-bg, #e4e6eb); 
     padding: 0.25rem 0.5rem; 
     border-radius: 12px; 
     font-size: 0.85rem; 
@@ -262,15 +274,16 @@ header h1 { font-size: 1.25rem; }
     border-radius: 20px; 
     font-size: 1rem; 
     outline: none; 
+    background: var(--input-bg);
 }
 
 .input-area input:focus { 
-    border-color: var(--primary-color); 
+    border-color: var(--accent-color); 
 }
 
 .input-area button { 
     padding: 0.75rem 1.5rem; 
-    background: var(--primary-color); 
+    background: var(--btn-primary-bg); 
     color: white; 
     border: none; 
     border-radius: 20px; 
@@ -279,7 +292,8 @@ header h1 { font-size: 1.25rem; }
 }
 
 .input-area button:hover { 
-    background: var(--primary-hover); 
+    background: var(--btn-primary-bg); 
+    filter: brightness(0.9);
 }
 
 .input-area button:disabled { 
@@ -288,7 +302,7 @@ header h1 { font-size: 1.25rem; }
 }
 
 .attach-btn { 
-    background: var(--chip-bg); 
+    background: var(--input-bg, #e4e6eb); 
     color: var(--text-primary); 
     border: none; 
     padding: 0.75rem; 
