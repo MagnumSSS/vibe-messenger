@@ -9,12 +9,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import quote
 
+
 import aiofiles
 import aiofiles.os
 from fastapi import FastAPI, Request, Form, Depends, HTTPException, status, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
+from fastapi.staticfiles import StaticFiles 
 
 # Config from env
 SECRET_KEY = os.environ.get("SECRET_KEY")
@@ -919,7 +921,13 @@ async def unblock_user(request: Request, target_user_id: int = Form(...)):
     
     return JSONResponse({"success": True})
 
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
+<<<<<<< Updated upstream
+=======
+
+
+>>>>>>> Stashed changes
 # ========== PROFILE ENDPOINTS ==========
 @app.get("/api/profile")
 async def get_profile(request: Request):
@@ -1127,7 +1135,10 @@ async def delete_chat_endpoint(request: Request, recipient_id: int = Form(...)):
     return JSONResponse({"success": True})
 
 
+<<<<<<< Updated upstream
 
+=======
+>>>>>>> Stashed changes
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
