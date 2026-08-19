@@ -20,9 +20,12 @@
     --wallpaper-img: none;
     --bubble-img: none;
     
-    /* Auto-calculated text colors for contrast (YIQ) */
+    /* Auto-calculated text colors for contrast (YIQ) - updated dynamically */
     --bubble-sent-text: #ffffff;
     --bubble-received-text: #333333;
+    --header-text: #ffffff;
+    --btn-primary-text: #ffffff;
+    --btn-danger-text: #ffffff;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -40,7 +43,7 @@ body {
 
 header { 
     background: var(--header-color);
-    color: white; 
+    color: var(--header-text, white); 
     padding: 1rem; 
     display: flex; 
     justify-content: space-between; 
@@ -50,12 +53,12 @@ header {
     background-position: center;
 }
 
-header h1 { font-size: 1.25rem; }
+header h1 { font-size: 1.25rem; color: var(--header-text, white); }
 
 .logout-btn, .settings-btn, .delete-chat-btn, .profile-btn { 
     background: rgba(255,255,255,0.2); 
     border: none; 
-    color: white; 
+    color: var(--header-text, white); 
     padding: 0.5rem 1rem; 
     border-radius: 4px; 
     cursor: pointer; 
@@ -284,7 +287,7 @@ header h1 { font-size: 1.25rem; }
 .input-area button { 
     padding: 0.75rem 1.5rem; 
     background: var(--btn-primary-bg); 
-    color: white; 
+    color: var(--btn-primary-text, white); 
     border: none; 
     border-radius: 20px; 
     cursor: pointer; 
@@ -538,8 +541,8 @@ header h1 { font-size: 1.25rem; }
 }
 
 .delete-confirm-btn {
-    background: #dc3545;
-    color: white;
+    background: var(--btn-danger-bg, #dc3545);
+    color: var(--btn-danger-text, white);
     border: none;
     padding: 0.75rem 1.5rem;
     border-radius: 8px;
@@ -547,7 +550,8 @@ header h1 { font-size: 1.25rem; }
 }
 
 .delete-confirm-btn:hover {
-    background: #c82333;
+    background: var(--btn-danger-bg, #c82333);
+    filter: brightness(0.9);
 }
 
 /* Delete account modal */
