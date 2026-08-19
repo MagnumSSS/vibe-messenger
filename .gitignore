@@ -1,1 +1,19 @@
-(static/style.css is just a source file, no build artifacts, dependencies, or temp files in the changes)
+.env
+venv/
+.venv/
+*.db
+data/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+.DS_Store
+Thumbs.db
+node_modules/
+dist/
+build/
+*.egg-info/
+.vscode/
+.idea/
+*.swp
