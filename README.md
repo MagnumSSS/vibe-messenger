@@ -216,6 +216,7 @@ BACKUP_DIR=/var/lib/messenger/backups
 | `SECRET_KEY` | Secret key for session signing. **Must be set in production!** If not set, a fixed development key is used with a warning (sessions persist across restarts but this is insecure). |
 | `FIRST_USER_ADMIN` | If `1`, first registered user becomes admin. Set to `0` after initial setup. |
 | `MAX_UPLOAD_BYTES` | Maximum file upload size in bytes (default: 10MB) |
+| `THEME_IMAGE_MAX_BYTES` | Maximum theme image (wallpaper/header) upload size in bytes (default: ~1MB) |
 | `PORT` | Server port |
 | `DATA_DIR` | Directory for database and uploads |
 | `BACKUP_DIR` | Directory for backups |
@@ -297,3 +298,5 @@ Private use only.
 - phase 5.2d2 complete
 
 - phase 5.2d3 complete
+
+- phase 5.2e complete

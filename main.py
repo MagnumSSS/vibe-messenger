@@ -31,6 +31,7 @@ if SECRET_KEY is None:
     print("=" * 80, file=sys.stderr)
 FIRST_USER_ADMIN = os.environ.get("FIRST_USER_ADMIN", "1") == "1"
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", "10485760"))  # 10MB default
+THEME_IMAGE_MAX_BYTES = int(os.environ.get("THEME_IMAGE_MAX_BYTES", str(1024 * 1024)))  # ~1MB for theme images
 PORT = int(os.environ.get("PORT", "8000"))
 DATA_DIR = os.environ.get("DATA_DIR", "./data")
 
@@ -619,8 +620,8 @@ async def get_theme_image(request: Request, image_type: str):
     current_user = get_current_user(request)
     if not current_user:
         raise HTTPException(status_code=401, detail="Unauthorized")
-    
-    valid_types = {"header_img", "wallpaper", "bubble_img"}
+
+    valid_types = set(THEME_TOKENS.get("images", {}).keys())
     if image_type not in valid_types:
         raise HTTPException(status_code=404, detail="Image type not found")
     
@@ -654,41 +655,59 @@ async def upload_theme_image(request: Request, image_type: str, image: UploadFil
     current_user = get_current_user(request)
     if not current_user:
         raise HTTPException(status_code=401, detail="Unauthorized")
-    
-    valid_types = {"header_img", "wallpaper", "bubble_img"}
+
+    valid_types = set(THEME_TOKENS.get("images", {}).keys())
     if image_type not in valid_types:
         raise HTTPException(status_code=400, detail="Invalid image type")
-    
+
     # Validate file
     if not image.filename:
         raise HTTPException(status_code=400, detail="No file provided")
-    
+
     mime_type = image.content_type or mimetypes.guess_type(image.filename)[0]
     if not mime_type or not mime_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Only image files are allowed")
-    
-    # Generate UUID filename
-    uuid_name = str(uuid.uuid4())
+
+    # Generate UUID filename (keep extension so mimetypes can sniff on serve)
+    uuid_name = f"{uuid.uuid4().hex}{Path(image.filename).suffix.lower()}"
     file_path = os.path.join(THEME_IMAGES_DIR, uuid_name)
-    
-    # Save file in chunks
+
+    # Save file in chunks with size limit
+    total_bytes = 0
     async with aiofiles.open(file_path, 'wb') as out_file:
         while True:
             chunk = await image.read(65536)
             if not chunk:
                 break
+            total_bytes += len(chunk)
+            if total_bytes > THEME_IMAGE_MAX_BYTES:
+                await out_file.close()
+                await aiofiles.os.remove(file_path)
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Image exceeds size limit ({THEME_IMAGE_MAX_BYTES // 1024} KB)"
+                )
             await out_file.write(chunk)
-    
-    # Update user's theme_json
+
+    # Update user's theme_json, replacing any previous image of this type
     with get_db() as conn:
         row = conn.execute("SELECT theme_json FROM users WHERE id = ?", (current_user["id"],)).fetchone()
         theme_data = merge_theme_with_defaults(row["theme_json"] if row else None)
+        old_uuid = theme_data.get("images", {}).get(image_type)
         theme_data["images"][image_type] = uuid_name
         conn.execute("UPDATE users SET theme_json = ? WHERE id = ?", (
             __import__('json').dumps(theme_data), current_user["id"]
         ))
         conn.commit()
-    
+
+    if old_uuid and old_uuid != uuid_name:
+        old_path = os.path.join(THEME_IMAGES_DIR, old_uuid)
+        if os.path.exists(old_path):
+            try:
+                await aiofiles.os.remove(old_path)
+            except Exception:
+                pass
+
     return JSONResponse({"success": True, "uuid": uuid_name})
 
 
@@ -698,15 +717,15 @@ async def delete_theme_image(request: Request, image_type: str):
     current_user = get_current_user(request)
     if not current_user:
         raise HTTPException(status_code=401, detail="Unauthorized")
-    
-    valid_types = {"header_img", "wallpaper", "bubble_img"}
+
+    valid_types = set(THEME_TOKENS.get("images", {}).keys())
     if image_type not in valid_types:
         raise HTTPException(status_code=400, detail="Invalid image type")
-    
+
     with get_db() as conn:
         row = conn.execute("SELECT theme_json FROM users WHERE id = ?", (current_user["id"],)).fetchone()
         theme_data = merge_theme_with_defaults(row["theme_json"] if row else None)
-        
+
         # Remove the image reference
         old_uuid = theme_data.get("images", {}).get(image_type)
         theme_data["images"][image_type] = None

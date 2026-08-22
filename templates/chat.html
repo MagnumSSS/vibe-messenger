@@ -109,23 +109,16 @@
             <h2>Настройки темы</h2>
             <div class="settings-section">
                 <h3>Цвета</h3>
-                <div class="color-picker-row">
-                    <label>Основной цвет</label>
-                    <input type="color" id="primaryColorPicker" value="#0084ff">
-                </div>
-                <div class="color-picker-row">
-                    <label>Цвет отправленных</label>
-                    <input type="color" id="sentColorPicker" value="#0084ff">
-                </div>
-                <div class="color-picker-row">
-                    <label>Цвет полученных</label>
-                    <input type="color" id="receivedColorPicker" value="#e4e6eb">
-                </div>
-                <div class="color-picker-row">
-                    <label>Фон</label>
-                    <input type="color" id="bgColorPicker" value="#f0f2f5">
-                </div>
+                <div id="colorPickers"></div>
                 <button class="reset-theme-btn" id="resetThemeBtn">Сбросить тему</button>
+            </div>
+            <div class="settings-section">
+                <h3>Изображения</h3>
+                <div id="imageSlots"></div>
+            </div>
+            <div class="settings-section">
+                <h3>Пресеты</h3>
+                <div class="preset-row" id="presetButtons"></div>
             </div>
             <button class="profile-save-btn" id="saveThemeBtn">Сохранить тему</button>
         </div>
@@ -217,11 +210,9 @@
         
         // Settings modal elements
         const settingsModal = document.getElementById('settingsModal');
-        const settingsBtn = document.getElementById('settingsBtn');
-        const primaryColorPicker = document.getElementById('primaryColorPicker');
-        const sentColorPicker = document.getElementById('sentColorPicker');
-        const receivedColorPicker = document.getElementById('receivedColorPicker');
-        const bgColorPicker = document.getElementById('bgColorPicker');
+        const colorPickers = document.getElementById('colorPickers');
+        const imageSlots = document.getElementById('imageSlots');
+        const presetButtons = document.getElementById('presetButtons');
         const resetThemeBtn = document.getElementById('resetThemeBtn');
         const saveThemeBtn = document.getElementById('saveThemeBtn');
         
@@ -261,25 +252,66 @@
                 console.error('Failed to parse theme:', e);
             }
         }
-        
-        // Apply theme object directly
+
+        // Normalize any theme shape (legacy v1 {primary,sent,received,bg} or v2 {colors,images}) to v2
+        function normalizeTheme(theme) {
+            if (!theme || typeof theme !== 'object') return { colors: {}, images: {} };
+            if (theme.colors || theme.images) {
+                return {
+                    colors: Object.assign({}, theme.colors),
+                    images: Object.assign({}, theme.images)
+                };
+            }
+            const colors = {};
+            if (theme.primary) colors.accent = theme.primary;
+            if (theme.sent) colors.bubble_sent = theme.sent;
+            if (theme.received) colors.bubble_received = theme.received;
+            if (theme.bg) colors.bg = theme.bg;
+            return { colors: colors, images: {} };
+        }
+
+        // Fallback values per color token (mirrors THEME_TOKENS defaults / CSS :root)
+        const FALLBACK_COLORS = {
+            bg: '#f0f2f5', panel: '#ffffff', header: '#0084ff', text: '#333333',
+            muted: '#666666', accent: '#0084ff', btn_primary: '#0084ff', btn_danger: '#dc3545',
+            bubble_sent: '#0084ff', bubble_received: '#e4e6eb', input_bg: '#ffffff',
+            border: '#dddddd', modal_bg: '#ffffff', hover: '#f5f5f5', active: '#e6f2ff'
+        };
+        const TOKEN_CSS_VARS = {
+            bg: '--bg-color', panel: '--panel-color', header: '--header-color', text: '--text-primary',
+            muted: '--text-secondary', accent: '--accent-color', btn_primary: '--btn-primary-bg',
+            btn_danger: '--btn-danger-bg', bubble_sent: '--bubble-sent-bg', bubble_received: '--bubble-received-bg',
+            input_bg: '--input-bg', border: '--border-color', modal_bg: '--modal-bg', hover: '--hover-bg', active: '--active-bg'
+        };
+
+        // Apply theme object directly (v2 data-driven; keeps legacy vars for older consumers)
         function applyThemeDirect(theme) {
             if (!theme || typeof theme !== 'object') return;
-            const primary = theme.primary || defaultTheme.primary;
-            const sent = theme.sent || defaultTheme.sent;
-            const received = theme.received || defaultTheme.received;
-            const bg = theme.bg || defaultTheme.bg;
-            document.documentElement.style.setProperty('--primary-color', primary);
-            document.documentElement.style.setProperty('--accent-color', primary);
-            document.documentElement.style.setProperty('--header-color', primary);
-            document.documentElement.style.setProperty('--btn-primary-bg', primary);
-            document.documentElement.style.setProperty('--bubble-sent-bg', sent);
-            document.documentElement.style.setProperty('--bubble-received-bg', received);
-            document.documentElement.style.setProperty('--message-sent-bg', sent);
-            document.documentElement.style.setProperty('--message-received-bg', received);
-            document.documentElement.style.setProperty('--bg-color', bg);
-            document.documentElement.style.setProperty('--border-color', deriveBorderColor(bg));
+            const t = normalizeTheme(theme);
+            const s = document.documentElement.style;
+            for (const key of Object.keys(FALLBACK_COLORS)) {
+                const val = t.colors[key] || FALLBACK_COLORS[key];
+                const cssVar = TOKEN_CSS_VARS[key];
+                if (cssVar) s.setProperty(cssVar, val);
+            }
+            // legacy aliases
+            s.setProperty('--primary-color', t.colors.accent || FALLBACK_COLORS.accent);
+            s.setProperty('--btn-primary-bg', t.colors.btn_primary || FALLBACK_COLORS.btn_primary);
+            s.setProperty('--message-sent-bg', t.colors.bubble_sent || FALLBACK_COLORS.bubble_sent);
+            s.setProperty('--message-received-bg', t.colors.bubble_received || FALLBACK_COLORS.bubble_received);
+            // image tokens -> served only to authorized users via API
+            for (const imgKey of ['header_img', 'wallpaper', 'bubble_img']) {
+                s.setProperty(`--${imgKeyToCss(imgKey)}`, t.images[imgKey] ? `url('/api/theme/image/${imgKey}')` : 'none');
+            }
+            // derived tokens
+            const bg = t.colors.bg || FALLBACK_COLORS.bg;
+            s.setProperty('--border-color', deriveBorderColor(bg));
+            s.setProperty('--header-text', contrastText(t.colors.header || FALLBACK_COLORS.header));
             applyContrast();
+        }
+
+        function imgKeyToCss(key) {
+            return key === 'wallpaper' ? 'wallpaper-img' : (key === 'header_img' ? 'header-img' : 'bubble-img');
         }
         
         // YIQ-based contrast: returns dark or light text color for a given hex background
@@ -349,29 +381,211 @@
             }
         }
         
-        // Load theme data
+        // ---- Data-driven theme editor (Phase 5.2e) ----
+        const THEME_IMAGE_LIMIT = 1024 * 1024; // ~1MB, mirrors THEME_IMAGE_MAX_BYTES on server
+        let themeManifest = null;
+        let themePresets = null;
+        let currentTheme = { colors: {}, images: {} };
+        const TOKEN_LABELS = {
+            bg: 'Фон', panel: 'Панели', header: 'Шапка', text: 'Текст', muted: 'Второстепенный текст',
+            accent: 'Акцент', btn_primary: 'Основная кнопка', btn_danger: 'Опасная кнопка',
+            bubble_sent: 'Пузырь отправленные', bubble_received: 'Пузырь полученные',
+            input_bg: 'Поля ввода', border: 'Границы', modal_bg: 'Модалки',
+            hover: 'Hover контакта', active: 'Выбранный контакт',
+            header_img: 'Картинка шапки', wallpaper: 'Обои чата', bubble_img: 'Картинка пузырей'
+        };
+        const PRESET_LABELS = { default: 'Дефолт', dark: 'Тёмная' };
+
+        async function fetchJson(url, options) {
+            const res = await fetch(url, options);
+            if (!res.ok) throw new Error(`${url} -> ${res.status}`);
+            return res.json();
+        }
+
+        // Load manifest + presets + current theme and build the editor from the manifest
         async function loadTheme() {
             try {
-                const res = await fetch('/api/theme');
-                if (res.ok) {
-                    const data = await res.json();
-                    if (data.theme_json) {
-                        let theme;
-                        try {
-                            theme = typeof data.theme_json === 'string' ? JSON.parse(data.theme_json) : data.theme_json;
-                        } catch (e) {
-                            console.error('Failed to parse theme from API:', e);
-                            theme = defaultTheme;
-                        }
-                        primaryColorPicker.value = theme.primary || defaultTheme.primary;
-                        sentColorPicker.value = theme.sent || defaultTheme.sent;
-                        receivedColorPicker.value = theme.received || defaultTheme.received;
-                        bgColorPicker.value = theme.bg || defaultTheme.bg;
-                    }
+                if (!themeManifest || !themePresets) {
+                    [themeManifest, themePresets] = await Promise.all([
+                        fetchJson('/api/theme/tokens'),
+                        fetchJson('/api/theme/presets')
+                    ]);
                 }
+                currentTheme = await fetchJson('/api/theme');
+                renderEditor();
             } catch (e) {
-                console.error('Failed to load theme:', e);
+                console.error('Failed to load theme editor data:', e);
             }
+        }
+
+        function renderEditor() {
+            renderColorPickers();
+            renderImageSlots();
+            renderPresetButtons();
+            applyEditorContrast();
+        }
+
+        // One color input per color token of the manifest - no hardcoded control list
+        function renderColorPickers() {
+            colorPickers.innerHTML = '';
+            const colorTokens = (themeManifest && themeManifest.colors) || {};
+            for (const key of Object.keys(colorTokens)) {
+                const row = document.createElement('div');
+                row.className = 'color-picker-row';
+                const label = document.createElement('label');
+                label.textContent = TOKEN_LABELS[key] || key;
+                const input = document.createElement('input');
+                input.type = 'color';
+                input.dataset.tokenKey = key;
+                input.value = currentTheme.colors[key] || FALLBACK_COLORS[key] || '#000000';
+                input.addEventListener('input', () => {
+                    currentTheme.colors[key] = input.value;
+                    applyThemeDirect(currentTheme);
+                    applyEditorContrast();
+                });
+                row.appendChild(label);
+                row.appendChild(input);
+                colorPickers.appendChild(row);
+            }
+        }
+
+        // One upload/remove slot per image token of the manifest
+        function renderImageSlots() {
+            imageSlots.innerHTML = '';
+            const imageTokens = (themeManifest && themeManifest.images) || {};
+            for (const key of Object.keys(imageTokens)) {
+                const slot = document.createElement('div');
+                slot.className = 'image-slot';
+
+                const label = document.createElement('span');
+                label.className = 'image-slot-label';
+                label.textContent = TOKEN_LABELS[key] || key;
+                slot.appendChild(label);
+
+                const status = document.createElement('span');
+                status.className = 'image-slot-status';
+                status.textContent = currentTheme.images[key] ? 'установлено' : 'не задано';
+                slot.appendChild(status);
+
+                const fileInput = document.createElement('input');
+                fileInput.type = 'file';
+                fileInput.accept = 'image/*';
+                fileInput.style.display = 'none';
+                fileInput.addEventListener('change', async () => {
+                    const file = fileInput.files[0];
+                    fileInput.value = '';
+                    if (!file) return;
+                    if (file.size > THEME_IMAGE_LIMIT) {
+                        alert(`Изображение больше 1 МБ`);
+                        return;
+                    }
+                    const formData = new FormData();
+                    formData.append('image', file);
+                    try {
+                        await fetchJson(`/api/theme/image/${key}`, { method: 'POST', body: formData });
+                        await refreshCurrentTheme();
+                    } catch (err) {
+                        console.error('Theme image upload failed:', err);
+                        alert('Не удалось загрузить изображение');
+                    }
+                });
+
+                const uploadBtn = document.createElement('button');
+                uploadBtn.className = 'slot-btn';
+                uploadBtn.textContent = 'Загрузить';
+                uploadBtn.addEventListener('click', () => fileInput.click());
+
+                const removeBtn = document.createElement('button');
+                removeBtn.className = 'slot-btn';
+                removeBtn.textContent = 'Удалить';
+                removeBtn.disabled = !currentTheme.images[key];
+                removeBtn.addEventListener('click', async () => {
+                    try {
+                        await fetchJson(`/api/theme/image/${key}`, { method: 'DELETE' });
+                        await refreshCurrentTheme();
+                    } catch (err) {
+                        console.error('Theme image removal failed:', err);
+                        alert('Не удалось удалить изображение');
+                    }
+                });
+
+                slot.appendChild(fileInput);
+                slot.appendChild(uploadBtn);
+                slot.appendChild(removeBtn);
+                imageSlots.appendChild(slot);
+            }
+        }
+
+        // Preset buttons generated from server presets; one click = live + saved
+        function renderPresetButtons() {
+            presetButtons.innerHTML = '';
+            const presets = themePresets || {};
+            for (const name of Object.keys(presets)) {
+                const btn = document.createElement('button');
+                btn.className = 'preset-btn';
+                btn.textContent = PRESET_LABELS[name] || name;
+                btn.addEventListener('click', async () => {
+                    currentTheme = normalizeTheme(JSON.parse(JSON.stringify(presets[name])));
+                    applyThemeDirect(currentTheme);
+                    syncEditorInputs();
+                    try {
+                        await saveThemeToServer(currentTheme);
+                    } catch (err) {
+                        console.error('Failed to save preset:', err);
+                        alert('Не удалось сохранить пресет');
+                    }
+                    applyEditorContrast();
+                });
+                presetButtons.appendChild(btn);
+            }
+        }
+
+        function syncEditorInputs() {
+            colorPickers.querySelectorAll('input[type="color"]').forEach(input => {
+                const key = input.dataset.tokenKey;
+                input.value = currentTheme.colors[key] || FALLBACK_COLORS[key] || '#000000';
+            });
+        }
+
+        // Re-sync theme (incl. images) from server on page load so everything survives re-login
+        (async () => {
+            try {
+                currentTheme = normalizeTheme(await fetchJson('/api/theme'));
+                applyThemeDirect(currentTheme);
+            } catch (e) {
+                console.error('Failed to re-sync theme:', e);
+            }
+        })();
+
+        async function refreshCurrentTheme() {
+            currentTheme = normalizeTheme(await fetchJson('/api/theme'));
+            applyThemeDirect(currentTheme);
+            renderEditor();
+        }
+
+        async function saveThemeToServer(theme) {
+            return fetchJson('/api/theme', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: new URLSearchParams({ theme_json: JSON.stringify(theme) }).toString()
+            });
+        }
+
+        // Self-defense: autocontrast text + visible border on every button in the editor modal
+        function applyEditorContrast() {
+            settingsModal.querySelectorAll('button').forEach(btn => {
+                if (btn.disabled) return;
+                const bg = getComputedStyle(btn).backgroundColor;
+                btn.style.color = contrastText(rgbToHex(bg));
+                btn.style.border = '1px solid var(--border-color)';
+            });
+        }
+
+        // Convert computed "rgb(r, g, b)" to hex for contrastText
+        function rgbToHex(rgbStr) {
+            const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(rgbStr || '');
+            if (!m) return '#dddddd';
+            return '#' + m.slice(1).map(n => parseInt(n).toString(16).padStart(2, '0')).join('');
         }
         
         // Initialize event listeners after DOM is ready
@@ -496,34 +710,19 @@
                 }
             });
             
-            // Reset theme
+            // Reset theme (live preview of defaults, not persisted until Save)
             resetThemeBtn.addEventListener('click', () => {
-                primaryColorPicker.value = defaultTheme.primary;
-                sentColorPicker.value = defaultTheme.sent;
-                receivedColorPicker.value = defaultTheme.received;
-                bgColorPicker.value = defaultTheme.bg;
+                currentTheme.colors = Object.assign({}, (themePresets && themePresets.default.colors) || FALLBACK_COLORS);
+                applyThemeDirect(currentTheme);
+                syncEditorInputs();
+                applyEditorContrast();
             });
-            
-            // Save theme
+
+            // Save theme: persist the full v2 theme collected by the editor
             saveThemeBtn.addEventListener('click', async () => {
-                const theme = {
-                    primary: primaryColorPicker.value,
-                    sent: sentColorPicker.value,
-                    received: receivedColorPicker.value,
-                    bg: bgColorPicker.value
-                };
-                
-                const formData = new FormData();
-                formData.append('theme_json', JSON.stringify(theme));
-                
                 try {
-                    const res = await fetch('/api/theme', { method: 'POST', body: formData });
-                    if (res.ok) {
-                        applyTheme(JSON.stringify(theme));
-                        settingsModal.classList.remove('active');
-                    } else {
-                        alert('Failed to save theme');
-                    }
+                    await saveThemeToServer(currentTheme);
+                    settingsModal.classList.remove('active');
                 } catch (err) {
                     console.error('Save theme error:', err);
                     alert('Failed to save theme');
