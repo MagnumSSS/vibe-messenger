@@ -58,8 +58,31 @@
                 </div>
             </div>
         </div>
+
+        <!-- Theme Drawer (Phase 5.2g): flex child of .main so it squeezes the messenger area -->
+        <aside class="theme-drawer" id="themeDrawer">
+            <div class="theme-drawer-header">
+                <h2>Настройки темы</h2>
+                <button class="slot-btn theme-drawer-close" id="themeDrawerClose" title="Закрыть">&times;</button>
+            </div>
+            <div class="theme-drawer-body">
+                <div class="settings-section">
+                    <h3>Цвета</h3>
+                    <div id="colorPickers"></div>
+                    <button class="reset-theme-btn" id="resetThemeBtn">Сбросить тему</button>
+                </div>
+                <div class="settings-section">
+                    <h3>Изображения</h3>
+                    <div id="imageSlots"></div>
+                </div>
+                <div class="settings-section">
+                    <h3>Пресеты</h3>
+                    <div class="preset-row" id="presetButtons"></div>
+                </div>
+            </div>
+        </aside>
     </div>
-    
+
     <!-- Image Modal -->
     <div class="modal" id="imageModal">
         <div class="modal-content">
@@ -100,27 +123,6 @@
             <p id="otherProfileUsername" style="color: #666; margin: 0.5rem 0;"></p>
             <p id="otherProfileBio" style="color: #444; margin-top: 1rem; font-style: italic;"></p>
             <button class="profile-save-btn" id="closeOtherProfileBtn" style="margin-top: 1rem;">Закрыть</button>
-        </div>
-    </div>
-    
-    <!-- Settings Modal (RGB Theme) -->
-    <div class="modal" id="settingsModal">
-        <div class="settings-modal-content">
-            <h2>Настройки темы</h2>
-            <div class="settings-section">
-                <h3>Цвета</h3>
-                <div id="colorPickers"></div>
-                <button class="reset-theme-btn" id="resetThemeBtn">Сбросить тему</button>
-            </div>
-            <div class="settings-section">
-                <h3>Изображения</h3>
-                <div id="imageSlots"></div>
-            </div>
-            <div class="settings-section">
-                <h3>Пресеты</h3>
-                <div class="preset-row" id="presetButtons"></div>
-            </div>
-            <button class="profile-save-btn" id="saveThemeBtn">Сохранить тему</button>
         </div>
     </div>
     
@@ -208,13 +210,13 @@
         const otherProfileBio = document.getElementById('otherProfileBio');
         const closeOtherProfileBtn = document.getElementById('closeOtherProfileBtn');
         
-        // Settings modal elements
-        const settingsModal = document.getElementById('settingsModal');
+        // Theme drawer elements (Phase 5.2g)
+        const themeDrawer = document.getElementById('themeDrawer');
+        const themeDrawerClose = document.getElementById('themeDrawerClose');
         const colorPickers = document.getElementById('colorPickers');
         const imageSlots = document.getElementById('imageSlots');
         const presetButtons = document.getElementById('presetButtons');
         const resetThemeBtn = document.getElementById('resetThemeBtn');
-        const saveThemeBtn = document.getElementById('saveThemeBtn');
         
         // Delete chat modal
         const deleteChatModal = document.getElementById('deleteChatModal');
@@ -441,6 +443,7 @@
                 input.addEventListener('input', () => {
                     currentTheme.colors[key] = input.value;
                     applyThemeDirect(currentTheme);
+                    scheduleThemeSave();
                     applyEditorContrast();
                 });
                 row.appendChild(label);
@@ -524,16 +527,11 @@
                 const btn = document.createElement('button');
                 btn.className = 'preset-btn';
                 btn.textContent = PRESET_LABELS[name] || name;
-                btn.addEventListener('click', async () => {
+                btn.addEventListener('click', () => {
                     currentTheme = normalizeTheme(JSON.parse(JSON.stringify(presets[name])));
                     applyThemeDirect(currentTheme);
                     syncEditorInputs();
-                    try {
-                        await saveThemeToServer(currentTheme);
-                    } catch (err) {
-                        console.error('Failed to save preset:', err);
-                        alert('Не удалось сохранить пресет');
-                    }
+                    scheduleThemeSave();
                     applyEditorContrast();
                 });
                 presetButtons.appendChild(btn);
@@ -571,9 +569,18 @@
             });
         }
 
-        // Self-defense: autocontrast text + visible border on every button in the editor modal
+        // Debounced autosave (~600ms after the last change -> one POST /api/theme)
+        let themeSaveTimer = null;
+        function scheduleThemeSave() {
+            clearTimeout(themeSaveTimer);
+            themeSaveTimer = setTimeout(() => {
+                saveThemeToServer(currentTheme).catch(err => console.error('Theme autosave failed:', err));
+            }, 600);
+        }
+
+        // Self-defense: autocontrast text + visible border on every button in the theme drawer
         function applyEditorContrast() {
-            settingsModal.querySelectorAll('button').forEach(btn => {
+            themeDrawer.querySelectorAll('button').forEach(btn => {
                 if (btn.disabled) return;
                 const bg = getComputedStyle(btn).backgroundColor;
                 btn.style.color = contrastText(rgbToHex(bg));
@@ -597,23 +604,23 @@
                 deleteAccountConfirm.value = '';
             });
             
-            // Open settings modal
+            // Open/close theme drawer (toggle, state not persisted)
             settingsBtn.addEventListener('click', async () => {
-                await loadTheme();
-                settingsModal.classList.add('active');
+                if (!themeDrawer.classList.contains('open')) {
+                    await loadTheme();
+                }
+                themeDrawer.classList.toggle('open');
+                applyEditorContrast();
+            });
+
+            themeDrawerClose.addEventListener('click', () => {
+                themeDrawer.classList.remove('open');
             });
             
             // Close profile modal when clicking outside
             profileModal.addEventListener('click', (e) => {
                 if (e.target === profileModal) {
                     profileModal.classList.remove('active');
-                }
-            });
-            
-            // Close settings modal when clicking outside
-            settingsModal.addEventListener('click', (e) => {
-                if (e.target === settingsModal) {
-                    settingsModal.classList.remove('active');
                 }
             });
             
@@ -710,23 +717,13 @@
                 }
             });
             
-            // Reset theme (live preview of defaults, not persisted until Save)
+            // Reset theme: live apply defaults, then autosave
             resetThemeBtn.addEventListener('click', () => {
                 currentTheme.colors = Object.assign({}, (themePresets && themePresets.default.colors) || FALLBACK_COLORS);
                 applyThemeDirect(currentTheme);
                 syncEditorInputs();
+                scheduleThemeSave();
                 applyEditorContrast();
-            });
-
-            // Save theme: persist the full v2 theme collected by the editor
-            saveThemeBtn.addEventListener('click', async () => {
-                try {
-                    await saveThemeToServer(currentTheme);
-                    settingsModal.classList.remove('active');
-                } catch (err) {
-                    console.error('Save theme error:', err);
-                    alert('Failed to save theme');
-                }
             });
         });
 

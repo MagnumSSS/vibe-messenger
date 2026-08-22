@@ -69,6 +69,7 @@ Edit `/etc/messenger/env`:
 SECRET_KEY=<generate-with-python-c-secrets.token_hex(32)>
 FIRST_USER_ADMIN=1   # Set to 1 ONLY for initial setup, then 0
 MAX_UPLOAD_BYTES=10485760
+THEME_IMAGE_MAX_BYTES=1048576
 PORT=8000
 DATA_DIR=/var/lib/messenger/data
 BACKUP_DIR=/var/lib/messenger/backups
@@ -206,6 +207,7 @@ Copy `.env.example` to `.env` and configure:
 SECRET_KEY=your-secret-key-change-in-production
 FIRST_USER_ADMIN=0
 MAX_UPLOAD_BYTES=10485760
+THEME_IMAGE_MAX_BYTES=1048576
 PORT=8000
 DATA_DIR=/var/lib/messenger/data
 BACKUP_DIR=/var/lib/messenger/backups
@@ -300,3 +302,5 @@ Private use only.
 - phase 5.2d3 complete
 
 - phase 5.2e complete
+
+- phase 5.2g complete
