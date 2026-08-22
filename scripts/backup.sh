@@ -22,10 +22,15 @@ echo "Starting backup at $(date)"
 echo "Data directory: $DATA_DIR"
 echo "Backup directory: $BACKUP_DIR"
 
-# Backup SQLite database using .backup command (safe online backup)
+# SQLite Online Backup API — та же механика, что у CLI .backup, но без внешней зависимости — автономность сердца
 if [ -f "$DATA_DIR/$DB_NAME" ]; then
     echo "Backing up database..."
-    sqlite3 "$DATA_DIR/$DB_NAME" ".backup '$BACKUP_DB'"
+    python3 - "$DATA_DIR/$DB_NAME" "$BACKUP_DB" <<'PY'
+import sqlite3, sys
+src = sqlite3.connect(sys.argv[1]); dst = sqlite3.connect(sys.argv[2])
+with dst: src.backup(dst)
+src.close(); dst.close()
+PY
     echo "Database backup created: $BACKUP_DB"
 else
     echo "ERROR: Database file not found at $DATA_DIR/$DB_NAME"
