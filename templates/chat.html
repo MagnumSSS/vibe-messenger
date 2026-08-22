@@ -278,6 +278,7 @@
             document.documentElement.style.setProperty('--message-sent-bg', sent);
             document.documentElement.style.setProperty('--message-received-bg', received);
             document.documentElement.style.setProperty('--bg-color', bg);
+            document.documentElement.style.setProperty('--border-color', deriveBorderColor(bg));
             applyContrast();
         }
         
@@ -291,6 +292,19 @@
             const b = parseInt(hex.slice(4, 6), 16);
             const yiq = (r * 299 + g * 587 + b * 114) / 1000;
             return yiq >= 128 ? '#111' : '#fff';
+        }
+
+        // Derive --border-color from the applied bg: darken on light backgrounds, lighten on dark ones
+        function deriveBorderColor(bgHex) {
+            let hex = String(bgHex || '').trim().replace('#', '');
+            if (hex.length === 3) hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+            if (!/^[0-9a-fA-F]{6}$/.test(hex)) return '#dddddd';
+            const ch = [parseInt(hex.slice(0, 2), 16), parseInt(hex.slice(2, 4), 16), parseInt(hex.slice(4, 6), 16)];
+            const yiq = (ch[0] * 299 + ch[1] * 587 + ch[2] * 114) / 1000;
+            const adjusted = yiq >= 128
+                ? ch.map(c => Math.round(c * 0.85))
+                : ch.map(c => Math.round(c + (255 - c) * 0.12));
+            return '#' + adjusted.map(c => c.toString(16).padStart(2, '0')).join('');
         }
         
         // Recompute text colors for bubbles, header (icons/text) and buttons from their background colors
