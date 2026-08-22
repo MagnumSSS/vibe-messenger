@@ -265,11 +265,56 @@
         // Apply theme object directly
         function applyThemeDirect(theme) {
             if (!theme || typeof theme !== 'object') return;
-            document.documentElement.style.setProperty('--primary-color', theme.primary || defaultTheme.primary);
-            document.documentElement.style.setProperty('--message-sent-bg', theme.sent || defaultTheme.sent);
-            document.documentElement.style.setProperty('--message-received-bg', theme.received || defaultTheme.received);
-            document.documentElement.style.setProperty('--bg-color', theme.bg || defaultTheme.bg);
+            const primary = theme.primary || defaultTheme.primary;
+            const sent = theme.sent || defaultTheme.sent;
+            const received = theme.received || defaultTheme.received;
+            const bg = theme.bg || defaultTheme.bg;
+            document.documentElement.style.setProperty('--primary-color', primary);
+            document.documentElement.style.setProperty('--accent-color', primary);
+            document.documentElement.style.setProperty('--header-color', primary);
+            document.documentElement.style.setProperty('--btn-primary-bg', primary);
+            document.documentElement.style.setProperty('--bubble-sent-bg', sent);
+            document.documentElement.style.setProperty('--bubble-received-bg', received);
+            document.documentElement.style.setProperty('--message-sent-bg', sent);
+            document.documentElement.style.setProperty('--message-received-bg', received);
+            document.documentElement.style.setProperty('--bg-color', bg);
+            applyContrast();
         }
+        
+        // YIQ-based contrast: returns dark or light text color for a given hex background
+        function contrastText(hex) {
+            hex = String(hex || '').trim().replace('#', '');
+            if (hex.length === 3) hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+            if (!/^[0-9a-fA-F]{6}$/.test(hex)) return '#111';
+            const r = parseInt(hex.slice(0, 2), 16);
+            const g = parseInt(hex.slice(2, 4), 16);
+            const b = parseInt(hex.slice(4, 6), 16);
+            const yiq = (r * 299 + g * 587 + b * 114) / 1000;
+            return yiq >= 128 ? '#111' : '#fff';
+        }
+        
+        // Recompute text colors for bubbles, header (icons/text) and buttons from their background colors
+        function applyContrast() {
+            const cs = getComputedStyle(document.documentElement);
+            const readVar = (name, fallback) => {
+                const v = cs.getPropertyValue(name);
+                return (v && v.trim()) ? v.trim() : fallback;
+            };
+            const sentBg = readVar('--bubble-sent-bg', defaultTheme.sent);
+            const receivedBg = readVar('--bubble-received-bg', defaultTheme.received);
+            const headerBg = readVar('--header-color', '') || readVar('--accent-color', defaultTheme.primary);
+            const btnPrimaryBg = readVar('--btn-primary-bg', defaultTheme.primary);
+            const btnDangerBg = readVar('--btn-danger-bg', '#dc3545');
+            
+            const s = document.documentElement.style;
+            s.setProperty('--bubble-sent-text', contrastText(sentBg));
+            s.setProperty('--bubble-received-text', contrastText(receivedBg));
+            s.setProperty('--header-text', contrastText(headerBg));
+            s.setProperty('--btn-primary-text', contrastText(btnPrimaryBg));
+            s.setProperty('--btn-danger-text', contrastText(btnDangerBg));
+        }
+        
+        applyContrast();
         
         // Load profile data
         async function loadProfile() {
