@@ -293,3 +293,5 @@ Private use only.
 - phase 5.2c-1 complete
 
 - phase 5.2d complete
+
+- phase 5.2d2 complete
