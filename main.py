@@ -58,6 +58,8 @@ THEME_TOKENS = {
         "input_bg": {"key": "input_bg", "css_var": "--input-bg", "default": "#ffffff", "type": "color"},
         "border": {"key": "border", "css_var": "--border-color", "default": "#dddddd", "type": "color"},
         "modal_bg": {"key": "modal_bg", "css_var": "--modal-bg", "default": "#ffffff", "type": "color"},
+        "hover": {"key": "hover", "css_var": "--hover-bg", "default": "#f5f5f5", "type": "color"},
+        "active": {"key": "active", "css_var": "--active-bg", "default": "#e6f2ff", "type": "color"},
     },
     "images": {
         "header_img": {"key": "header_img", "css_var": "--header-img", "default": None, "type": "image"},
@@ -83,6 +85,8 @@ THEME_PRESETS = {
             "input_bg": "#ffffff",
             "border": "#dddddd",
             "modal_bg": "#ffffff",
+            "hover": "#f5f5f5",
+            "active": "#e6f2ff",
         },
         "images": {}
     },
@@ -101,6 +105,8 @@ THEME_PRESETS = {
             "input_bg": "#16213e",
             "border": "#333333",
             "modal_bg": "#16213e",
+            "hover": "#22304f",
+            "active": "#2a3a5f",
         },
         "images": {}
     }
@@ -1157,11 +1163,8 @@ async def unblock_user(request: Request, target_user_id: int = Form(...)):
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-<<<<<<< Updated upstream
-=======
 
 
->>>>>>> Stashed changes
 # ========== PROFILE ENDPOINTS ==========
 @app.get("/api/profile")
 async def get_profile(request: Request):
@@ -1384,10 +1387,6 @@ async def delete_chat_endpoint(request: Request, recipient_id: int = Form(...)):
     return JSONResponse({"success": True})
 
 
-<<<<<<< Updated upstream
-
-=======
->>>>>>> Stashed changes
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)

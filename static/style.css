@@ -14,6 +14,26 @@
     --input-bg: #ffffff;
     --border-color: #dddddd;
     --modal-bg: #ffffff;
+
+    /* Surface tokens (Phase 5.2d) - hardcoded colors routed through vars */
+    --hover-bg: #f5f5f5;
+    --active-bg: #e6f2ff;
+    --chip-bg: #e4e6eb;
+    --overlay-bg: rgba(0,0,0,0.8);
+    --header-btn-bg: rgba(255,255,255,0.2);
+    --header-btn-hover-bg: rgba(255,255,255,0.3);
+    --bubble-overlay-bg: rgba(255,255,255,0.2);
+    --disabled-bg: #cccccc;
+    --attach-hover-bg: #d0d2d5;
+    --highlight-bg: #ffeb3b;
+    --highlight-text: #333333;
+    --tint-bg: #fff3cd;
+    --tint-text: #856404;
+    --shadow-1: rgba(0,0,0,0.15);
+    --shadow-2: rgba(0,0,0,0.2);
+    --scrollbar-track: #f1f1f1;
+    --scrollbar-thumb: #c1c1c1;
+    --scrollbar-thumb-hover: #a1a1a1;
     
     /* Image tokens from manifest */
     --header-img: none;
@@ -56,7 +76,7 @@ header {
 header h1 { font-size: 1.25rem; color: var(--header-text, white); }
 
 .logout-btn, .settings-btn, .delete-chat-btn, .profile-btn { 
-    background: rgba(255,255,255,0.2); 
+    background: var(--header-btn-bg, rgba(255,255,255,0.2)); 
     border: none; 
     color: var(--header-text, white); 
     padding: 0.5rem 1rem; 
@@ -68,7 +88,7 @@ header h1 { font-size: 1.25rem; color: var(--header-text, white); }
 }
 
 .logout-btn:hover, .settings-btn:hover, .delete-chat-btn:hover, .profile-btn:hover { 
-    background: rgba(255,255,255,0.3); 
+    background: var(--header-btn-hover-bg, rgba(255,255,255,0.3)); 
 }
 
 .main { display: flex; flex: 1; overflow: hidden; }
@@ -93,7 +113,7 @@ header h1 { font-size: 1.25rem; color: var(--header-text, white); }
 
 .user-item { 
     padding: 1rem; 
-    border-bottom: 1px solid #eee; 
+    border-bottom: 1px solid var(--border-color, #dddddd); 
     cursor: pointer; 
     transition: background 0.2s; 
     display: flex;
@@ -116,7 +136,7 @@ header h1 { font-size: 1.25rem; color: var(--header-text, white); }
 
 .user-avatar:hover {
     transform: scale(1.05);
-    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    box-shadow: 0 2px 8px var(--shadow-1, rgba(0,0,0,0.15));
 }
 
 .user-info { flex: 1; min-width: 0; }
@@ -225,7 +245,7 @@ header h1 { font-size: 1.25rem; color: var(--header-text, white); }
 }
 
 .attachment-file { 
-    background: rgba(255,255,255,0.2); 
+    background: var(--bubble-overlay-bg, rgba(255,255,255,0.2)); 
     padding: 0.5rem 0.75rem; 
     border-radius: 8px; 
     display: flex; 
@@ -255,7 +275,7 @@ header h1 { font-size: 1.25rem; color: var(--header-text, white); }
 }
 
 .chip { 
-    background: var(--input-bg, #e4e6eb); 
+    background: var(--input-bg, #ffffff); 
     padding: 0.25rem 0.5rem; 
     border-radius: 12px; 
     font-size: 0.85rem; 
@@ -302,12 +322,12 @@ header h1 { font-size: 1.25rem; color: var(--header-text, white); }
 }
 
 .input-area button:disabled { 
-    background: #ccc; 
+    background: var(--disabled-bg, #cccccc); 
     cursor: not-allowed; 
 }
 
 .attach-btn { 
-    background: var(--input-bg, #e4e6eb); 
+    background: var(--input-bg, #ffffff); 
     color: var(--text-primary); 
     border: none; 
     padding: 0.75rem; 
@@ -317,7 +337,7 @@ header h1 { font-size: 1.25rem; color: var(--header-text, white); }
 }
 
 .attach-btn:hover { 
-    background: #d0d2d5; 
+    background: var(--attach-hover-bg, #d0d2d5); 
 }
 
 .no-chat { 
@@ -336,7 +356,7 @@ header h1 { font-size: 1.25rem; color: var(--header-text, white); }
     left: 0; 
     width: 100%; 
     height: 100%; 
-    background: rgba(0,0,0,0.8); 
+    background: var(--overlay-bg, rgba(0,0,0,0.8)); 
     z-index: 1000; 
     align-items: center; 
     justify-content: center; 
@@ -383,19 +403,19 @@ header h1 { font-size: 1.25rem; color: var(--header-text, white); }
 
 /* Search highlight */
 .search-highlight {
-    background-color: #ffeb3b;
-    color: #333;
+    background-color: var(--highlight-bg, #ffeb3b);
+    color: var(--highlight-text, #333333);
     padding: 0.1rem 0.2rem;
     border-radius: 2px;
 }
 
 .search-result-item {
-    background: #fff3cd !important;
+    background: var(--tint-bg, #fff3cd) !important;
 }
 
 /* Profile modal */
 .profile-modal-content {
-    background: white;
+    background: var(--modal-bg, #ffffff);
     padding: 2rem;
     border-radius: 12px;
     max-width: 400px;
@@ -435,6 +455,8 @@ header h1 { font-size: 1.25rem; color: var(--header-text, white); }
     border: 1px solid var(--border-color);
     border-radius: 8px;
     font-size: 1rem;
+    background: var(--input-bg, #ffffff);
+    color: var(--text-primary, #333333);
 }
 
 .profile-form-group textarea {
@@ -459,7 +481,7 @@ header h1 { font-size: 1.25rem; color: var(--header-text, white); }
 
 /* Settings modal */
 .settings-modal-content {
-    background: white;
+    background: var(--modal-bg, #ffffff);
     padding: 2rem;
     border-radius: 12px;
     max-width: 400px;
@@ -498,8 +520,8 @@ header h1 { font-size: 1.25rem; color: var(--header-text, white); }
 }
 
 .reset-theme-btn {
-    background: var(--chip-bg);
-    color: var(--text-primary);
+    background: var(--chip-bg, #e4e6eb);
+    color: var(--text-primary, #333333);
     border: none;
     padding: 0.5rem 1rem;
     border-radius: 4px;
@@ -509,7 +531,7 @@ header h1 { font-size: 1.25rem; color: var(--header-text, white); }
 
 /* Delete chat modal */
 .delete-modal-content {
-    background: white;
+    background: var(--modal-bg, #ffffff);
     padding: 2rem;
     border-radius: 12px;
     max-width: 350px;
@@ -534,8 +556,8 @@ header h1 { font-size: 1.25rem; color: var(--header-text, white); }
 }
 
 .cancel-btn {
-    background: var(--chip-bg);
-    color: var(--text-primary);
+    background: var(--chip-bg, #e4e6eb);
+    color: var(--text-primary, #333333);
     border: none;
     padding: 0.75rem 1.5rem;
     border-radius: 8px;
@@ -558,7 +580,7 @@ header h1 { font-size: 1.25rem; color: var(--header-text, white); }
 
 /* Delete account modal */
 .delete-account-modal-content {
-    background: white;
+    background: var(--modal-bg, #ffffff);
     padding: 2rem;
     border-radius: 12px;
     max-width: 400px;
@@ -576,11 +598,11 @@ header h1 { font-size: 1.25rem; color: var(--header-text, white); }
 }
 
 .delete-account-modal-content .warning {
-    background: #fff3cd;
+    background: var(--tint-bg, #fff3cd);
     padding: 1rem;
     border-radius: 8px;
     margin-bottom: 1rem;
-    color: #856404;
+    color: var(--tint-text, #856404);
 }
 
 .delete-account-input {
@@ -590,6 +612,8 @@ header h1 { font-size: 1.25rem; color: var(--header-text, white); }
     border-radius: 8px;
     font-size: 1rem;
     margin-bottom: 1rem;
+    background: var(--input-bg, #ffffff);
+    color: var(--text-primary, #333333);
 }
 
 /* Message actions menu */
@@ -597,9 +621,9 @@ header h1 { font-size: 1.25rem; color: var(--header-text, white); }
     position: absolute;
     top: -10px;
     right: -10px;
-    background: white;
+    background: var(--modal-bg, #ffffff);
     border-radius: 20px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+    box-shadow: 0 2px 8px var(--shadow-2, rgba(0,0,0,0.2));
     display: none;
     z-index: 100;
 }
@@ -622,7 +646,7 @@ header h1 { font-size: 1.25rem; color: var(--header-text, white); }
 }
 
 .message-action-btn.delete-all {
-    color: #dc3545;
+    color: var(--btn-danger-bg, #dc3545);
 }
 
 /* Scrollbar styling */
@@ -631,16 +655,16 @@ header h1 { font-size: 1.25rem; color: var(--header-text, white); }
 }
 
 ::-webkit-scrollbar-track {
-    background: #f1f1f1;
+    background: var(--scrollbar-track, #f1f1f1);
 }
 
 ::-webkit-scrollbar-thumb {
-    background: #c1c1c1;
+    background: var(--scrollbar-thumb, #c1c1c1);
     border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-    background: #a1a1a1;
+    background: var(--scrollbar-thumb-hover, #a1a1a1);
 }
 
 @media (max-width: 768px) {

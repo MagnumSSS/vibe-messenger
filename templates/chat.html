@@ -24,7 +24,7 @@
         <div class="sidebar">
             <h2>Contacts</h2>
             <div style="padding: 1rem; border-bottom: 1px solid #eee;">
-                <input type="text" id="searchInput" placeholder="Search by name or @username..." style="width: 100%; padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9rem;">
+                <input type="text" id="searchInput" placeholder="Search by name or @username..." style="width: 100%; padding: 0.5rem; border: 1px solid var(--border-color, #dddddd); border-radius: 4px; font-size: 0.9rem; background: var(--input-bg, #ffffff); color: var(--text-primary, #333333);">
             </div>
             <ul class="user-list" id="userList">
                 {% for u in users %}
@@ -85,7 +85,7 @@
                 <textarea id="profileBio" maxlength="200" placeholder="Расскажите о себе..."></textarea>
             </div>
             <button class="profile-save-btn" id="saveProfileBtn">Сохранить</button>
-            <hr style="margin: 1.5rem 0; border: none; border-top: 1px solid #eee;">
+            <hr style="margin: 1.5rem 0; border: none; border-top: 1px solid var(--border-color, #eeeeee);">
             <h3 style="color: #dc3545; margin-bottom: 0.5rem;">Опасная зона</h3>
             <button id="deleteAccountBtn" style="background: #dc3545; color: white; border: none; padding: 0.75rem 1.5rem; border-radius: 8px; cursor: pointer; width: 100%;">Удалить аккаунт</button>
         </div>
