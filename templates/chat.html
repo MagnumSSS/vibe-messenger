@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Chat - VibeBunker</title>
-    <link rel="stylesheet" href="/static/style.css?v=6.1b">
+    <link rel="stylesheet" href="/static/style.css?v=6.2">
 </head>
 <body>
     <header>
@@ -58,6 +58,8 @@
             </div>
             <div class="messages" id="messages"></div>
             <div class="input-area" id="inputArea" style="display: none;">
+                <!-- Phase 6.2: command chips island above the input -->
+                <div class="cmd-chips" id="cmdChips" style="display: none;"></div>
                 <div class="chips-container" id="chipsContainer"></div>
                 <div class="input-row">
                     <button type="button" id="attachBtn" class="attach-btn" title="Attach files">📎</button>
@@ -194,6 +196,9 @@
         </div>
     </div>
 
+    <!-- Phase 6.2: command result toasts -->
+    <div class="toast-container" id="toastContainer"></div>
+
     <script>
         const currentUser = {{ user.id | tojson }};
         const currentUsername = {{ user.username | tojson }};
@@ -250,6 +255,9 @@
         const memberSearchInput = document.getElementById('memberSearchInput');
         const memberSuggestions = document.getElementById('memberSuggestions');
         const addMemberBtn = document.getElementById('addMemberBtn');
+        // Phase 6.2: command chips + toasts
+        const cmdChips = document.getElementById('cmdChips');
+        const toastContainer = document.getElementById('toastContainer');
         
         // Profile modal elements
         const profileModal = document.getElementById('profileModal');
@@ -339,13 +347,15 @@
             bg: '#f0f2f5', panel: '#ffffff', header: '#0084ff', text: '#333333',
             muted: '#666666', accent: '#0084ff', btn_primary: '#0084ff', btn_danger: '#dc3545',
             bubble_sent: '#0084ff', bubble_received: '#e4e6eb', input_bg: '#ffffff',
-            border: '#dddddd', modal_bg: '#ffffff', hover: '#f5f5f5', active: '#e6f2ff'
+            border: '#dddddd', modal_bg: '#ffffff', hover: '#f5f5f5', active: '#e6f2ff',
+            chip_cmd: '#dbe7ff'
         };
         const TOKEN_CSS_VARS = {
             bg: '--bg-color', panel: '--panel-color', header: '--header-color', text: '--text-primary',
             muted: '--text-secondary', accent: '--accent-color', btn_primary: '--btn-primary-bg',
             btn_danger: '--btn-danger-bg', bubble_sent: '--bubble-sent-bg', bubble_received: '--bubble-received-bg',
-            input_bg: '--input-bg', border: '--border-color', modal_bg: '--modal-bg', hover: '--hover-bg', active: '--active-bg'
+            input_bg: '--input-bg', border: '--border-color', modal_bg: '--modal-bg', hover: '--hover-bg', active: '--active-bg',
+            chip_cmd: '--chip-cmd-bg'
         };
 
         // Phase 5.4: blur effect tokens (range 0..20 px, mirrors THEME_TOKENS "effects")
@@ -438,6 +448,7 @@
             const btnPrimaryBg = readVar('--btn-primary-bg', defaultTheme.primary);
             const btnDangerBg = readVar('--btn-danger-bg', '#dc3545');
             const inputBg = readVar('--input-bg', '#ffffff');
+            const chipCmdBg = readVar('--chip-cmd-bg', '#dbe7ff'); // Phase 6.2
             
             const s = document.documentElement.style;
             s.setProperty('--bubble-sent-text', contrastText(sentBg));
@@ -447,6 +458,8 @@
             s.setProperty('--btn-danger-text', contrastText(btnDangerBg));
             // Phase 5.3 bugfix: message/search input text auto-contrasts with --input-bg
             s.setProperty('--input-text', contrastText(inputBg));
+            // Phase 6.2: command chip label auto-contrasts with the chip_cmd token
+            s.setProperty('--chip-cmd-text', contrastText(chipCmdBg));
         }
 
         // Phase 5.4: glass chips in the profile modals - autocontrast their label
@@ -490,6 +503,7 @@
             bubble_sent: 'Пузырь отправленные', bubble_received: 'Пузырь полученные',
             input_bg: 'Поля ввода', border: 'Границы', modal_bg: 'Модалки',
             hover: 'Hover контакта', active: 'Выбранный контакт',
+            chip_cmd: 'Фон командных чипов',
             header_img: 'Картинка шапки', wallpaper: 'Обои чата', bubble_img: 'Картинка пузырей',
             wallpaper_blur: 'Размытие обоев', bubble_blur: 'Размытие пузырей'
         };
@@ -1096,6 +1110,8 @@
                 groupMembersBtn.style.display = 'none';
                 deleteChatBtn.style.display = '';
                 inputArea.style.display = 'flex';
+                cmdChips.style.display = 'none'; // Phase 6.2: no command chips in 1-on-1
+                cmdChips.innerHTML = '';
                 
                 // Load messages
                 const res = await fetch(`/api/messages/${selectedUserId}`);
@@ -1107,11 +1123,26 @@
         });
         
         // ===== Phase 6.1: groups UI =====
+        let groupsCache = []; // Phase 6.2: last known list for post-command syncing
+        
+        function showToast(text) {
+            const t = document.createElement('div');
+            t.className = 'toast';
+            t.textContent = text;
+            toastContainer.appendChild(t);
+            requestAnimationFrame(() => t.classList.add('show'));
+            setTimeout(() => {
+                t.classList.remove('show');
+                setTimeout(() => t.remove(), 300);
+            }, 3500);
+        }
+        
         async function loadGroups() {
             try {
                 const res = await fetch('/api/groups');
                 if (!res.ok) return;
                 const groups = await res.json();
+                groupsCache = groups;
                 groupList.innerHTML = '';
                 groups.forEach(g => {
                     const li = document.createElement('li');
@@ -1149,7 +1180,46 @@
             groupMembersBtn.style.display = '';
             inputArea.style.display = 'flex';
             
+            loadCmdChips(groupId);
             await loadGroupMessages(groupId);
+        }
+        
+        // ===== Phase 6.2: command chips =====
+        const CMD_CHIP_LABELS = {
+            add: 'Добавить', kick: 'Исключить', promote: 'Повысить',
+            rename: 'Переименовать', leave: 'Выйти', help: 'Команды'
+        };
+        
+        async function loadCmdChips(groupId) {
+            cmdChips.innerHTML = '';
+            try {
+                const res = await fetch(`/api/commands?group_id=${groupId}`);
+                if (!res.ok) { cmdChips.style.display = 'none'; return; }
+                const cmds = await res.json();
+                cmds.forEach(c => {
+                    const b = document.createElement('button');
+                    b.type = 'button';
+                    b.className = 'cmd-chip';
+                    b.title = c.description || ('/' + c.name);
+                    b.textContent = (CMD_CHIP_LABELS[c.name] || '/' + c.name) + (c.args_hint ? ' ' + c.args_hint : '');
+                    b.addEventListener('click', () => {
+                        if (!c.args_hint) {
+                            // no-argument commands run immediately
+                            messageInput.value = '/' + c.name;
+                            sendMessage();
+                        } else {
+                            // insert the prefix ("/add @") - user completes the argument
+                            messageInput.value = '/' + c.name + (c.args_hint.startsWith('@') ? ' @' : ' ');
+                            messageInput.focus();
+                        }
+                    });
+                    cmdChips.appendChild(b);
+                });
+                cmdChips.style.display = cmds.length ? 'flex' : 'none';
+            } catch (e) {
+                console.error('Failed to load commands:', e);
+                cmdChips.style.display = 'none';
+            }
         }
         
         async function loadGroupMessages(groupId) {
@@ -1355,6 +1425,13 @@
             // Phase 6.1: need either a dialog or a group selected
             if (!selectedUserId && !selectedGroupId) return;
             
+            // Phase 6.2: "/" in a group is a COMMAND, never a message
+            if (selectedGroupId && text.startsWith('/')) {
+                messageInput.value = '';
+                await runGroupCommand(text);
+                return;
+            }
+            
             const formData = new FormData();
             formData.append('recipient_id', selectedUserId || 0);
             if (selectedGroupId) {
@@ -1390,6 +1467,48 @@
         messageInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') sendMessage();
         });
+        
+        // ===== Phase 6.2: group command execution =====
+        async function runGroupCommand(raw) {
+            const trimmed = raw.slice(1).trim();
+            if (!trimmed) return;
+            const sp = trimmed.indexOf(' ');
+            const cmd = (sp === -1 ? trimmed : trimmed.slice(0, sp)).toLowerCase();
+            const args = sp === -1 ? '' : trimmed.slice(sp + 1).trim();
+            
+            try {
+                const body = new URLSearchParams({ cmd: cmd, args: args }).toString();
+                const res = await fetch(`/api/groups/${selectedGroupId}/command`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: body
+                });
+                const data = await res.json().catch(() => ({}));
+                
+                if (res.ok && data.ok) {
+                    showToast(data.text || 'Готово');
+                    // refresh sidebar (counts/names); sync header after rename/leave/kick
+                    await loadGroups();
+                    const g = groupsCache.find(x => x.id === selectedGroupId);
+                    if (!g) {
+                        // no longer a member (leave/kick) - close the chat view
+                        selectedGroupId = null;
+                        messagesDiv.innerHTML = '';
+                        inputArea.style.display = 'none';
+                        chatHeaderActions.style.display = 'none';
+                        chatHeaderName.textContent = 'Select a contact';
+                        document.querySelectorAll('.group-item').forEach(i => i.classList.remove('active'));
+                    } else {
+                        chatHeaderName.textContent = g.name;
+                    }
+                } else {
+                    showToast(data.detail || data.text || 'Ошибка выполнения команды');
+                }
+            } catch (err) {
+                console.error('Command error:', err);
+                showToast('Ошибка сети при выполнении команды');
+            }
+        }
         
         // Click on user avatar to open other user's profile modal
         // The rest of the user-item row opens the chat dialog

@@ -76,6 +76,18 @@ THEME_TOKENS = {
     }
 }
 
+# Phase 6.2: data-driven command registry (group commands).
+# roles = caller roles allowed; "*" = any member. scope reserved for future DM commands.
+COMMAND_REGISTRY = [
+    {"name": "add",     "args_hint": "@username", "roles": ["owner", "admin"],           "scope": "group", "description": "Добавить участника в группу"},
+    {"name": "kick",    "args_hint": "@username", "roles": ["owner", "admin"],           "scope": "group", "description": "Исключить участника (матрица кика)"},
+    {"name": "promote", "args_hint": "@username", "roles": ["owner"],                    "scope": "group", "description": "Назначить групп-админом"},
+    {"name": "rename",  "args_hint": "<имя>",     "roles": ["owner", "admin"],           "scope": "group", "description": "Переименовать группу"},
+    {"name": "leave",   "args_hint": "",          "roles": ["owner", "admin", "member"], "scope": "group", "description": "Выйти из группы"},
+    {"name": "help",    "args_hint": "",          "roles": ["*"],                        "scope": "group", "description": "Показать доступные команды"},
+]
+
+
 # Presets for quick theme switching
 THEME_PRESETS = {
     "default": {
@@ -95,6 +107,7 @@ THEME_PRESETS = {
             "modal_bg": "#ffffff",
             "hover": "#f5f5f5",
             "active": "#e6f2ff",
+            "chip_cmd": "#dbe7ff"
         },
         "images": {},
         "effects": {"wallpaper_blur": 0, "bubble_blur": 0}
@@ -116,6 +129,7 @@ THEME_PRESETS = {
             "modal_bg": "#16213e",
             "hover": "#22304f",
             "active": "#2a3a5f",
+            "chip_cmd": "#2a3550",
         },
         "images": {},
         "effects": {"wallpaper_blur": 0, "bubble_blur": 0}
@@ -584,6 +598,42 @@ def get_group_membership(group_id: int, user_id: int):
     return dict(row) if row else None
 
 
+def get_effective_group_role(user, group_id: int):
+    """Phase 6.2: resolve caller's effective role in a group.
+    Returns (role, grp): role is 'owner'|'admin'|'member';
+    grp=None only when the GROUP does not exist; role=None with grp set = not a member."""
+    with get_db() as conn:
+        grp = conn.execute("SELECT id, name, owner_id FROM groups WHERE id = ?", (group_id,)).fetchone()
+        if not grp:
+            return None, None
+        mem = conn.execute(
+            "SELECT role FROM group_members WHERE group_id = ? AND user_id = ?",
+            (group_id, user["id"])
+        ).fetchone()
+    grp_dict = dict(grp)
+    if not mem:
+        return None, grp_dict  # group exists, caller is not a member -> 403 upstream
+    if grp["owner_id"] == user["id"]:
+        return "owner", grp_dict
+    if user.get("is_admin"):
+        return "admin", grp_dict  # platform admin acts as group admin
+    return mem["role"], grp_dict
+
+
+def kick_allowed(actor, grp_owner_id: int, actor_role: str, target_role: str, target_uid: int):
+    """Phase 6.2 shared kick matrix: self=leave; owner kicks anyone;
+    group-admin/platform-admin kick only plain members."""
+    if target_uid == actor["id"]:
+        return True
+    if actor["id"] == grp_owner_id:
+        return True
+    if actor_role == "admin":
+        return target_role == "member"
+    if actor.get("is_admin"):
+        return target_role == "member"
+    return False
+
+
 @app.post("/api/groups")
 async def create_group(request: Request, name: str = Form("")):
     """Create a group; creator becomes owner and first member"""
@@ -720,13 +770,9 @@ async def remove_group_member(request: Request, group_id: int, user_id: int):
             raise HTTPException(status_code=404, detail="Not a member")
         
         # Permission matrix: self-leave always OK; owner kicks anyone;
-        # platform admin kicks only role='member'; everyone else forbidden
-        allowed = (
-            user_id == user["id"]
-            or grp["owner_id"] == user["id"]
-            or (bool(user.get("is_admin")) and target["role"] == "member")
-        )
-        if not allowed:
+        # group/platform admin kicks only role='member'; everyone else forbidden
+        my_mem = get_group_membership(group_id, user["id"])
+        if not kick_allowed(user, grp["owner_id"], my_mem["role"], target["role"], user_id):
             raise HTTPException(status_code=403, detail="Forbidden")
         
         conn.execute(
@@ -769,6 +815,168 @@ async def group_messages(request: Request, group_id: int):
             result.append(msg_dict)
     
     return JSONResponse(result)
+
+
+# ===== Phase 6.2: group commands =====
+
+@app.get("/api/commands")
+async def api_commands(request: Request, group_id: int = 0):
+    """Commands available to the caller in the given group context (role-aware)"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    if group_id <= 0:
+        return []
+    
+    role, _grp = get_effective_group_role(user, group_id)
+    if not role:
+        return []  # no chips for non-members (no info leak)
+    
+    return JSONResponse([
+        dict(c) for c in COMMAND_REGISTRY
+        if "*" in c["roles"] or role in c["roles"]
+    ])
+
+
+def _notify_group_changed(group_id: int, exclude_uid=None):
+    """Phase 6.2 helper: tell online members to refresh their sidebar (counts/names)."""
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT user_id FROM group_members WHERE group_id = ?", (group_id,)
+        ).fetchall()
+    return [
+        (row["user_id"], app.state.connections.get(row["user_id"]))
+        for row in rows
+        if row["user_id"] != exclude_uid and app.state.connections.get(row["user_id"]) is not None
+    ]
+
+
+@app.post("/api/groups/{group_id}/command")
+async def group_command(request: Request, group_id: int, cmd: str = Form(""), args: str = Form("")):
+    """Execute a group command. ALL role checks happen here; client only displays the result."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    role, grp = get_effective_group_role(user, group_id)
+    if not grp:
+        raise HTTPException(status_code=404, detail="Group not found")
+    if not role:
+        raise HTTPException(status_code=403, detail="Not a group member")
+    
+    cmd_clean = (cmd or "").strip().lstrip("/").lower()
+    spec = next((c for c in COMMAND_REGISTRY if c["name"] == cmd_clean), None)
+    if not spec:
+        raise HTTPException(status_code=400, detail=f"Неизвестная команда: /{cmd_clean}. /help — список")
+    
+    if not ("*" in spec["roles"] or role in spec["roles"]):
+        raise HTTPException(status_code=403, detail=f"Команда /{cmd_clean} недоступна для вашей роли")
+    
+    args_s = (args or "").strip()
+    
+    # ---- /help ---------------------------------------------------------
+    if cmd_clean == "help":
+        lines = [
+            f"/{c['name']}" + (f" {c['args_hint']}" if c["args_hint"] else "") + f" — {c['description']}"
+            for c in COMMAND_REGISTRY if "*" in c["roles"] or role in c["roles"]
+        ]
+        return JSONResponse({"ok": True, "text": "Доступные команды:\n" + "\n".join(lines)})
+    
+    # ---- commands below need a @username target --------------------------
+    if cmd_clean in ("add", "kick", "promote"):
+        uname = args_s.lstrip("@").strip()
+        if not uname:
+            raise HTTPException(status_code=400, detail=f"Укажите @username: /{cmd_clean} {spec['args_hint']}")
+        
+        with get_db() as conn:
+            target_user = conn.execute(
+                "SELECT id, username FROM users WHERE username = ?", (uname,)
+            ).fetchone()
+            if not target_user:
+                raise HTTPException(status_code=400, detail=f"Пользователь @{uname} не найден")
+            
+            target_mem = conn.execute(
+                "SELECT user_id, role FROM group_members WHERE group_id = ? AND user_id = ?",
+                (group_id, target_user["id"])
+            ).fetchone()
+        
+        if cmd_clean == "add":
+            if target_mem:
+                raise HTTPException(status_code=400, detail=f"@{uname} уже состоит в группе")
+            with get_db() as conn:
+                conn.execute(
+                    "INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, 'member')",
+                    (group_id, target_user["id"])
+                )
+                conn.commit()
+            # live sidebar refresh for everyone (the added member now resolves too)
+            for uid, ws_conn in _notify_group_changed(group_id):
+                try:
+                    await ws_conn.send_json({"type": "group_added", "group_id": group_id})
+                except Exception:
+                    pass
+            return JSONResponse({"ok": True, "text": f"@{uname} добавлен в группу «{grp['name']}»"})
+        
+        if cmd_clean == "kick":
+            if not target_mem:
+                raise HTTPException(status_code=400, detail=f"@{uname} не состоит в группе")
+            if not kick_allowed(user, grp["owner_id"], role, target_mem["role"], target_user["id"]):
+                raise HTTPException(status_code=403, detail=f"Недостаточно прав, чтобы исключить @{uname}")
+            left_self = target_user["id"] == user["id"]
+            with get_db() as conn:
+                conn.execute("DELETE FROM group_members WHERE group_id = ? AND user_id = ?",
+                             (group_id, target_user["id"]))
+                conn.commit()
+            for uid, ws_conn in _notify_group_changed(group_id):
+                try:
+                    await ws_conn.send_json({"type": "group_added", "group_id": group_id})
+                except Exception:
+                    pass
+            if left_self:
+                return JSONResponse({"ok": True, "text": f"Вы покинули группу «{grp['name']}»"})
+            return JSONResponse({"ok": True, "text": f"@{uname} исключён из группы"})
+        
+        if cmd_clean == "promote":
+            if not target_mem:
+                raise HTTPException(status_code=400, detail=f"@{uname} не состоит в группе")
+            if target_mem["role"] != "member":
+                raise HTTPException(status_code=400, detail=f"@{uname} уже не обычный участник")
+            with get_db() as conn:
+                conn.execute("UPDATE group_members SET role = 'admin' WHERE group_id = ? AND user_id = ?",
+                             (group_id, target_user["id"]))
+                conn.commit()
+            return JSONResponse({"ok": True, "text": f"@{uname} теперь групп-админ"})
+    
+    # ---- /leave -----------------------------------------------------------
+    if cmd_clean == "leave":
+        with get_db() as conn:
+            conn.execute("DELETE FROM group_members WHERE group_id = ? AND user_id = ?",
+                         (group_id, user["id"]))
+            conn.commit()
+        for uid, ws_conn in _notify_group_changed(group_id):
+            try:
+                await ws_conn.send_json({"type": "group_added", "group_id": group_id})
+            except Exception:
+                pass
+        return JSONResponse({"ok": True, "text": f"Вы покинули группу «{grp['name']}»"})
+    
+    # ---- /rename ------------------------------------------------------------
+    if cmd_clean == "rename":
+        new_name = args_s.strip()
+        if not new_name or len(new_name) > 50:
+            raise HTTPException(status_code=400, detail="Имя группы должно быть от 1 до 50 символов")
+        with get_db() as conn:
+            conn.execute("UPDATE groups SET name = ? WHERE id = ?", (new_name, group_id))
+            conn.commit()
+        for uid, ws_conn in _notify_group_changed(group_id):
+            try:
+                await ws_conn.send_json({"type": "group_added", "group_id": group_id})
+            except Exception:
+                pass
+        return JSONResponse({"ok": True, "text": f"Группа переименована в «{new_name}»"})
+    
+    raise HTTPException(status_code=400, detail="Команда не реализована")
 
 
 @app.websocket("/ws")
