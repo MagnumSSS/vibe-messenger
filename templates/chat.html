@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Chat - VibeBunker</title>
-    <link rel="stylesheet" href="/static/style.css?v=6.1">
+    <link rel="stylesheet" href="/static/style.css?v=6.1b">
 </head>
 <body>
     <header>
@@ -154,10 +154,15 @@
         </div>
     </div>
 
-    <!-- Group Members Modal (Phase 6.1; управление - в 6.2) -->
+    <!-- Group Members Modal (Phase 6.1; Phase 6.1b: add-member row for owner/admin) -->
     <div class="modal" id="groupMembersModal">
         <div class="profile-modal-content">
             <h2 id="groupMembersTitle">Участники</h2>
+            <div class="member-add-row" id="memberAddRow" style="display: none;">
+                <input type="text" id="memberSearchInput" list="memberSuggestions" placeholder="Поиск по @username...">
+                <datalist id="memberSuggestions"></datalist>
+                <button type="button" id="addMemberBtn" class="member-add-btn">Добавить</button>
+            </div>
             <ul class="members-list" id="membersList"></ul>
             <button class="glass-chip" id="closeMembersBtn">Закрыть</button>
         </div>
@@ -192,6 +197,7 @@
     <script>
         const currentUser = {{ user.id | tojson }};
         const currentUsername = {{ user.username | tojson }};
+        const currentIsAdmin = {{ user.is_admin | tojson }}; // Phase 6.1b: for group member management
         const userThemeJson = {{ user.theme_json | tojson }} || '{}';
         let selectedUserId = null;
         let selectedGroupId = null; // Phase 6.1: active group chat (null = 1-on-1 mode)
@@ -239,6 +245,11 @@
         const groupMembersModal = document.getElementById('groupMembersModal');
         const membersList = document.getElementById('membersList');
         const closeMembersBtn = document.getElementById('closeMembersBtn');
+        // Phase 6.1b: add-member controls
+        const memberAddRow = document.getElementById('memberAddRow');
+        const memberSearchInput = document.getElementById('memberSearchInput');
+        const memberSuggestions = document.getElementById('memberSuggestions');
+        const addMemberBtn = document.getElementById('addMemberBtn');
         
         // Profile modal elements
         const profileModal = document.getElementById('profileModal');
@@ -931,6 +942,12 @@
                     groupMembersModal.classList.remove('active');
                 }
             });
+            
+            // Phase 6.1b: add member via search input
+            addMemberBtn.addEventListener('click', addMemberByInput);
+            memberSearchInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') addMemberByInput();
+            });
         });
 
         // Search functionality
@@ -1013,6 +1030,11 @@
             ws.onopen = () => console.log('WS connected');
             ws.onmessage = (event) => {
                 const msg = JSON.parse(event.data);
+                // Phase 6.1b: sidebar refresh signal when someone adds me to a group
+                if (msg.type === 'group_added') {
+                    loadGroups();
+                    return;
+                }
                 // Phase 6.1: group messages route by group_id, dialogs by participant ids
                 if (msg.group_id) {
                     if (msg.group_id === selectedGroupId) {
@@ -1148,26 +1170,85 @@
         
         async function loadGroupMembers(groupId) {
             membersList.innerHTML = '';
+            let members = [];
             try {
                 const res = await fetch(`/api/groups/${groupId}/members`);
                 if (!res.ok) return;
-                const members = await res.json();
-                const ROLE_LABELS = { owner: 'владелец', admin: 'админ', member: 'участник' };
-                members.forEach(m => {
-                    const li = document.createElement('li');
-                    li.className = 'member-item';
-                    li.innerHTML = `
-                        <img class="member-avatar" src="${getAvatarUrl(m.avatar_uuid)}" alt="">
-                        <div class="member-info">
-                            <div class="member-name">${escapeHtml(m.name)}</div>
-                            <div class="member-username">@${escapeHtml(m.username)}</div>
-                        </div>
-                        <span class="member-role">${ROLE_LABELS[m.role] || escapeHtml(m.role)}</span>
-                    `;
-                    membersList.appendChild(li);
-                });
+                members = await res.json();
             } catch (e) {
                 console.error('Failed to load group members:', e);
+                return;
+            }
+            const ROLE_LABELS = { owner: 'владелец', admin: 'админ', member: 'участник' };
+            members.forEach(m => {
+                const li = document.createElement('li');
+                li.className = 'member-item';
+                li.innerHTML = `
+                    <img class="member-avatar" src="${getAvatarUrl(m.avatar_uuid)}" alt="">
+                    <div class="member-info">
+                        <div class="member-name">${escapeHtml(m.name)}</div>
+                        <div class="member-username">@${escapeHtml(m.username)}</div>
+                    </div>
+                    <span class="member-role">${ROLE_LABELS[m.role] || escapeHtml(m.role)}</span>
+                `;
+                membersList.appendChild(li);
+            });
+            
+            // Phase 6.1b: add-member row for the owner / group admin / platform admin
+            const me = members.find(m => m.id === currentUser);
+            const canManage = (me && (me.role === 'owner' || me.role === 'admin')) || currentIsAdmin === 1 || currentIsAdmin === true;
+            if (!canManage) {
+                memberAddRow.style.display = 'none';
+                return;
+            }
+            try {
+                const res2 = await fetch('/api/users');
+                if (!res2.ok) return;
+                const users = await res2.json();
+                const existingIds = new Set(members.map(m => m.id));
+                const candidates = users.filter(u => !existingIds.has(u.id));
+                memberSearchInput.value = '';
+                memberSuggestions.innerHTML = '';
+                candidates.forEach(u => {
+                    const opt = document.createElement('option');
+                    opt.value = u.username;
+                    opt.label = (u.name ? u.name + ' (@' + u.username + ')' : '@' + u.username);
+                    memberSuggestions.appendChild(opt);
+                });
+                memberAddRow.dataset.groupId = groupId;
+                memberAddRow._candidates = candidates;
+                memberAddRow.style.display = 'flex';
+            } catch (e) {
+                console.error('Failed to load user suggestions:', e);
+            }
+        }
+        
+        async function addMemberByInput() {
+            if (!selectedGroupId) return;
+            const raw = memberSearchInput.value.trim().replace(/^@/, '').toLowerCase();
+            if (!raw) {
+                alert('Введите @username участника');
+                return;
+            }
+            const cand = (memberAddRow._candidates || []).find(u => u.username.toLowerCase() === raw);
+            if (!cand) {
+                alert('Пользователь не найден или уже состоит в группе');
+                return;
+            }
+            const formData = new FormData();
+            formData.append('user_id', cand.id);
+            try {
+                const res = await fetch(`/api/groups/${selectedGroupId}/members`, { method: 'POST', body: formData });
+                if (res.ok) {
+                    await loadGroupMembers(selectedGroupId); // новый участник в списке
+                    await loadGroups();                      // обновить счётчик в сайдбаре
+                } else {
+                    const err = await res.json().catch(() => ({}));
+                    alert(err.detail || 'Не удалось добавить участника');
+                }
+            } catch (err) {
+                console.error('Add member error:', err);
+                alert('Не удалось добавить участника');
             }
         }
         
@@ -1220,6 +1301,10 @@
             } else {
                 div.innerHTML = avatarHtml + escapeHtml(msg.text) + attsHtml + timeHtml;
             }
+            
+            // Phase 6.1b FIX: the div was built but never attached to the DOM
+            // (append lost in the 6.1 refactor) - messages of ALL kinds vanished
+            messagesDiv.appendChild(div);
             
             // Add click handlers for images
             div.querySelectorAll('.attachment-image').forEach(img => {

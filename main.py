@@ -553,7 +553,8 @@ async def api_messages(request: Request, recipient_id: int):
                    sender.avatar_uuid as sender_avatar_uuid
             FROM messages m
             JOIN users sender ON m.sender_id = sender.id
-            WHERE (m.sender_id = ? AND m.recipient_id = ?) OR (m.sender_id = ? AND m.recipient_id = ?)
+            WHERE m.group_id IS NULL
+              AND ((m.sender_id = ? AND m.recipient_id = ?) OR (m.sender_id = ? AND m.recipient_id = ?))
             ORDER BY m.created_at ASC
         """, (user["id"], recipient_id, recipient_id, user["id"])).fetchall()
         
@@ -678,6 +679,20 @@ async def add_group_member(request: Request, group_id: int, user_id: int = Form(
             (group_id, user_id)
         )
         conn.commit()
+    
+    # Phase 6.1b: notify online members so their sidebar picks up the new member
+    with get_db() as conn:
+        member_rows = conn.execute(
+            "SELECT user_id FROM group_members WHERE group_id = ?", (group_id,)
+        ).fetchall()
+    for row in member_rows:
+        uid = row["user_id"]
+        ws_conn = app.state.connections.get(uid)
+        if ws_conn is not None and uid != user["id"]:
+            try:
+                await ws_conn.send_json({"type": "group_added", "group_id": group_id})
+            except Exception:
+                pass  # Connection might have closed
     
     return JSONResponse({"success": True})
 

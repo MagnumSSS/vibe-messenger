@@ -277,6 +277,45 @@ header h1 {
     flex-shrink: 0;
 }
 
+/* Phase 6.1b: add-member row (owner/admin) */
+.member-add-row {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    min-width: 0;
+}
+
+.member-add-row input {
+    flex: 1;
+    min-width: 0;
+    padding: 0.5rem 0.85rem;
+    border: 1px solid var(--border-color, #dddddd);
+    border-radius: 999px;
+    font-size: 0.9rem;
+    background: var(--input-bg, #ffffff);
+    color: var(--text-primary, #333333);
+    outline: none;
+}
+
+.member-add-row input:focus {
+    border-color: var(--accent-color);
+}
+
+.member-add-btn {
+    background: var(--btn-primary-bg);
+    color: var(--btn-primary-text, #ffffff);
+    border: none;
+    border-radius: 999px;
+    padding: 0.5rem 0.95rem;
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 600;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.member-add-btn:hover { filter: brightness(0.92); }
+
 /* Phase 6.1: group bubbles - sender name above the text inside a body column */
 .message-body { display: flex; flex-direction: column; min-width: 0; }
 
