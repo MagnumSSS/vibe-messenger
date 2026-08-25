@@ -3,6 +3,8 @@ import sqlite3
 import hashlib
 import secrets
 import uuid
+import json
+import base64
 import mimetypes
 from datetime import datetime, timezone, timedelta
 from contextlib import contextmanager
@@ -250,6 +252,33 @@ def ensure_schema():
             if col_name not in msg_columns:
                 conn.execute(f"ALTER TABLE messages ADD COLUMN {col_name} {col_type}")
                 print(f"Added column messages.{col_name}")
+        
+        # Phase 6.1: group support - NULL group_id = 1-on-1 dialog, set = group message
+        if "group_id" not in msg_columns:
+            conn.execute("ALTER TABLE messages ADD COLUMN group_id INTEGER NULL")
+            print("Added column messages.group_id")
+        
+        # Phase 6.1: groups tables
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                owner_id INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (owner_id) REFERENCES users(id)
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS group_members (
+                group_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                role TEXT DEFAULT 'member',
+                joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (group_id, user_id),
+                FOREIGN KEY (group_id) REFERENCES groups(id),
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
         
         # Create attachments table if not exists (Phase 2)
         conn.execute("""
@@ -542,6 +571,191 @@ async def api_messages(request: Request, recipient_id: int):
     return JSONResponse(result)
 
 
+# ============== Phase 6.1: Groups ==============
+
+def get_group_membership(group_id: int, user_id: int):
+    """Return dict {user_id, group_id, role, joined_at} if user is a member of the group, else None"""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT group_id, user_id, role, joined_at FROM group_members WHERE group_id = ? AND user_id = ?",
+            (group_id, user_id)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+@app.post("/api/groups")
+async def create_group(request: Request, name: str = Form("")):
+    """Create a group; creator becomes owner and first member"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    name = (name or "").strip()
+    if not name or len(name) > 50:
+        raise HTTPException(status_code=400, detail="Group name must be 1-50 characters")
+    
+    with get_db() as conn:
+        conn.execute("INSERT INTO groups (name, owner_id) VALUES (?, ?)", (name, user["id"]))
+        group_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, 'owner')",
+            (group_id, user["id"])
+        )
+        conn.commit()
+    
+    return JSONResponse({"id": group_id, "name": name})
+
+
+@app.get("/api/groups")
+async def list_groups(request: Request):
+    """Groups the current user belongs to (id, name, member count)"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    with get_db() as conn:
+        rows = conn.execute("""
+            SELECT g.id, g.name, g.owner_id, COUNT(gm.user_id) AS member_count
+            FROM groups g
+            JOIN group_members gm ON gm.group_id = g.id
+            WHERE g.id IN (SELECT group_id FROM group_members WHERE user_id = ?)
+            GROUP BY g.id, g.name, g.owner_id
+            ORDER BY g.created_at ASC, g.id ASC
+        """, (user["id"],)).fetchall()
+    
+    return JSONResponse([dict(r) for r in rows])
+
+
+@app.get("/api/groups/{group_id}/members")
+async def list_group_members(request: Request, group_id: int):
+    """Member list with roles - only for group members"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    if not get_group_membership(group_id, user["id"]):
+        raise HTTPException(status_code=403, detail="Not a group member")
+    
+    with get_db() as conn:
+        rows = conn.execute("""
+            SELECT u.id, u.name, u.username, u.avatar_uuid, gm.role, gm.joined_at
+            FROM group_members gm
+            JOIN users u ON u.id = gm.user_id
+            WHERE gm.group_id = ?
+            ORDER BY gm.joined_at ASC, u.id ASC
+        """, (group_id,)).fetchall()
+    
+    return JSONResponse([dict(r) for r in rows])
+
+
+@app.post("/api/groups/{group_id}/members")
+async def add_group_member(request: Request, group_id: int, user_id: int = Form(...)):
+    """Add a member - allowed for the group owner or platform admin; no duplicates"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    with get_db() as conn:
+        grp = conn.execute("SELECT id, owner_id FROM groups WHERE id = ?", (group_id,)).fetchone()
+        if not grp:
+            raise HTTPException(status_code=404, detail="Group not found")
+        
+        if grp["owner_id"] != user["id"] and not user.get("is_admin"):
+            raise HTTPException(status_code=403, detail="Only the group owner can add members")
+        
+        target = conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not target:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        dupe = conn.execute(
+            "SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?", (group_id, user_id)
+        ).fetchone()
+        if dupe:
+            raise HTTPException(status_code=400, detail="Already a member")
+        
+        conn.execute(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, 'member')",
+            (group_id, user_id)
+        )
+        conn.commit()
+    
+    return JSONResponse({"success": True})
+
+
+@app.delete("/api/groups/{group_id}/members/{user_id}")
+async def remove_group_member(request: Request, group_id: int, user_id: int):
+    """Kick/leave: owner kicks anyone; admin kicks only plain 'member'; self-removal = leave"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    if not get_group_membership(group_id, user["id"]):
+        raise HTTPException(status_code=403, detail="Not a group member")
+    
+    with get_db() as conn:
+        grp = conn.execute("SELECT id, owner_id FROM groups WHERE id = ?", (group_id,)).fetchone()
+        if not grp:
+            raise HTTPException(status_code=404, detail="Group not found")
+        
+        target = conn.execute(
+            "SELECT user_id, role FROM group_members WHERE group_id = ? AND user_id = ?",
+            (group_id, user_id)
+        ).fetchone()
+        if not target:
+            raise HTTPException(status_code=404, detail="Not a member")
+        
+        # Permission matrix: self-leave always OK; owner kicks anyone;
+        # platform admin kicks only role='member'; everyone else forbidden
+        allowed = (
+            user_id == user["id"]
+            or grp["owner_id"] == user["id"]
+            or (bool(user.get("is_admin")) and target["role"] == "member")
+        )
+        if not allowed:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        
+        conn.execute(
+            "DELETE FROM group_members WHERE group_id = ? AND user_id = ?", (group_id, user_id)
+        )
+        conn.commit()
+    
+    return JSONResponse({"success": True})
+
+
+@app.get("/api/groups/{group_id}/messages")
+async def group_messages(request: Request, group_id: int):
+    """Group chat history - only for members; includes sender name/username/avatar and attachments"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    if not get_group_membership(group_id, user["id"]):
+        raise HTTPException(status_code=403, detail="Not a group member")
+    
+    with get_db() as conn:
+        messages = conn.execute("""
+            SELECT m.id, m.sender_id, m.recipient_id, m.group_id, m.text, m.created_at,
+                   u.name AS sender_name, u.username AS sender_username,
+                   u.avatar_uuid AS sender_avatar_uuid
+            FROM messages m
+            JOIN users u ON m.sender_id = u.id
+            WHERE m.group_id = ?
+            ORDER BY m.created_at ASC, m.id ASC
+        """, (group_id,)).fetchall()
+        
+        result = []
+        for msg in messages:
+            msg_dict = dict(msg)
+            attachments = conn.execute(
+                "SELECT id, uuid_name, orig_name, mime, size, created_at FROM attachments WHERE message_id = ?",
+                (msg_dict["id"],)
+            ).fetchall()
+            msg_dict["attachments"] = [dict(a) for a in attachments]
+            result.append(msg_dict)
+    
+    return JSONResponse(result)
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     try:
@@ -561,13 +775,16 @@ async def websocket_endpoint(websocket: WebSocket):
             pass  # Already closed
         return
     
-    # Parse session to get user_id (simplified - in production use itsdangerous)
-    from itsdangerous import URLSafeTimedSerializer, BadSignature
-    serializer = URLSafeTimedSerializer(SECRET_KEY)
+    # Parse session to get user_id
+    # Phase 6.1 fix: SessionMiddleware (starlette 0.36) signs the cookie with a
+    # TimestampSigner, not URLSafeTimedSerializer - the old parse rejected EVERY
+    # websocket with 4001, so live delivery never worked. Mirror the middleware:
+    from itsdangerous import TimestampSigner, BadSignature
     try:
-        session = serializer.loads(session_data)
+        signed = TimestampSigner(str(SECRET_KEY)).unsign(session_data, max_age=14 * 24 * 60 * 60)
+        session = json.loads(base64.b64decode(signed))
         user_id = session.get("user_id")
-    except BadSignature:
+    except (BadSignature, Exception):
         try:
             await websocket.close(code=4001)
         except Exception:
@@ -762,7 +979,8 @@ async def delete_theme_image(request: Request, image_type: str):
 @app.post("/api/send")
 async def send_message(
     request: Request,
-    recipient_id: int = Form(...),
+    recipient_id: int = Form(0),
+    group_id: int = Form(0),
     text: str = Form(""),
     files: list[UploadFile] = File(default=[])
 ):
@@ -775,9 +993,24 @@ async def send_message(
         banned_until = datetime.fromisoformat(user["banned_until"].replace("Z", "+00:00").replace("+00:00", ""))
         raise HTTPException(status_code=403, detail=f"You are banned until {banned_until.strftime('%Y-%m-%d %H:%M')}")
     
-    # Check if there's a block between users
-    if check_block(user["id"], recipient_id):
-        raise HTTPException(status_code=403, detail="Communication is blocked")
+    # Phase 6.1: group_id set -> group message (recipient_id forced to 0, blocks skipped in MVP)
+    is_group = group_id > 0
+    if is_group:
+        with get_db() as conn:
+            grp = conn.execute("SELECT id FROM groups WHERE id = ?", (group_id,)).fetchone()
+            if not grp:
+                raise HTTPException(status_code=404, detail="Group not found")
+            membership = conn.execute(
+                "SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?",
+                (group_id, user["id"])
+            ).fetchone()
+        if not membership:
+            raise HTTPException(status_code=403, detail="Not a group member")
+        recipient_id = 0
+    else:
+        # Check if there's a block between users (1-on-1 only)
+        if check_block(user["id"], recipient_id):
+            raise HTTPException(status_code=403, detail="Communication is blocked")
     
     # Allow empty text only if there are attachments
     if not text.strip() and not files:
@@ -787,25 +1020,25 @@ async def send_message(
         raise HTTPException(status_code=400, detail="Message too long")
     
     with get_db() as conn:
-        # Verify recipient exists
-        recipient = conn.execute("SELECT id FROM users WHERE id = ?", (recipient_id,)).fetchone()
-        if not recipient:
-            raise HTTPException(status_code=404, detail="Recipient not found")
+        if not is_group:
+            # Verify recipient exists
+            recipient = conn.execute("SELECT id FROM users WHERE id = ?", (recipient_id,)).fetchone()
+            if not recipient:
+                raise HTTPException(status_code=404, detail="Recipient not found")
 
-        # FIX BAN: Check if recipient is banned - cannot send to banned user
-        recipient_row = conn.execute("SELECT banned_until FROM users WHERE id = ?", (recipient_id,)).fetchone()
-        if recipient_row and recipient_row[0]:
-            try:
-                banned_until = datetime.fromisoformat(recipient_row[0].replace("Z", "+00:00").replace("+00:00", ""))
-                if banned_until > datetime.now():
-                    raise HTTPException(status_code=403, detail="Пользователь недоступен")
-            except (ValueError, AttributeError):
-                pass
-
+            # FIX BAN: Check if recipient is banned - cannot send to banned user
+            recipient_row = conn.execute("SELECT banned_until FROM users WHERE id = ?", (recipient_id,)).fetchone()
+            if recipient_row and recipient_row[0]:
+                try:
+                    banned_until = datetime.fromisoformat(recipient_row[0].replace("Z", "+00:00").replace("+00:00", ""))
+                    if banned_until > datetime.now():
+                        raise HTTPException(status_code=403, detail="Пользователь недоступен")
+                except (ValueError, AttributeError):
+                    pass
         
         conn.execute(
-            "INSERT INTO messages (sender_id, recipient_id, text) VALUES (?, ?, ?)",
-            (user["id"], recipient_id, text)
+            "INSERT INTO messages (sender_id, recipient_id, text, group_id) VALUES (?, ?, ?, ?)",
+            (user["id"], recipient_id, text, group_id if is_group else None)
         )
         message_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         
@@ -848,7 +1081,7 @@ async def send_message(
         
         # Get the inserted message with attachments
         msg = conn.execute(
-            "SELECT id, sender_id, recipient_id, text, created_at FROM messages WHERE id = ?",
+            "SELECT id, sender_id, recipient_id, group_id, text, created_at FROM messages WHERE id = ?",
             (message_id,)
         ).fetchone()
         
@@ -862,8 +1095,28 @@ async def send_message(
     msg_dict = dict(msg)
     msg_dict["attachments"] = [dict(a) for a in attachments]
     
-    # Send via WebSocket if recipient is online
-    if recipient_id in app.state.connections:
+    if is_group:
+        # Phase 6.1: group message carries sender identity so receivers can render name/avatar
+        msg_dict["sender_name"] = user.get("name") or ""
+        msg_dict["sender_username"] = user.get("username") or ""
+        msg_dict["sender_avatar_uuid"] = user.get("avatar_uuid") or ""
+        
+        # Fan out via WebSocket to all online group members except the sender
+        with get_db() as conn:
+            member_rows = conn.execute(
+                "SELECT user_id FROM group_members WHERE group_id = ?", (group_id,)
+            ).fetchall()
+        for row in member_rows:
+            uid = row["user_id"]
+            if uid == user["id"]:
+                continue
+            ws_conn = app.state.connections.get(uid)
+            if ws_conn is not None:
+                try:
+                    await ws_conn.send_json(msg_dict)
+                except Exception:
+                    pass  # Connection might have closed
+    elif recipient_id in app.state.connections:
         try:
             await app.state.connections[recipient_id].send_json(msg_dict)
         except:
@@ -882,7 +1135,7 @@ async def get_attachment(request: Request, attachment_id: int):
     with get_db() as conn:
         # Get attachment info
         att = conn.execute("""
-            SELECT a.id, a.uuid_name, a.orig_name, a.mime, a.size, m.sender_id, m.recipient_id
+            SELECT a.id, a.uuid_name, a.orig_name, a.mime, a.size, m.sender_id, m.recipient_id, m.group_id
             FROM attachments a
             JOIN messages m ON a.message_id = m.id
             WHERE a.id = ?
@@ -891,8 +1144,11 @@ async def get_attachment(request: Request, attachment_id: int):
         if not att:
             raise HTTPException(status_code=404, detail="Attachment not found")
         
-        # Check if user is participant in the dialog
-        if user["id"] != att["sender_id"] and user["id"] != att["recipient_id"]:
+        # Phase 6.1: group attachments are for group members only; dialogs keep participant check
+        if att["group_id"]:
+            if not get_group_membership(att["group_id"], user["id"]):
+                raise HTTPException(status_code=403, detail="Forbidden")
+        elif user["id"] != att["sender_id"] and user["id"] != att["recipient_id"]:
             raise HTTPException(status_code=403, detail="Forbidden")
     
     # Serve the file
@@ -921,7 +1177,7 @@ async def get_attachment_info(request: Request, attachment_id: int):
     
     with get_db() as conn:
         att = conn.execute("""
-            SELECT a.id, a.uuid_name, a.orig_name, a.mime, a.size, a.created_at, m.sender_id, m.recipient_id
+            SELECT a.id, a.uuid_name, a.orig_name, a.mime, a.size, a.created_at, m.sender_id, m.recipient_id, m.group_id
             FROM attachments a
             JOIN messages m ON a.message_id = m.id
             WHERE a.id = ?
@@ -930,8 +1186,11 @@ async def get_attachment_info(request: Request, attachment_id: int):
         if not att:
             raise HTTPException(status_code=404, detail="Attachment not found")
         
-        # Check if user is participant in the dialog
-        if user["id"] != att["sender_id"] and user["id"] != att["recipient_id"]:
+        # Phase 6.1: group attachments are for group members only; dialogs keep participant check
+        if att["group_id"]:
+            if not get_group_membership(att["group_id"], user["id"]):
+                raise HTTPException(status_code=403, detail="Forbidden")
+        elif user["id"] != att["sender_id"] and user["id"] != att["recipient_id"]:
             raise HTTPException(status_code=403, detail="Forbidden")
     
     return JSONResponse(dict(att))

@@ -170,6 +170,123 @@ header h1 {
 
 .user-list { list-style: none; }
 
+/* ===== Phase 6.1: groups section in the sidebar ===== */
+.groups-section { border-bottom: 1px solid var(--border-color, #dddddd); }
+
+.groups-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 1rem 0.5rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+.group-add-btn {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    border: 1px solid var(--border-color, #dddddd);
+    background: var(--chip-bg, #e4e6eb);
+    color: var(--text-primary, #333333);
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+}
+
+.group-add-btn:hover { filter: brightness(0.95); }
+
+.group-list { list-style: none; }
+
+.group-item {
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border-color, #dddddd);
+    cursor: pointer;
+    transition: background 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.group-item:hover { background: var(--hover-bg, #f5f5f5); }
+.group-item.active { background: var(--active-bg, #e6f2ff); box-shadow: inset 3px 0 0 var(--accent-color); }
+
+.group-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.1rem;
+    background: color-mix(in srgb, var(--accent-color) 22%, transparent);
+}
+
+.group-info { flex: 1; min-width: 0; }
+
+.group-name {
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.group-count { font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.15rem; }
+
+/* Phase 6.1: members modal list */
+.members-list { list-style: none; margin-bottom: 1rem; text-align: left; }
+
+.member-item {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--border-color, #dddddd);
+}
+
+.member-item:last-child { border-bottom: none; }
+
+.member-avatar { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; flex-shrink: 0; }
+
+.member-info { flex: 1; min-width: 0; }
+
+.member-name {
+    font-weight: 600;
+    color: var(--text-primary);
+    font-size: 0.9rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.member-username { font-size: 0.8rem; color: var(--text-secondary); }
+
+.member-role {
+    font-size: 0.7rem;
+    padding: 0.15rem 0.55rem;
+    border-radius: 999px;
+    background: var(--chip-bg, #e4e6eb);
+    color: var(--text-primary, #333333);
+    flex-shrink: 0;
+}
+
+/* Phase 6.1: group bubbles - sender name above the text inside a body column */
+.message-body { display: flex; flex-direction: column; min-width: 0; }
+
+.message-sender-name {
+    font-size: 0.78rem;
+    font-weight: 700;
+    opacity: 0.85;
+    margin-bottom: 0.15rem;
+}
+
 .user-item { 
     padding: 1rem; 
     border-bottom: 1px solid var(--border-color, #dddddd); 

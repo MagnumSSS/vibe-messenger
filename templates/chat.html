@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Chat - VibeBunker</title>
-    <link rel="stylesheet" href="/static/style.css?v=5.4b">
+    <link rel="stylesheet" href="/static/style.css?v=6.1">
 </head>
 <body>
     <header>
@@ -26,6 +26,14 @@
             <div style="padding: 1rem; border-bottom: 1px solid var(--border-color, #eeeeee);">
                 <input type="text" id="searchInput" class="search-input" placeholder="Search by name or @username...">
             </div>
+            <!-- Phase 6.1: groups section -->
+            <div class="groups-section">
+                <div class="groups-header">
+                    <span>Группы</span>
+                    <button type="button" id="createGroupBtn" class="group-add-btn" title="Создать группу">+</button>
+                </div>
+                <ul class="group-list" id="groupList"></ul>
+            </div>
             <ul class="user-list" id="userList">
                 {% for u in users %}
                 <li class="user-item" data-id="{{ u.id }}" data-name="{{ u.name }}" data-username="{{ u.username }}" data-avatar="{{ u.avatar_uuid or '' }}">
@@ -44,6 +52,7 @@
                 <img class="chat-header-avatar" id="chatHeaderAvatar" src="/static/default-avatar.png" alt="" title="View profile" style="width: 32px; height: 32px; border-radius: 50%; margin-right: 8px; cursor: pointer;">
                 <span id="chatHeaderName" style="cursor: pointer;" title="View profile">Select a contact</span>
                 <div class="chat-header-actions" id="chatHeaderActions" style="display: none;">
+                    <button id="groupMembersBtn" class="delete-chat-btn" title="Участники" style="display: none;">👥 Участники</button>
                     <button id="deleteChatBtn" class="delete-chat-btn" title="Delete chat">🗑️</button>
                 </div>
             </div>
@@ -130,6 +139,30 @@
         </div>
     </div>
     
+    <!-- Create Group Modal (Phase 6.1) -->
+    <div class="modal" id="createGroupModal">
+        <div class="profile-modal-content">
+            <h2>Новая группа</h2>
+            <div class="profile-form-group">
+                <label>Название</label>
+                <input type="text" id="groupNameInput" maxlength="50" placeholder="Название группы">
+            </div>
+            <div class="delete-modal-buttons">
+                <button class="cancel-btn" id="cancelCreateGroupBtn">Отмена</button>
+                <button class="profile-save-btn" id="confirmCreateGroupBtn">Создать</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Group Members Modal (Phase 6.1; управление - в 6.2) -->
+    <div class="modal" id="groupMembersModal">
+        <div class="profile-modal-content">
+            <h2 id="groupMembersTitle">Участники</h2>
+            <ul class="members-list" id="membersList"></ul>
+            <button class="glass-chip" id="closeMembersBtn">Закрыть</button>
+        </div>
+    </div>
+
     <!-- Delete Chat Modal -->
     <div class="modal" id="deleteChatModal">
         <div class="delete-modal-content">
@@ -161,7 +194,7 @@
         const currentUsername = {{ user.username | tojson }};
         const userThemeJson = {{ user.theme_json | tojson }} || '{}';
         let selectedUserId = null;
-        let selectedUserName = null;
+        let selectedGroupId = null; // Phase 6.1: active group chat (null = 1-on-1 mode)
         let ws = null;
         let attachedFiles = [];
         const MAX_FILE_SIZE = {{ max_upload_bytes | tojson }};
@@ -194,6 +227,18 @@
         const modalClose = document.getElementById('modalClose');
         const modalDownload = document.getElementById('modalDownload');
         const searchInput = document.getElementById('searchInput');
+        
+        // Phase 6.1: group UI elements
+        const groupList = document.getElementById('groupList');
+        const createGroupBtn = document.getElementById('createGroupBtn');
+        const createGroupModal = document.getElementById('createGroupModal');
+        const groupNameInput = document.getElementById('groupNameInput');
+        const cancelCreateGroupBtn = document.getElementById('cancelCreateGroupBtn');
+        const confirmCreateGroupBtn = document.getElementById('confirmCreateGroupBtn');
+        const groupMembersBtn = document.getElementById('groupMembersBtn');
+        const groupMembersModal = document.getElementById('groupMembersModal');
+        const membersList = document.getElementById('membersList');
+        const closeMembersBtn = document.getElementById('closeMembersBtn');
         
         // Profile modal elements
         const profileModal = document.getElementById('profileModal');
@@ -828,6 +873,64 @@
                 scheduleThemeSave();
                 applyEditorContrast();
             });
+            
+            // ===== Phase 6.1: group modals =====
+            createGroupBtn.addEventListener('click', () => {
+                groupNameInput.value = '';
+                createGroupModal.classList.add('active');
+                groupNameInput.focus();
+            });
+            
+            cancelCreateGroupBtn.addEventListener('click', () => {
+                createGroupModal.classList.remove('active');
+            });
+            
+            createGroupModal.addEventListener('click', (e) => {
+                if (e.target === createGroupModal) {
+                    createGroupModal.classList.remove('active');
+                }
+            });
+            
+            confirmCreateGroupBtn.addEventListener('click', async () => {
+                const name = groupNameInput.value.trim();
+                if (!name || name.length > 50) {
+                    alert('Название должно быть от 1 до 50 символов');
+                    return;
+                }
+                const formData = new FormData();
+                formData.append('name', name);
+                try {
+                    const res = await fetch('/api/groups', { method: 'POST', body: formData });
+                    if (res.ok) {
+                        const grp = await res.json();
+                        createGroupModal.classList.remove('active');
+                        await loadGroups();
+                        await openGroupChat(grp.id, grp.name);
+                    } else {
+                        const err = await res.json().catch(() => ({}));
+                        alert(err.detail || 'Не удалось создать группу');
+                    }
+                } catch (err) {
+                    console.error('Create group error:', err);
+                    alert('Не удалось создать группу');
+                }
+            });
+            
+            groupMembersBtn.addEventListener('click', async () => {
+                if (!selectedGroupId) return;
+                await loadGroupMembers(selectedGroupId);
+                groupMembersModal.classList.add('active');
+            });
+            
+            closeMembersBtn.addEventListener('click', () => {
+                groupMembersModal.classList.remove('active');
+            });
+            
+            groupMembersModal.addEventListener('click', (e) => {
+                if (e.target === groupMembersModal) {
+                    groupMembersModal.classList.remove('active');
+                }
+            });
         });
 
         // Search functionality
@@ -910,7 +1013,13 @@
             ws.onopen = () => console.log('WS connected');
             ws.onmessage = (event) => {
                 const msg = JSON.parse(event.data);
-                if (msg.sender_id === selectedUserId || msg.recipient_id === selectedUserId) {
+                // Phase 6.1: group messages route by group_id, dialogs by participant ids
+                if (msg.group_id) {
+                    if (msg.group_id === selectedGroupId) {
+                        appendMessage(msg);
+                        scrollToBottom();
+                    }
+                } else if (msg.sender_id === selectedUserId || msg.recipient_id === selectedUserId) {
                     appendMessage(msg);
                     scrollToBottom();
                 }
@@ -942,18 +1051,28 @@
         // Render avatars on page load
         renderUserAvatars();
         
+        // Phase 6.1: load my groups into the sidebar on page load
+        loadGroups();
+        
         // Load users and handle selection
         document.querySelectorAll('.user-item').forEach(item => {
             item.addEventListener('click', async () => {
                 document.querySelectorAll('.user-item').forEach(i => i.classList.remove('active'));
+                document.querySelectorAll('.group-item').forEach(i => i.classList.remove('active'));
                 item.classList.add('active');
                 
                 selectedUserId = parseInt(item.dataset.id);
+                selectedGroupId = null; // Phase 6.1: leaving group mode
                 const userName = item.dataset.name;
                 const userAvatar = item.dataset.avatar;
                 
                 chatHeaderName.textContent = userName;
                 chatHeaderAvatar.src = getAvatarUrl(userAvatar);
+                // restore dialog-mode header controls
+                chatHeaderAvatar.style.display = '';
+                chatHeaderActions.style.display = 'none';
+                groupMembersBtn.style.display = 'none';
+                deleteChatBtn.style.display = '';
                 inputArea.style.display = 'flex';
                 
                 // Load messages
@@ -965,30 +1084,120 @@
             });
         });
         
+        // ===== Phase 6.1: groups UI =====
+        async function loadGroups() {
+            try {
+                const res = await fetch('/api/groups');
+                if (!res.ok) return;
+                const groups = await res.json();
+                groupList.innerHTML = '';
+                groups.forEach(g => {
+                    const li = document.createElement('li');
+                    li.className = 'group-item';
+                    li.dataset.groupId = g.id;
+                    li.dataset.groupName = g.name;
+                    li.innerHTML = `
+                        <div class="group-icon">👥</div>
+                        <div class="group-info">
+                            <div class="group-name">${escapeHtml(g.name)}</div>
+                            <div class="group-count">${g.member_count} участников</div>
+                        </div>
+                    `;
+                    li.addEventListener('click', () => openGroupChat(g.id, g.name));
+                    groupList.appendChild(li);
+                });
+            } catch (e) {
+                console.error('Failed to load groups:', e);
+            }
+        }
+        
+        async function openGroupChat(groupId, groupName) {
+            document.querySelectorAll('.user-item').forEach(i => i.classList.remove('active'));
+            document.querySelectorAll('.group-item').forEach(i => i.classList.remove('active'));
+            const li = document.querySelector(`.group-item[data-group-id="${groupId}"]`);
+            if (li) li.classList.add('active');
+            
+            selectedUserId = null;
+            selectedGroupId = groupId;
+            
+            chatHeaderName.textContent = groupName;
+            chatHeaderAvatar.style.display = 'none'; // no peer avatar in group mode
+            chatHeaderActions.style.display = 'flex';
+            deleteChatBtn.style.display = 'none';    // dialog deletion is 1-on-1 only for now
+            groupMembersBtn.style.display = '';
+            inputArea.style.display = 'flex';
+            
+            await loadGroupMessages(groupId);
+        }
+        
+        async function loadGroupMessages(groupId) {
+            try {
+                const res = await fetch(`/api/groups/${groupId}/messages`);
+                if (!res.ok) return;
+                const msgs = await res.json();
+                messagesDiv.innerHTML = '';
+                msgs.forEach(m => {
+                    if (!m.group_id) m.group_id = groupId; // normalize older rows
+                    appendMessage(m);
+                });
+                scrollToBottom();
+            } catch (e) {
+                console.error('Failed to load group messages:', e);
+            }
+        }
+        
+        async function loadGroupMembers(groupId) {
+            membersList.innerHTML = '';
+            try {
+                const res = await fetch(`/api/groups/${groupId}/members`);
+                if (!res.ok) return;
+                const members = await res.json();
+                const ROLE_LABELS = { owner: 'владелец', admin: 'админ', member: 'участник' };
+                members.forEach(m => {
+                    const li = document.createElement('li');
+                    li.className = 'member-item';
+                    li.innerHTML = `
+                        <img class="member-avatar" src="${getAvatarUrl(m.avatar_uuid)}" alt="">
+                        <div class="member-info">
+                            <div class="member-name">${escapeHtml(m.name)}</div>
+                            <div class="member-username">@${escapeHtml(m.username)}</div>
+                        </div>
+                        <span class="member-role">${ROLE_LABELS[m.role] || escapeHtml(m.role)}</span>
+                    `;
+                    membersList.appendChild(li);
+                });
+            } catch (e) {
+                console.error('Failed to load group members:', e);
+            }
+        }
+        
         function appendMessage(msg) {
             const div = document.createElement('div');
-            div.className = `message ${msg.sender_id === currentUser ? 'sent' : 'received'}`;
+            const mine = msg.sender_id === currentUser;
+            div.className = `message ${mine ? 'sent' : 'received'}`;
+            const isGroupMsg = !!msg.group_id;
             
             // Build avatar URL for received messages
             let avatarHtml = '';
-            if (msg.sender_id !== currentUser && msg.sender_avatar_uuid) {
-                const avatarSrc = getAvatarUrl(msg.sender_avatar_uuid);
-                avatarHtml = `<img class="message-avatar" src="${avatarSrc}" alt="" onerror="this.src='/static/default-avatar.png'">`;
-            } else if (msg.sender_id !== currentUser) {
-                avatarHtml = `<img class="message-avatar" src="/static/default-avatar.png" alt="">`;
+            if (!mine) {
+                if (msg.sender_avatar_uuid) {
+                    const avatarSrc = getAvatarUrl(msg.sender_avatar_uuid);
+                    avatarHtml = `<img class="message-avatar" src="${avatarSrc}" alt="" onerror="this.src='/static/default-avatar.png'">`;
+                } else {
+                    avatarHtml = `<img class="message-avatar" src="/static/default-avatar.png" alt="">`;
+                }
             }
             
-            let html = avatarHtml + escapeHtml(msg.text);
-            
-            // Add attachments
+            // Attachments
+            let attsHtml = '';
             if (msg.attachments && msg.attachments.length > 0) {
-                html += '<div class="message-attachments">';
+                let atts = '';
                 msg.attachments.forEach(att => {
                     const attUrl = `/api/attachment/${att.id}`;
                     if (isImage(att.mime)) {
-                        html += `<img class="attachment-image" src="${attUrl}" alt="${escapeHtml(att.orig_name)}" data-url="${attUrl}" data-orig-name="${escapeHtml(att.orig_name)}">`;
+                        atts += `<img class="attachment-image" src="${attUrl}" alt="${escapeHtml(att.orig_name)}" data-url="${attUrl}" data-orig-name="${escapeHtml(att.orig_name)}">`;
                     } else {
-                        html += `
+                        atts += `
                             <div class="attachment-file">
                                 <span>📄 ${escapeHtml(att.orig_name)} (${formatFileSize(att.size)})</span>
                                 <a href="${attUrl}" download="${escapeHtml(att.orig_name)}">⬇️</a>
@@ -996,12 +1205,21 @@
                         `;
                     }
                 });
-                html += '</div>';
+                attsHtml = `<div class="message-attachments">${atts}</div>`;
             }
             
-            html += `<div class="message-time">${formatTime(msg.created_at)}</div>`;
-            div.innerHTML = html;
-            messagesDiv.appendChild(div);
+            const timeHtml = `<div class="message-time">${formatTime(msg.created_at)}</div>`;
+            
+            // Phase 6.1: in groups other people's bubbles show sender name above the text;
+            // 1-on-1 keeps the legacy flat structure byte-for-byte (regression safety)
+            if (isGroupMsg && !mine) {
+                const nameHtml = msg.sender_name
+                    ? `<div class="message-sender-name">${escapeHtml(msg.sender_name)}</div>`
+                    : '';
+                div.innerHTML = avatarHtml + `<div class="message-body">${nameHtml}${escapeHtml(msg.text)}${attsHtml}${timeHtml}</div>`;
+            } else {
+                div.innerHTML = avatarHtml + escapeHtml(msg.text) + attsHtml + timeHtml;
+            }
             
             // Add click handlers for images
             div.querySelectorAll('.attachment-image').forEach(img => {
@@ -1049,9 +1267,14 @@
         async function sendMessage() {
             const text = messageInput.value.trim();
             if (!text && attachedFiles.length === 0) return;
+            // Phase 6.1: need either a dialog or a group selected
+            if (!selectedUserId && !selectedGroupId) return;
             
             const formData = new FormData();
-            formData.append('recipient_id', selectedUserId);
+            formData.append('recipient_id', selectedUserId || 0);
+            if (selectedGroupId) {
+                formData.append('group_id', selectedGroupId);
+            }
             formData.append('text', text);
             
             attachedFiles.forEach(file => {
