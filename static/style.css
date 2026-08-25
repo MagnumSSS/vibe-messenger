@@ -20,8 +20,9 @@
     --active-bg: #e6f2ff;
     --chip-bg: #e4e6eb;
     --overlay-bg: rgba(0,0,0,0.8);
-    --header-btn-bg: rgba(255,255,255,0.2);
-    --header-btn-hover-bg: rgba(255,255,255,0.3);
+    --header-btn-bg: rgba(0,0,0,0.35);
+    --header-btn-hover-bg: rgba(0,0,0,0.5);
+    --header-chip-text: #ffffff;
     --bubble-overlay-bg: rgba(255,255,255,0.2);
     --disabled-bg: #cccccc;
     --attach-hover-bg: #d0d2d5;
@@ -76,14 +77,37 @@ header {
     background-repeat: no-repeat;
 }
 
-header h1 { font-size: 1.25rem; color: var(--header-text, white); }
+/* Phase 5.2h: header content wrapped in translucent blur chips - readable on ANY image */
+header h1,
+.logout-btn, .settings-btn, .delete-chat-btn, .profile-btn {
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+}
+
+header h1 {
+    font-size: 1.25rem;
+    color: var(--header-chip-text, #ffffff);
+    background: var(--header-btn-bg, rgba(0,0,0,0.35));
+    padding: 0.3rem 0.75rem;
+    border-radius: 8px;
+}
+
+.badge {
+    display: inline-block;
+    background: var(--accent-color);
+    color: var(--btn-primary-text, #ffffff);
+    padding: 0.25rem 0.6rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
 
 .logout-btn, .settings-btn, .delete-chat-btn, .profile-btn { 
-    background: var(--header-btn-bg, rgba(255,255,255,0.2)); 
+    background: var(--header-btn-bg, rgba(0,0,0,0.35)); 
     border: none; 
-    color: var(--header-text, white); 
+    color: var(--header-chip-text, #ffffff); 
     padding: 0.5rem 1rem; 
-    border-radius: 4px; 
+    border-radius: 999px; 
     cursor: pointer; 
     text-decoration: none; 
     font-size: 0.9rem; 
@@ -125,7 +149,7 @@ header h1 { font-size: 1.25rem; color: var(--header-text, white); }
 }
 
 .user-item:hover { background: var(--hover-bg, #f5f5f5); }
-.user-item.active { background: var(--active-bg, #e6f2ff); }
+.user-item.active { background: var(--active-bg, #e6f2ff); box-shadow: inset 3px 0 0 var(--accent-color); }
 
 .user-avatar {
     width: 40px;
@@ -155,17 +179,40 @@ header h1 { font-size: 1.25rem; color: var(--header-text, white); }
 .user-username { 
     font-size: 0.85rem; 
     color: var(--text-secondary); 
-    margin-top: 0.25rem; 
+    margin-top: 0.25rem;
 }
+
+/* Phase 5.2h: "accent" token drives search highlight + input focus */
+.search-input {
+    width: 100%;
+    padding: 0.5rem;
+    border: 1px solid var(--border-color, #dddddd);
+    border-radius: 4px;
+    font-size: 0.9rem;
+    background: var(--input-bg, #ffffff);
+    color: var(--text-primary, #333333);
+    outline: none;
+}
+
+.search-input:focus,
+.input-area input:focus {
+    border-color: var(--accent-color);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-color) 30%, transparent);
+}
+
+/* Phase 5.2h: "panel" token drives panel surfaces; wallpaper is applied to .chat-area */
+.sidebar, .contacts-panel { background: var(--panel-color); }
 
 .chat-area {
     flex: 1;
     display: flex;
     flex-direction: column;
     background: var(--panel-color);
+    background-image: var(--wallpaper-img);
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
 }
-
-.chat-area, .sidebar, .contacts-panel { background: var(--bg-color, #f5f6fa); }
 
 .chat-header { 
     padding: 1rem; 
@@ -174,6 +221,7 @@ header h1 { font-size: 1.25rem; color: var(--header-text, white); }
     display: flex;
     justify-content: space-between;
     align-items: center;
+    background: var(--panel-color);
 }
 
 .chat-header-actions {
@@ -203,6 +251,10 @@ header h1 { font-size: 1.25rem; color: var(--header-text, white); }
     align-self: flex-end; 
     background: var(--bubble-sent-bg); 
     color: var(--bubble-sent-text); 
+    background-image: var(--bubble-img);
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
 }
 
 .message.received { 
@@ -212,6 +264,10 @@ header h1 { font-size: 1.25rem; color: var(--header-text, white); }
     display: flex;
     align-items: flex-start;
     gap: 0.5rem;
+    background-image: var(--bubble-img);
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
 }
 
 .message-avatar {
@@ -268,6 +324,7 @@ header h1 { font-size: 1.25rem; color: var(--header-text, white); }
     display: flex; 
     flex-direction: column; 
     gap: 0.5rem; 
+    background: var(--panel-color);
 }
 
 .chips-container { 
@@ -664,6 +721,19 @@ header h1 { font-size: 1.25rem; color: var(--header-text, white); }
     background: var(--btn-danger-bg, #c82333);
     filter: brightness(0.9);
 }
+
+/* Phase 5.2h: "btn_danger" token drives dangerous actions */
+.btn_danger {
+    background: var(--btn-danger-bg, #dc3545);
+    color: var(--btn-danger-text, #ffffff);
+    border: none;
+    padding: 0.75rem 1.5rem;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.btn_danger:hover { filter: brightness(0.9); }
 
 /* Delete account modal */
 .delete-account-modal-content {

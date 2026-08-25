@@ -69,7 +69,7 @@ Edit `/etc/messenger/env`:
 SECRET_KEY=<generate-with-python-c-secrets.token_hex(32)>
 FIRST_USER_ADMIN=1   # Set to 1 ONLY for initial setup, then 0
 MAX_UPLOAD_BYTES=10485760
-THEME_IMAGE_MAX_BYTES=1048576
+THEME_IMAGE_MAX_BYTES=5242880
 PORT=8000
 DATA_DIR=/var/lib/messenger/data
 BACKUP_DIR=/var/lib/messenger/backups
@@ -207,7 +207,7 @@ Copy `.env.example` to `.env` and configure:
 SECRET_KEY=your-secret-key-change-in-production
 FIRST_USER_ADMIN=0
 MAX_UPLOAD_BYTES=10485760
-THEME_IMAGE_MAX_BYTES=1048576
+THEME_IMAGE_MAX_BYTES=5242880
 PORT=8000
 DATA_DIR=/var/lib/messenger/data
 BACKUP_DIR=/var/lib/messenger/backups
@@ -218,7 +218,7 @@ BACKUP_DIR=/var/lib/messenger/backups
 | `SECRET_KEY` | Secret key for session signing. **Must be set in production!** If not set, a fixed development key is used with a warning (sessions persist across restarts but this is insecure). |
 | `FIRST_USER_ADMIN` | If `1`, first registered user becomes admin. Set to `0` after initial setup. |
 | `MAX_UPLOAD_BYTES` | Maximum file upload size in bytes (default: 10MB) |
-| `THEME_IMAGE_MAX_BYTES` | Maximum theme image (wallpaper/header) upload size in bytes (default: ~1MB) |
+| `THEME_IMAGE_MAX_BYTES` | Maximum theme image (wallpaper/header/bubble) upload size in bytes (default: ~5MB) |
 | `PORT` | Server port |
 | `DATA_DIR` | Directory for database and uploads |
 | `BACKUP_DIR` | Directory for backups |
@@ -304,3 +304,5 @@ Private use only.
 - phase 5.2e complete
 
 - phase 5.2g complete
+
+- phase 5.2h complete

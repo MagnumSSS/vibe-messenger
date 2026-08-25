@@ -31,7 +31,7 @@ if SECRET_KEY is None:
     print("=" * 80, file=sys.stderr)
 FIRST_USER_ADMIN = os.environ.get("FIRST_USER_ADMIN", "1") == "1"
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", "10485760"))  # 10MB default
-THEME_IMAGE_MAX_BYTES = int(os.environ.get("THEME_IMAGE_MAX_BYTES", str(1024 * 1024)))  # ~1MB for theme images
+THEME_IMAGE_MAX_BYTES = int(os.environ.get("THEME_IMAGE_MAX_BYTES", str(5 * 1024 * 1024)))  # ~5MB for theme image slots (separate from MAX_UPLOAD_BYTES)
 PORT = int(os.environ.get("PORT", "8000"))
 DATA_DIR = os.environ.get("DATA_DIR", "./data")
 
@@ -57,7 +57,7 @@ THEME_TOKENS = {
         "bubble_sent": {"key": "bubble_sent", "css_var": "--bubble-sent-bg", "default": "#0084ff", "type": "color"},
         "bubble_received": {"key": "bubble_received", "css_var": "--bubble-received-bg", "default": "#e4e6eb", "type": "color"},
         "input_bg": {"key": "input_bg", "css_var": "--input-bg", "default": "#ffffff", "type": "color"},
-        "border": {"key": "border", "css_var": "--border-color", "default": "#dddddd", "type": "color"},
+        # "border" removed in Phase 5.2h: --border-color is auto-derived from bg (Phase 5.2d3)
         "modal_bg": {"key": "modal_bg", "css_var": "--modal-bg", "default": "#ffffff", "type": "color"},
         "hover": {"key": "hover", "css_var": "--hover-bg", "default": "#f5f5f5", "type": "color"},
         "active": {"key": "active", "css_var": "--active-bg", "default": "#e6f2ff", "type": "color"},

@@ -4,15 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Chat - Messenger</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/style.css?v=5.2h">
 </head>
 <body>
     <header>
         <h1>Messenger</h1>
         <div style="display: flex; align-items: center; gap: 0.5rem;">
             {% if user.is_admin %}
-            <span style="background: #ffc107; color: #333; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600;">admin</span>
-            <a href="/admin" class="logout-btn" style="background: rgba(255,255,255,0.3);">Админ-панель</a>
+            <span class="badge">admin</span>
+            <a href="/admin" class="logout-btn">Админ-панель</a>
             {% endif %}
             <button id="profileBtn" class="profile-btn">👤 Профиль</button>
             <button id="settingsBtn" class="settings-btn">🎨 Тема</button>
@@ -21,10 +21,10 @@
     </header>
     
     <div class="main">
-        <div class="sidebar">
+        <div class="sidebar contacts-panel">
             <h2>Contacts</h2>
             <div style="padding: 1rem; border-bottom: 1px solid var(--border-color, #eeeeee);">
-                <input type="text" id="searchInput" placeholder="Search by name or @username..." style="width: 100%; padding: 0.5rem; border: 1px solid var(--border-color, #dddddd); border-radius: 4px; font-size: 0.9rem; background: var(--input-bg, #ffffff); color: var(--text-primary, #333333);">
+                <input type="text" id="searchInput" class="search-input" placeholder="Search by name or @username...">
             </div>
             <ul class="user-list" id="userList">
                 {% for u in users %}
@@ -110,7 +110,7 @@
             <button class="profile-save-btn" id="saveProfileBtn">Сохранить</button>
             <hr style="margin: 1.5rem 0; border: none; border-top: 1px solid var(--border-color, #eeeeee);">
             <h3 style="color: #dc3545; margin-bottom: 0.5rem;">Опасная зона</h3>
-            <button id="deleteAccountBtn" style="background: #dc3545; color: white; border: none; padding: 0.75rem 1.5rem; border-radius: 8px; cursor: pointer; width: 100%;">Удалить аккаунт</button>
+            <button id="deleteAccountBtn" class="btn_danger" style="width: 100%;">Удалить аккаунт</button>
         </div>
     </div>
     
@@ -147,7 +147,7 @@
             <input type="text" id="deleteAccountConfirm" class="delete-account-input" placeholder="Введите @username">
             <div class="delete-modal-buttons">
                 <button class="cancel-btn" id="cancelDeleteAccountBtn">Отмена</button>
-                <button class="delete-confirm-btn" id="confirmDeleteAccountBtn" style="background: #dc3545;">Удалить аккаунт</button>
+                <button class="delete-confirm-btn" id="confirmDeleteAccountBtn">Удалить аккаунт</button>
             </div>
         </div>
     </div>
@@ -384,7 +384,7 @@
         }
         
         // ---- Data-driven theme editor (Phase 5.2e) ----
-        const THEME_IMAGE_LIMIT = 1024 * 1024; // ~1MB, mirrors THEME_IMAGE_MAX_BYTES on server
+        const THEME_IMAGE_LIMIT = 5 * 1024 * 1024; // ~5MB, mirrors THEME_IMAGE_MAX_BYTES on server
         let themeManifest = null;
         let themePresets = null;
         let currentTheme = { colors: {}, images: {} };
@@ -479,7 +479,7 @@
                     fileInput.value = '';
                     if (!file) return;
                     if (file.size > THEME_IMAGE_LIMIT) {
-                        alert(`Изображение больше 1 МБ`);
+                        alert(`Изображение больше ${formatFileSize(THEME_IMAGE_LIMIT)}`);
                         return;
                     }
                     const formData = new FormData();
