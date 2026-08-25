@@ -3,12 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Chat - Messenger</title>
-    <link rel="stylesheet" href="/static/style.css?v=5.3">
+    <title>Chat - VibeBunker</title>
+    <link rel="stylesheet" href="/static/style.css?v=5.4">
 </head>
 <body>
     <header>
-        <h1>Messenger</h1>
+        <h1>VibeBunker</h1>
         <div style="display: flex; align-items: center; gap: 0.5rem;">
             {% if user.is_admin %}
             <span class="badge">admin</span>
@@ -76,6 +76,10 @@
                     <div id="imageSlots"></div>
                 </div>
                 <div class="settings-section">
+                    <h3>Эффекты</h3>
+                    <div id="effectSliders"></div>
+                </div>
+                <div class="settings-section">
                     <h3>Пресеты</h3>
                     <div class="preset-row" id="presetButtons"></div>
                 </div>
@@ -98,7 +102,7 @@
             <h2>Профиль</h2>
             <img class="profile-avatar-preview" id="profileAvatarPreview" src="/static/default-avatar.png" alt="">
             <input type="file" id="avatarInput" accept="image/*" style="display: none;">
-            <button id="changeAvatarBtn" style="margin-bottom: 1rem; cursor: pointer;">Сменить аватарку</button>
+            <button id="changeAvatarBtn" class="glass-chip">Сменить аватарку</button>
             <div class="profile-form-group">
                 <label>Имя</label>
                 <input type="text" id="profileName" maxlength="50">
@@ -109,7 +113,7 @@
             </div>
             <button class="profile-save-btn" id="saveProfileBtn">Сохранить</button>
             <hr style="margin: 1.5rem 0; border: none; border-top: 1px solid var(--border-color, #eeeeee);">
-            <h3 style="color: #dc3545; margin-bottom: 0.5rem;">Опасная зона</h3>
+            <h3 style="color: var(--btn-danger-bg, #dc3545); margin-bottom: 0.5rem;">Опасная зона</h3>
             <button id="deleteAccountBtn" class="btn_danger" style="width: 100%;">Удалить аккаунт</button>
         </div>
     </div>
@@ -122,7 +126,7 @@
             <h3 id="otherProfileName" style="margin: 0.5rem 0;"></h3>
             <p id="otherProfileUsername" style="color: #666; margin: 0.5rem 0;"></p>
             <p id="otherProfileBio" style="color: #444; margin-top: 1rem; font-style: italic;"></p>
-            <button class="profile-save-btn" id="closeOtherProfileBtn" style="margin-top: 1rem;">Закрыть</button>
+            <button class="glass-chip" id="closeOtherProfileBtn">Закрыть</button>
         </div>
     </div>
     
@@ -215,6 +219,7 @@
         const themeDrawerClose = document.getElementById('themeDrawerClose');
         const colorPickers = document.getElementById('colorPickers');
         const imageSlots = document.getElementById('imageSlots');
+        const effectSliders = document.getElementById('effectSliders');
         const presetButtons = document.getElementById('presetButtons');
         const resetThemeBtn = document.getElementById('resetThemeBtn');
         
@@ -255,13 +260,14 @@
             }
         }
 
-        // Normalize any theme shape (legacy v1 {primary,sent,received,bg} or v2 {colors,images}) to v2
+        // Normalize any theme shape (legacy v1 {primary,sent,received,bg} or v2 {colors,images,effects}) to v2
         function normalizeTheme(theme) {
-            if (!theme || typeof theme !== 'object') return { colors: {}, images: {} };
-            if (theme.colors || theme.images) {
+            if (!theme || typeof theme !== 'object') return { colors: {}, images: {}, effects: {} };
+            if (theme.colors || theme.images || theme.effects) {
                 return {
                     colors: Object.assign({}, theme.colors),
-                    images: Object.assign({}, theme.images)
+                    images: Object.assign({}, theme.images),
+                    effects: Object.assign({}, theme.effects)
                 };
             }
             const colors = {};
@@ -269,7 +275,7 @@
             if (theme.sent) colors.bubble_sent = theme.sent;
             if (theme.received) colors.bubble_received = theme.received;
             if (theme.bg) colors.bg = theme.bg;
-            return { colors: colors, images: {} };
+            return { colors: colors, images: {}, effects: {} };
         }
 
         // Fallback values per color token (mirrors THEME_TOKENS defaults / CSS :root)
@@ -285,6 +291,18 @@
             btn_danger: '--btn-danger-bg', bubble_sent: '--bubble-sent-bg', bubble_received: '--bubble-received-bg',
             input_bg: '--input-bg', border: '--border-color', modal_bg: '--modal-bg', hover: '--hover-bg', active: '--active-bg'
         };
+
+        // Phase 5.4: blur effect tokens (range 0..20 px, mirrors THEME_TOKENS "effects")
+        const FALLBACK_EFFECTS = { wallpaper_blur: 0, bubble_blur: 0 };
+        const EFFECT_CSS_VARS = {
+            wallpaper_blur: '--wallpaper-blur',
+            bubble_blur: '--bubble-blur'
+        };
+        function clampEffect(val, key) {
+            let n = parseInt(val, 10);
+            if (!Number.isFinite(n)) n = FALLBACK_EFFECTS[key] || 0;
+            return Math.max(0, Math.min(20, n));
+        }
 
         // Apply theme object directly (v2 data-driven; keeps legacy vars for older consumers)
         function applyThemeDirect(theme) {
@@ -308,11 +326,18 @@
                 const url = ver ? `/api/theme/image/${imgKey}?v=${encodeURIComponent(ver)}` : null;
                 s.setProperty(`--${imgKeyToCss(imgKey)}`, url ? `url('${url}')` : 'none');
             }
+            // Phase 5.4: blur effect tokens -> px values on CSS vars
+            for (const effKey of Object.keys(FALLBACK_EFFECTS)) {
+                s.setProperty(EFFECT_CSS_VARS[effKey], clampEffect(t.effects[effKey], effKey) + 'px');
+            }
             // derived tokens
             const bg = t.colors.bg || FALLBACK_COLORS.bg;
             s.setProperty('--border-color', deriveBorderColor(bg));
             s.setProperty('--header-text', contrastText(t.colors.header || FALLBACK_COLORS.header));
-            applyContrast();
+        applyContrast();
+
+        // Profile modal buttons exist statically - contrast them once styles are ready
+        document.addEventListener('DOMContentLoaded', applyProfileContrast);
         }
 
         function imgKeyToCss(key) {
@@ -367,6 +392,15 @@
             // Phase 5.3 bugfix: message/search input text auto-contrasts with --input-bg
             s.setProperty('--input-text', contrastText(inputBg));
         }
+
+        // Phase 5.4: glass chips in the profile modals - autocontrast their label
+        // against the computed translucent chip background (btn_danger excluded: token-driven)
+        function applyProfileContrast() {
+            document.querySelectorAll('#profileModal button:not(.btn_danger), #otherProfileModal button').forEach(btn => {
+                if (btn.disabled) return;
+                btn.style.color = contrastText(rgbToHex(getComputedStyle(btn).backgroundColor));
+            });
+        }
         
         applyContrast();
         
@@ -393,14 +427,15 @@
         const THEME_IMAGE_LIMIT = 5 * 1024 * 1024; // ~5MB, mirrors THEME_IMAGE_MAX_BYTES on server
         let themeManifest = null;
         let themePresets = null;
-        let currentTheme = { colors: {}, images: {} };
+        let currentTheme = { colors: {}, images: {}, effects: {} };
         const TOKEN_LABELS = {
             bg: 'Фон', panel: 'Панели', header: 'Шапка', text: 'Текст', muted: 'Второстепенный текст',
             accent: 'Акцент', btn_primary: 'Основная кнопка', btn_danger: 'Опасная кнопка',
             bubble_sent: 'Пузырь отправленные', bubble_received: 'Пузырь полученные',
             input_bg: 'Поля ввода', border: 'Границы', modal_bg: 'Модалки',
             hover: 'Hover контакта', active: 'Выбранный контакт',
-            header_img: 'Картинка шапки', wallpaper: 'Обои чата', bubble_img: 'Картинка пузырей'
+            header_img: 'Картинка шапки', wallpaper: 'Обои чата', bubble_img: 'Картинка пузырей',
+            wallpaper_blur: 'Размытие обоев', bubble_blur: 'Размытие пузырей'
         };
         const PRESET_LABELS = { default: 'Дефолт', dark: 'Тёмная' };
 
@@ -429,6 +464,7 @@
         function renderEditor() {
             renderColorPickers();
             renderImageSlots();
+            renderEffectSliders();
             renderPresetButtons();
             applyEditorContrast();
         }
@@ -459,6 +495,7 @@
         }
 
         // One upload/remove slot per image token of the manifest
+        // Phase 5.4: vertical layout - label+status on top, full-width button row below
         function renderImageSlots() {
             imageSlots.innerHTML = '';
             const imageTokens = (themeManifest && themeManifest.images) || {};
@@ -466,15 +503,17 @@
                 const slot = document.createElement('div');
                 slot.className = 'image-slot';
 
+                const head = document.createElement('div');
+                head.className = 'image-slot-head';
                 const label = document.createElement('span');
                 label.className = 'image-slot-label';
                 label.textContent = TOKEN_LABELS[key] || key;
-                slot.appendChild(label);
-
+                head.appendChild(label);
                 const status = document.createElement('span');
                 status.className = 'image-slot-status';
                 status.textContent = currentTheme.images[key] ? 'установлено' : 'не задано';
-                slot.appendChild(status);
+                head.appendChild(status);
+                slot.appendChild(head);
 
                 const fileInput = document.createElement('input');
                 fileInput.type = 'file';
@@ -518,10 +557,58 @@
                     }
                 });
 
+                const actions = document.createElement('div');
+                actions.className = 'image-slot-actions';
+                actions.appendChild(uploadBtn);
+                actions.appendChild(removeBtn);
+
                 slot.appendChild(fileInput);
-                slot.appendChild(uploadBtn);
-                slot.appendChild(removeBtn);
+                slot.appendChild(actions);
                 imageSlots.appendChild(slot);
+            }
+        }
+
+        // Phase 5.4: one range slider (0..20px) per blur effect token of the manifest - live + autosaved
+        function renderEffectSliders() {
+            effectSliders.innerHTML = '';
+            const effectTokens = (themeManifest && themeManifest.effects) || {};
+            for (const key of Object.keys(effectTokens)) {
+                const spec = effectTokens[key] || {};
+                const unit = spec.unit || 'px';
+                const min = (spec.min != null) ? spec.min : 0;
+                const max = (spec.max != null) ? spec.max : 20;
+
+                const row = document.createElement('div');
+                row.className = 'effect-slider-row';
+
+                const head = document.createElement('div');
+                head.className = 'effect-slider-head';
+                const label = document.createElement('label');
+                label.textContent = TOKEN_LABELS[key] || key;
+                const value = document.createElement('span');
+                value.className = 'effect-slider-value';
+                head.appendChild(label);
+                head.appendChild(value);
+                row.appendChild(head);
+
+                const input = document.createElement('input');
+                input.type = 'range';
+                input.dataset.tokenKey = key;
+                input.min = min;
+                input.max = max;
+                input.step = 1;
+                input.value = clampEffect(currentTheme.effects[key], key);
+                const showValue = () => { value.textContent = input.value + unit; };
+                showValue();
+                input.addEventListener('input', () => {
+                    currentTheme.effects[key] = parseInt(input.value, 10);
+                    showValue();
+                    applyThemeDirect(currentTheme);
+                    scheduleThemeSave();
+                });
+                row.appendChild(input);
+
+                effectSliders.appendChild(row);
             }
         }
 
@@ -548,6 +635,13 @@
             colorPickers.querySelectorAll('input[type="color"]').forEach(input => {
                 const key = input.dataset.tokenKey;
                 input.value = currentTheme.colors[key] || FALLBACK_COLORS[key] || '#000000';
+            });
+            effectSliders.querySelectorAll('input[type="range"]').forEach(input => {
+                const key = input.dataset.tokenKey;
+                if (!(key in FALLBACK_EFFECTS)) return;
+                input.value = clampEffect(currentTheme.effects[key], key);
+                const value = input.parentElement.querySelector('.effect-slider-value');
+                if (value) value.textContent = input.value + 'px';
             });
         }
 

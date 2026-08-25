@@ -40,6 +40,10 @@
     --header-img: none;
     --wallpaper-img: none;
     --bubble-img: none;
+
+    /* Phase 5.4: blur effect tokens (0..20px, driven by editor range sliders) */
+    --wallpaper-blur: 0px;
+    --bubble-blur: 0px;
     
     /* Auto-calculated text colors for contrast (YIQ) - updated dynamically */
     --bubble-sent-text: #ffffff;
@@ -53,13 +57,9 @@
 
 body { 
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+    /* Phase 5.4: app background is a SOLID fill - wallpaper lives ONLY inside the chat island,
+       so no wallpaper is visible between islands */
     background: var(--bg-color);
-    /* Phase 5.3 bugfix: wallpaper belongs to the whole app, not only .chat-area */
-    background-image: var(--wallpaper-img);
-    background-size: cover;
-    background-position: center;
-    background-repeat: no-repeat;
-    background-attachment: fixed;
     height: 100vh; 
     display: flex; 
     flex-direction: column;
@@ -214,16 +214,20 @@ header h1 {
     margin-top: 0.25rem;
 }
 
-/* Phase 5.2h: "accent" token drives search highlight + input focus */
+/* Phase 5.2h: "accent" token drives search highlight + input focus
+   Phase 5.4: search input is a frosted glass pill */
 .search-input {
     width: 100%;
-    padding: 0.5rem;
+    padding: 0.55rem 1rem;
     border: 1px solid var(--border-color, #dddddd);
-    border-radius: 4px;
+    border-radius: 999px;
     font-size: 0.9rem;
     background: var(--input-bg, #ffffff);
+    background: color-mix(in srgb, var(--panel-color) 55%, transparent);
     color: var(--text-primary, #333333);
     outline: none;
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
 }
 
 .search-input:focus,
@@ -232,12 +236,33 @@ header h1 {
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-color) 30%, transparent);
 }
 
-/* Phase 5.3: chat island - material comes from the shared island rule; wallpaper stays on body */
+/* Phase 5.3: chat island - material comes from the shared island rule
+   Phase 5.4: the wallpaper lives ONLY here, painted by a ::before layer:
+   filter: blur() on that layer can never touch text/content */
 .chat-area {
     flex: 1;
     display: flex;
     flex-direction: column;
     min-height: 0;
+    position: relative;
+    isolation: isolate;
+    /* clip the inflated blurred layer to the island's rounded corners */
+    overflow: hidden;
+}
+
+/* Wallpaper layer under chat content. Inflated by its own blur radius so
+   blur sampling never shows transparent fringes at the edges */
+.chat-area::before {
+    content: "";
+    position: absolute;
+    inset: calc(-1 * var(--wallpaper-blur, 0px) - 2px);
+    z-index: -1;
+    background-image: var(--wallpaper-img);
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    filter: blur(var(--wallpaper-blur, 0px));
+    pointer-events: none;
 }
 
 .chat-header { 
@@ -277,10 +302,8 @@ header h1 {
     align-self: flex-end; 
     background: var(--bubble-sent-bg); 
     color: var(--bubble-sent-text); 
-    background-image: var(--bubble-img);
-    background-size: cover;
-    background-position: center;
-    background-repeat: no-repeat;
+    /* own stacking context: keeps the blurred ::before above the fill, below content */
+    isolation: isolate;
 }
 
 .message.received { 
@@ -290,10 +313,26 @@ header h1 {
     display: flex;
     align-items: flex-start;
     gap: 0.5rem;
+    isolation: isolate;
+}
+
+/* Phase 5.4: bubble_img moved to a ::before layer so bubble_blur can blur
+   ONLY the picture - text stays sharp. The layer is inflated by its blur
+   radius and clipped back (clip-path applies after filter) so no transparent
+   fringes appear at the rounded edges */
+.message.sent::before,
+.message.received::before {
+    content: "";
+    position: absolute;
+    inset: calc(-1 * var(--bubble-blur, 0px));
+    z-index: -1;
     background-image: var(--bubble-img);
     background-size: cover;
     background-position: center;
     background-repeat: no-repeat;
+    filter: blur(var(--bubble-blur, 0px));
+    clip-path: inset(calc(-1 * var(--bubble-blur, 0px)) round 18px);
+    pointer-events: none;
 }
 
 .message-avatar {
@@ -354,9 +393,9 @@ header h1 {
     border-radius: 22px;
 }
 
-/* Phase 5.3 bugfix: input text auto-contrasts with --input-bg, placeholder uses muted token */
-.input-area input,
-.search-input {
+/* Phase 5.3 bugfix: input text auto-contrasts with --input-bg, placeholder uses muted token
+   (search input excluded in Phase 5.4 - it is a glass pill contrasting with --text-primary) */
+.input-area input {
     color: var(--input-text, var(--text-primary, #333333));
 }
 
@@ -512,14 +551,19 @@ header h1 {
     background: var(--tint-bg, #fff3cd) !important;
 }
 
-/* Profile modal */
+/* Profile modal - Phase 5.4: frosted glass island (same material as the app islands) */
 .profile-modal-content {
     background: var(--modal-bg, #ffffff);
+    background: color-mix(in srgb, var(--panel-color) 82%, transparent);
+    border: 1px solid var(--border-color, #dddddd);
+    border-radius: 20px;
+    box-shadow: 0 8px 32px var(--shadow-2, rgba(0,0,0,0.2));
     padding: 2rem;
-    border-radius: 12px;
     max-width: 400px;
     width: 90%;
     position: relative;
+    -webkit-backdrop-filter: blur(20px) saturate(1.4);
+    backdrop-filter: blur(20px) saturate(1.4);
 }
 
 .profile-modal-content h2 {
@@ -563,19 +607,28 @@ header h1 {
     min-height: 80px;
 }
 
-.profile-save-btn {
-    background: var(--primary-color);
-    color: white;
-    border: none;
-    padding: 0.75rem 1.5rem;
-    border-radius: 8px;
-    cursor: pointer;
-    font-size: 1rem;
+/* Phase 5.4: profile modal buttons are glass chips; JS autocontrasts their text
+   against the computed chip background (applyProfileContrast) */
+.profile-save-btn,
+.glass-chip {
+    display: block;
     width: 100%;
+    background: var(--header-btn-bg, rgba(0,0,0,0.35));
+    color: var(--header-chip-text, #ffffff);
+    border: 1px solid var(--border-color, #dddddd);
+    border-radius: 999px;
+    padding: 0.7rem 1.25rem;
+    cursor: pointer;
+    font-size: 0.95rem;
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
 }
 
-.profile-save-btn:hover {
-    background: var(--primary-hover);
+.glass-chip { margin-bottom: 1rem; }
+
+.profile-save-btn:hover,
+.glass-chip:hover {
+    background: var(--header-btn-hover-bg, rgba(255,255,255,0.3));
 }
 
 /* Settings modal */
@@ -689,16 +742,46 @@ header h1 {
     color: var(--text-primary, #333333);
 }
 
+/* Phase 5.4: image slots are VERTICAL islands - label on top, full-width
+   button row below; nothing can overflow the drawer horizontally */
 .image-slot {
     display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    margin-bottom: 0.75rem;
+    flex-direction: column;
+    gap: 0.45rem;
+    margin-bottom: 1rem;
+    min-width: 0;
 }
 
-.image-slot-label { flex: 1; color: var(--text-secondary); }
+.image-slot-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+    min-width: 0;
+}
 
-.image-slot-status { font-size: 0.85rem; color: var(--text-secondary); }
+.image-slot-label {
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.image-slot-status { font-size: 0.8rem; color: var(--text-secondary); flex-shrink: 0; }
+
+.image-slot-actions {
+    display: flex;
+    gap: 0.5rem;
+    width: 100%;
+    min-width: 0;
+}
+
+.image-slot-actions .slot-btn {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 0.5rem 0.5rem;
+    border-radius: 6px;
+}
 
 .slot-btn {
     background: var(--chip-bg, #e4e6eb);
@@ -711,6 +794,36 @@ header h1 {
 }
 
 .slot-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Phase 5.4: blur effect sliders (data-driven from manifest "effects") */
+.effect-slider-row {
+    margin-bottom: 1rem;
+    min-width: 0;
+}
+
+.effect-slider-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-bottom: 0.35rem;
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    min-width: 0;
+}
+
+.effect-slider-head label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.effect-slider-value { color: var(--text-primary); font-size: 0.85rem; flex-shrink: 0; }
+
+.effect-slider-row input[type="range"] {
+    width: 100%;
+    accent-color: var(--accent-color);
+}
 
 /* Delete chat modal */
 .delete-modal-content {

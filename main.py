@@ -66,6 +66,11 @@ THEME_TOKENS = {
         "header_img": {"key": "header_img", "css_var": "--header-img", "default": None, "type": "image"},
         "wallpaper": {"key": "wallpaper", "css_var": "--wallpaper-img", "default": None, "type": "image"},
         "bubble_img": {"key": "bubble_img", "css_var": "--bubble-img", "default": None, "type": "image"},
+    },
+    # Phase 5.4: blur effect tokens - range sliders in the editor (0..20 px)
+    "effects": {
+        "wallpaper_blur": {"key": "wallpaper_blur", "css_var": "--wallpaper-blur", "default": 0, "type": "range", "min": 0, "max": 20, "unit": "px"},
+        "bubble_blur": {"key": "bubble_blur", "css_var": "--bubble-blur", "default": 0, "type": "range", "min": 0, "max": 20, "unit": "px"},
     }
 }
 
@@ -89,7 +94,8 @@ THEME_PRESETS = {
             "hover": "#f5f5f5",
             "active": "#e6f2ff",
         },
-        "images": {}
+        "images": {},
+        "effects": {"wallpaper_blur": 0, "bubble_blur": 0}
     },
     "dark": {
         "colors": {
@@ -109,7 +115,8 @@ THEME_PRESETS = {
             "hover": "#22304f",
             "active": "#2a3a5f",
         },
-        "images": {}
+        "images": {},
+        "effects": {"wallpaper_blur": 0, "bubble_blur": 0}
     }
 }
 
@@ -139,7 +146,8 @@ def merge_theme_with_defaults(theme_json_str):
         # Merge with defaults
         result = {
             "colors": {**THEME_PRESETS["default"]["colors"], **theme.get("colors", {})},
-            "images": {**THEME_PRESETS["default"]["images"], **theme.get("images", {})}
+            "images": {**THEME_PRESETS["default"]["images"], **theme.get("images", {})},
+            "effects": {**THEME_PRESETS["default"].get("effects", {}), **theme.get("effects", {})}
         }
         return result
     except Exception as e:
