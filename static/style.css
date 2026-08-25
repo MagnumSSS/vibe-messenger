@@ -316,22 +316,24 @@ header h1 {
     isolation: isolate;
 }
 
-/* Phase 5.4: bubble_img moved to a ::before layer so bubble_blur can blur
-   ONLY the picture - text stays sharp. The layer is inflated by its blur
-   radius and clipped back (clip-path applies after filter) so no transparent
-   fringes appear at the rounded edges */
+/* Phase 5.4b: bubble_img lives on a ::before layer so bubble_blur can blur
+   ONLY the picture - text stays sharp. position:relative comes from .message;
+   overflow:hidden clips the blurred layer strictly INSIDE the bubble */
+.message.sent,
+.message.received { overflow: hidden; }
+
 .message.sent::before,
 .message.received::before {
     content: "";
     position: absolute;
-    inset: calc(-1 * var(--bubble-blur, 0px));
+    inset: 0;
     z-index: -1;
+    border-radius: inherit;
     background-image: var(--bubble-img);
     background-size: cover;
     background-position: center;
     background-repeat: no-repeat;
     filter: blur(var(--bubble-blur, 0px));
-    clip-path: inset(calc(-1 * var(--bubble-blur, 0px)) round 18px);
     pointer-events: none;
 }
 
@@ -571,6 +573,15 @@ header h1 {
     color: var(--text-primary);
 }
 
+/* Phase 5.4b: own profile - title and avatar centered */
+#profileModal .profile-modal-content h2 { text-align: center; }
+
+#profileModal .profile-avatar-preview {
+    display: block;
+    margin-left: auto;
+    margin-right: auto;
+}
+
 .profile-avatar-preview {
     width: 100px;
     height: 100px;
@@ -625,6 +636,9 @@ header h1 {
 }
 
 .glass-chip { margin-bottom: 1rem; }
+
+/* Phase 5.4b: breathing room between bio and "Закрыть" in the other-user profile */
+#otherProfileBio { margin-bottom: 1.25rem; }
 
 .profile-save-btn:hover,
 .glass-chip:hover {

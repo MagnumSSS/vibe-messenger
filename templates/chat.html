@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Chat - VibeBunker</title>
-    <link rel="stylesheet" href="/static/style.css?v=5.4">
+    <link rel="stylesheet" href="/static/style.css?v=5.4b">
 </head>
 <body>
     <header>
@@ -621,7 +621,10 @@
                 btn.className = 'preset-btn';
                 btn.textContent = PRESET_LABELS[name] || name;
                 btn.addEventListener('click', () => {
-                    currentTheme = normalizeTheme(JSON.parse(JSON.stringify(presets[name])));
+                    // Phase 5.4b: a preset swaps ONLY color tokens - uploaded images
+                    // and blur sliders keep their current state (and their labels)
+                    const preset = normalizeTheme(JSON.parse(JSON.stringify(presets[name])));
+                    currentTheme.colors = Object.assign({}, preset.colors);
                     applyThemeDirect(currentTheme);
                     syncEditorInputs();
                     scheduleThemeSave();
