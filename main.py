@@ -645,7 +645,11 @@ async def get_theme_image(request: Request, image_type: str):
     return StreamingResponse(
         stream_file(file_path),
         media_type=mime_type,
-        headers={"Content-Disposition": f'inline; filename="{image_uuid}"'}
+        headers={
+            "Content-Disposition": f'inline; filename="{image_uuid}"',
+            # Phase 5.3 bugfix: replacing a slot image must never serve a stale cached copy
+            "Cache-Control": "no-store",
+        },
     )
 
 
@@ -811,7 +815,8 @@ async def send_message(
                 chunk_size = 64 * 1024  # 64KB
                 async with aiofiles.open(file_path, 'wb') as f:
                     while True:
-                        chunk = await file.file.read(chunk_size)
+                        # Phase 5.3 fix: UploadFile.read is the async API; .file.read is sync and cannot be awaited
+                        chunk = await file.read(chunk_size)
                         if not chunk:
                             break
                         total_bytes += len(chunk)

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Chat - Messenger</title>
-    <link rel="stylesheet" href="/static/style.css?v=5.2h">
+    <link rel="stylesheet" href="/static/style.css?v=5.3">
 </head>
 <body>
     <header>
@@ -302,8 +302,11 @@
             s.setProperty('--message-sent-bg', t.colors.bubble_sent || FALLBACK_COLORS.bubble_sent);
             s.setProperty('--message-received-bg', t.colors.bubble_received || FALLBACK_COLORS.bubble_received);
             // image tokens -> served only to authorized users via API
+            // Phase 5.3 bugfix: version URL with the image uuid so replacing a slot always shows the new picture
             for (const imgKey of ['header_img', 'wallpaper', 'bubble_img']) {
-                s.setProperty(`--${imgKeyToCss(imgKey)}`, t.images[imgKey] ? `url('/api/theme/image/${imgKey}')` : 'none');
+                const ver = t.images[imgKey];
+                const url = ver ? `/api/theme/image/${imgKey}?v=${encodeURIComponent(ver)}` : null;
+                s.setProperty(`--${imgKeyToCss(imgKey)}`, url ? `url('${url}')` : 'none');
             }
             // derived tokens
             const bg = t.colors.bg || FALLBACK_COLORS.bg;
@@ -353,6 +356,7 @@
             const headerBg = readVar('--header-color', '') || readVar('--accent-color', defaultTheme.primary);
             const btnPrimaryBg = readVar('--btn-primary-bg', defaultTheme.primary);
             const btnDangerBg = readVar('--btn-danger-bg', '#dc3545');
+            const inputBg = readVar('--input-bg', '#ffffff');
             
             const s = document.documentElement.style;
             s.setProperty('--bubble-sent-text', contrastText(sentBg));
@@ -360,6 +364,8 @@
             s.setProperty('--header-text', contrastText(headerBg));
             s.setProperty('--btn-primary-text', contrastText(btnPrimaryBg));
             s.setProperty('--btn-danger-text', contrastText(btnDangerBg));
+            // Phase 5.3 bugfix: message/search input text auto-contrasts with --input-bg
+            s.setProperty('--input-text', contrastText(inputBg));
         }
         
         applyContrast();
