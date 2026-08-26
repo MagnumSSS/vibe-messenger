@@ -1427,7 +1427,7 @@ header h1 {
     color: var(--btn-danger-bg, #dc3545);
 }
 
-/* ===== Phase 6.5: message & chat deletion ===== */
+/* ===== Phase 6.5/6.6: message & chat deletion ===== */
 
 /* Header trash chip (1-on-1 "Удалить чат") - neutral SVG on the header pill */
 .delete-chat-btn svg {
@@ -1438,48 +1438,43 @@ header h1 {
 
 #deleteChatBtn { padding: 0.5rem 0.7rem; line-height: 0; }
 
-/* Trash chip ON the bubble. Bubbles clip via overflow:hidden and paint their
-   bubble_img on a z-index:-1 ::before - the chip stays inside bounds and
-   z-index:2 keeps it above that layer */
-.msg-del-chip {
+/* Bubble gestures: vertical scroll stays native (pan-y), horizontal swipe is ours.
+   Transition smooths the snap-back; .swiping disables it for 1:1 finger tracking */
+.message {
+    touch-action: pan-y;
+    transition: transform 0.18s ease;
+}
+
+.message.swiping { transition: none; }
+
+/* hint icons revealed inside the right edge while dragging left;
+   snap-armed swaps the accent to the danger tone */
+.swipe-hint {
     position: absolute;
-    top: 4px;
-    right: 4px;
-    width: 26px;
-    height: 26px;
-    padding: 0;
-    display: inline-flex;
+    top: 50%;
+    right: 8px;
+    transform: translateY(-50%);
+    display: flex;
     align-items: center;
     justify-content: center;
-    border-radius: 50%;
-    border: 1px solid var(--border-color, #dddddd);
-    background-color: var(--panel-color, #ffffff);
-    background-color: color-mix(in srgb, var(--panel-color) 55%, transparent);
-    color: var(--text-secondary, #666666);
-    cursor: pointer;
+    width: 26px;
+    height: 26px;
     opacity: 0;
     pointer-events: none;
-    transition: opacity 0.15s ease, filter 0.15s ease;
     z-index: 2;
 }
 
-@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-    .msg-del-chip {
-        -webkit-backdrop-filter: blur(8px) saturate(1.4);
-        backdrop-filter: blur(8px) saturate(1.4);
-    }
+.swipe-hint-icon {
+    display: none;
+    color: var(--text-secondary, #666666);
 }
 
-.msg-del-chip svg { width: 13px; height: 13px; }
+.message:not(.snap-armed) .swipe-hint-reply,
+.message.snap-armed .swipe-hint-del { display: block; }
 
-.msg-del-chip:hover { filter: brightness(0.95); color: var(--text-primary, #333333); }
+.message.snap-armed .swipe-hint-del { color: var(--btn-danger-bg, #dc3545); }
 
-/* desktop: hover reveals; mobile: .msg-del-open set by longpress (and while its menu is open) */
-.message:hover .msg-del-chip,
-.message.msg-del-open .msg-del-chip {
-    opacity: 1;
-    pointer-events: auto;
-}
+.swipe-hint svg { width: 16px; height: 16px; display: block; }
 
 /* mini-menu island anchored to a bubble - same material recipe as the mention menu */
 .msg-del-menu {
@@ -1571,6 +1566,152 @@ header h1 {
     padding: 0.45rem 1rem;
     border-radius: 999px;
     font-size: 0.88rem;
+}
+
+/* ===== Phase 6.6: gestures, replies, dialog chips, pins, curtain ===== */
+
+/* quoted original - a glass island INSIDE the bubble, clickable */
+.reply-quote {
+    border-left: 3px solid color-mix(in srgb, currentColor 55%, transparent);
+    background-color: var(--panel-color, #ffffff);
+    background-color: color-mix(in srgb, var(--panel-color) 40%, transparent);
+    border-radius: 10px;
+    padding: 0.35rem 0.6rem;
+    margin-bottom: 0.45rem;
+    cursor: pointer;
+    max-width: 100%;
+    overflow: hidden;
+}
+
+.reply-quote:hover { filter: brightness(1.06); }
+
+.reply-quote-name {
+    font-size: 0.75rem;
+    font-weight: 700;
+    opacity: 0.85;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.reply-quote-text {
+    font-size: 0.82rem;
+    opacity: 0.9;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+/* flash on scroll-to-original */
+.message.flash-highlight {
+    outline: 2px solid var(--accent-color, #0084ff);
+    outline-offset: 2px;
+}
+
+/* swipe-to-reply chip above the input (glass pill row) */
+.reply-bar {
+    display: none;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 0.75rem;
+    border-radius: 14px;
+    border: 1px solid var(--border-color, #dddddd);
+    background-color: var(--panel-color);
+    background-color: color-mix(in srgb, var(--panel-color) 72%, transparent);
+    box-shadow: 0 2px 8px var(--shadow-1, rgba(0,0,0,0.15));
+    min-width: 0;
+}
+
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .reply-bar {
+        -webkit-backdrop-filter: blur(12px) saturate(1.4);
+        backdrop-filter: blur(12px) saturate(1.4);
+    }
+}
+
+.reply-bar-icon {
+    width: 15px;
+    height: 15px;
+    flex-shrink: 0;
+    color: var(--accent-color, #0084ff);
+}
+
+.reply-bar-text {
+    flex: 1;
+    min-width: 0;
+    font-size: 0.85rem;
+    color: var(--text-secondary, #666666);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.reply-bar-cancel {
+    background: none;
+    border: none;
+    color: var(--text-secondary, #666666);
+    font-size: 1.1rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 0.15rem;
+    flex-shrink: 0;
+}
+
+.reply-bar-cancel:hover { color: var(--text-primary, #333333); }
+
+/* pinned contact marker (before the name) */
+.pin-marker {
+    display: inline-flex;
+    vertical-align: -2px;
+    margin-right: 4px;
+    color: var(--accent-color, #0084ff);
+}
+
+.pin-marker svg { width: 12px; height: 12px; display: block; }
+
+/* contact curtain: dragging a row down reveals "Удалить чат" behind it.
+   overflow:hidden clips the revealed strip to the rounded row box */
+.user-item {
+    position: relative;
+    overflow: hidden;
+    transition: padding-bottom 0.18s ease;
+}
+
+.user-item.curtain-drag { transition: none; }
+
+.curtain-del-btn {
+    position: absolute;
+    left: auto;
+    right: 1rem;
+    bottom: 8px;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.35rem 0.85rem;
+    border-radius: 999px;
+    border: 1px solid var(--btn-danger-bg, #dc3545);
+    background: color-mix(in srgb, var(--btn-danger-bg, #dc3545) 14%, transparent);
+    color: var(--btn-danger-bg, #dc3545);
+    font-size: 0.82rem;
+    font-weight: 600;
+    cursor: pointer;
+    opacity: 0;
+    pointer-events: none;
+    z-index: 1;
+}
+
+.user-item.curtain-drag .curtain-del-btn,
+.user-item.curtain-open .curtain-del-btn {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.curtain-del-btn svg { width: 13px; height: 13px; }
+
+.curtain-del-btn:hover {
+    background: var(--btn-danger-bg, #dc3545);
+    color: var(--btn-danger-text, #ffffff);
 }
 
 

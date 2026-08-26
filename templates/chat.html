@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Chat - VibeBunker</title>
-    <link rel="stylesheet" href="/static/style.css?v=6.5">
+    <link rel="stylesheet" href="/static/style.css?v=6.6">
 </head>
 <body>
     <header>
@@ -50,12 +50,17 @@
             </div>
             <ul class="user-list" id="userList">
                 {% for u in users %}
-                <li class="user-item" data-id="{{ u.id }}" data-name="{{ u.name }}" data-username="{{ u.username }}" data-avatar="{{ u.avatar_uuid or '' }}">
+                <li class="user-item" data-id="{{ u.id }}" data-name="{{ u.name }}" data-username="{{ u.username }}" data-avatar="{{ u.avatar_uuid or '' }}" data-pinned="{{ u.pinned or 0 }}">
                     <img class="user-avatar" src="/static/default-avatar.png" alt="" data-avatar="{{ u.avatar_uuid or '' }}">
                     <div class="user-info">
-                        <div class="user-name">{{ u.name }}</div>
+                        <div class="user-name">{% if u.pinned %}<span class="pin-marker" title="Закреплён"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 17v5"/><path d="M9 3h6l-1 7 3 2v2H7v-2l3-2-1-7z"/></svg></span>{% endif %}{{ u.name }}</div>
                         <div class="user-username">@{{ u.username }}</div>
                     </div>
+                    <!-- Phase 6.6: pull-down curtain - the only action is "Удалить чат" -->
+                    <button type="button" class="curtain-del-btn" title="Удалить чат" aria-label="Удалить чат">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+                        Удалить чат
+                    </button>
                 </li>
                 {% endfor %}
             </ul>
@@ -80,6 +85,12 @@
                 <!-- Phase 6.2: command chips island above the input -->
                 <div class="cmd-chips" id="cmdChips" style="display: none;"></div>
                 <div class="chips-container" id="chipsContainer" style="display: none;"></div>
+                <!-- Phase 6.6: swipe-to-reply chip - "Ответ: <имя>: <сниппет>" with cancel -->
+                <div class="reply-bar" id="replyBar" style="display: none;">
+                    <svg class="reply-bar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 6 6v4"/></svg>
+                    <span class="reply-bar-text" id="replyBarText"></span>
+                    <button type="button" class="reply-bar-cancel" id="cancelReplyBtn" title="Отменить ответ" aria-label="Отменить ответ">&times;</button>
+                </div>
                 <div class="input-row">
                     <!-- Phase 6.4: @mention dropdown - Liquid Glass island floating ABOVE the input -->
                     <div class="mention-menu" id="mentionMenu" style="display: none;"></div>
@@ -235,6 +246,7 @@
     <script>
         const currentUser = {{ user.id | tojson }};
         const currentUsername = {{ user.username | tojson }};
+        const currentName = {{ (user.name or user.username) | tojson }}; // Phase 6.6: for reply labels
         const currentIsAdmin = {{ user.is_admin | tojson }}; // Phase 6.1b: for group member management
         const userThemeJson = {{ user.theme_json | tojson }} || '{}';
         let selectedUserId = null;
@@ -291,6 +303,12 @@
         // Phase 6.2: command chips + toasts
         const cmdChips = document.getElementById('cmdChips');
         const toastContainer = document.getElementById('toastContainer');
+        // Phase 6.6: reply bar + gestures
+        const replyBar = document.getElementById('replyBar');
+        const replyBarText = document.getElementById('replyBarText');
+        const cancelReplyBtn = document.getElementById('cancelReplyBtn');
+        let replyCtx = null; // {id, name, snippet} while a reply is armed
+        let chatDeleteTarget = null; // Phase 6.6: uid awaiting "Удалить чат" confirmation
         
         // Profile modal elements
         const profileModal = document.getElementById('profileModal');
@@ -1141,29 +1159,31 @@
                 if (e.key === 'Enter') addMemberByInput();
             });
 
-            // ===== Phase 6.5: delete chat (1-on-1 only) - glass island confirm =====
+            // ===== Phase 6.5/6.6: delete chat - glass island confirm =====
+            // Phase 6.6: target may come from the header chip (open dialog)
+            // or from a contact-row curtain (any contact, dialog not required)
             deleteChatBtn.addEventListener('click', () => {
                 if (!selectedUserId) return; // groups use /leave, not chat deletion
-                deleteChatUserName.textContent = chatHeaderName.textContent || '';
-                closeMsgDelMenu();
-                deleteChatConfirm.style.display = 'block';
+                openChatDeleteConfirm(selectedUserId, chatHeaderName.textContent || '');
             });
 
             cancelDeleteChatBtn.addEventListener('click', closeChatDelConfirm);
 
             confirmDeleteChatBtn.addEventListener('click', async () => {
-                if (!selectedUserId) return;
+                const target = chatDeleteTarget;
+                if (!target) return;
                 try {
-                    const body = new URLSearchParams({ recipient_id: selectedUserId }).toString();
+                    const body = new URLSearchParams({ recipient_id: target }).toString();
                     const res = await fetch('/api/delete-chat', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                         body: body
                     });
                     if (res.ok) {
-                        // dialog goes empty for me now and stays empty after reload
-                        // (history endpoint filters deleted flags); contact remains
-                        messagesDiv.innerHTML = '';
+                        // if THIS dialog is open it goes empty now and stays empty
+                        // after reload (history filters deleted flags); contact remains
+                        if (selectedUserId === target) messagesDiv.innerHTML = '';
+                        closeAllCurtains();
                         showToast('Чат удалён');
                     } else {
                         const err = await res.json().catch(() => ({}));
@@ -1176,26 +1196,31 @@
                 closeChatDelConfirm();
             });
 
-            // Phase 6.5: click outside any open island closes it
-            // (trash chips excluded so a second tap toggles its own menu)
+            // Phase 6.5/6.6: click outside any open island closes it
             document.addEventListener('mousedown', (e) => {
                 if (msgDelMenu.style.display !== 'none' &&
-                    !msgDelMenu.contains(e.target) &&
-                    !(e.target.closest && e.target.closest('.msg-del-chip'))) {
+                    !msgDelMenu.contains(e.target)) {
                     closeMsgDelMenu();
                 }
                 if (deleteChatConfirm.style.display !== 'none' &&
                     !deleteChatConfirm.contains(e.target) &&
-                    e.target !== deleteChatBtn && !deleteChatBtn.contains(e.target)) {
+                    e.target !== deleteChatBtn && !deleteChatBtn.contains(e.target) &&
+                    !(e.target.closest && e.target.closest('.curtain-del-btn'))) {
                     closeChatDelConfirm();
+                }
+                // curtain closes on any click outside its row / action button
+                if (!(e.target.closest && e.target.closest('.user-item'))) {
+                    closeAllCurtains();
                 }
             });
 
-            // Phase 6.5: Escape closes the islands too
+            // Phase 6.5/6.6: Escape closes the islands + curtains + reply bar
             document.addEventListener('keydown', (e) => {
                 if (e.key !== 'Escape') return;
                 closeMsgDelMenu();
                 closeChatDelConfirm();
+                closeAllCurtains();
+                cancelReply();
             });
         });
 
@@ -1348,8 +1373,11 @@
                 groupMembersBtn.style.display = 'none';
                 deleteChatBtn.style.display = '';
                 inputArea.style.display = 'flex';
-                cmdChips.style.display = 'none'; // Phase 6.2: no command chips in 1-on-1
-                cmdChips.innerHTML = '';
+                cancelReply();          // Phase 6.6: never carry a reply across chats
+                closeAllCurtains();     // Phase 6.6: nor an open curtain
+                
+                // Phase 6.6: dialog chips (pin/block) replace the old empty state
+                loadDialogChips(selectedUserId);
                 
                 // Load messages
                 const res = await fetch(`/api/messages/${selectedUserId}`);
@@ -1358,6 +1386,9 @@
                 msgs.forEach(appendMessage);
                 scrollToBottom();
             });
+            
+            // Phase 6.6: pull-down curtain on the contact row ("Удалить чат" only)
+            attachContactCurtain(item);
         });
         
         // ===== Phase 6.1: groups UI =====
@@ -1417,6 +1448,8 @@
             deleteChatBtn.style.display = 'none';    // dialog deletion is 1-on-1 only for now
             groupMembersBtn.style.display = '';
             inputArea.style.display = 'flex';
+            cancelReply();          // Phase 6.6: reply is dialog-scoped
+            closeAllCurtains();     // Phase 6.6: nor curtains across modes
             
             loadCmdChips(groupId);
             await loadGroupMessages(groupId);
@@ -1458,6 +1491,215 @@
                 console.error('Failed to load commands:', e);
                 cmdChips.style.display = 'none';
             }
+        }
+        
+        // ===== Phase 6.6: dialog chips (/pin, /block) - state-driven labels =====
+        let dialogCommandsCache = []; // registry rows for the open dialog
+        let dialogStateCache = { pinned: false, blocked_by_me: false, blocked_me: false };
+        
+        async function loadDialogChips(uid) {
+            cmdChips.innerHTML = '';
+            try {
+                const [cmdsRes, stateRes] = await Promise.all([
+                    fetch('/api/commands'), // group_id<=0 -> dialog scope
+                    fetch(`/api/dialog/${uid}/state`)
+                ]);
+                if (!cmdsRes.ok || !stateRes.ok) { cmdChips.style.display = 'none'; return; }
+                dialogCommandsCache = await cmdsRes.json();
+                dialogStateCache = await stateRes.json();
+                renderDialogChips();
+            } catch (e) {
+                console.error('Failed to load dialog commands:', e);
+                cmdChips.style.display = 'none';
+            }
+        }
+        
+        function renderDialogChips() {
+            cmdChips.innerHTML = '';
+            const hasPin = dialogCommandsCache.some(c => c.name === 'pin');
+            const hasBlock = dialogCommandsCache.some(c => c.name === 'block');
+            
+            const mkChip = (label, title, cmd) => {
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.className = 'cmd-chip';
+                b.title = title;
+                b.textContent = label;
+                b.addEventListener('click', () => runDialogCommand(selectedUserId, cmd));
+                return b;
+            };
+            
+            if (hasPin) {
+                const pinSpec = dialogCommandsCache.find(c => c.name === 'pin') || {};
+                cmdChips.appendChild(mkChip(
+                    dialogStateCache.pinned ? 'Открепить' : 'Закрепить',
+                    '/pin — ' + (pinSpec.description || ''),
+                    'pin'
+                ));
+            }
+            if (hasBlock) {
+                cmdChips.appendChild(mkChip(
+                    dialogStateCache.blocked_by_me ? 'Разблокировать' : 'Заблокировать',
+                    '/' + (dialogStateCache.blocked_by_me ? 'unblock' : 'block'),
+                    dialogStateCache.blocked_by_me ? 'unblock' : 'block'
+                ));
+            }
+            cmdChips.style.display = cmdChips.children.length ? 'flex' : 'none';
+        }
+        
+        function applyDialogState(state) {
+            if (!state) return;
+            dialogStateCache = state;
+            renderDialogChips();
+            if (selectedUserId) setContactPinned(selectedUserId, !!state.pinned);
+        }
+        
+        async function runDialogCommand(uid, rawCmd) {
+            const cmd = String(rawCmd || '').trim().replace(/^\//, '');
+            try {
+                const body = new URLSearchParams({ cmd: cmd }).toString();
+                const res = await fetch(`/api/dialog/${uid}/command`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: body
+                });
+                const data = await res.json().catch(() => ({}));
+                if (res.ok && data.ok) {
+                    showToast(data.text || 'Готово');
+                    applyDialogState(data.state);
+                } else {
+                    showToast(data.detail || 'Ошибка выполнения команды');
+                }
+            } catch (e) {
+                console.error('Dialog command error:', e);
+                showToast('Ошибка сети при выполнении команды');
+            }
+        }
+        
+        function runDialogSlash(raw) {
+            const trimmed = raw.slice(1).trim();
+            if (!trimmed) return;
+            const sp = trimmed.indexOf(' ');
+            const cmd = (sp === -1 ? trimmed : trimmed.slice(0, sp)).toLowerCase();
+            const args = sp === -1 ? '' : trimmed.slice(sp + 1).trim();
+            if (cmd === 'help') {
+                const lines = dialogCommandsCache.map(c => '/' + c.name + ' — ' + (c.description || ''));
+                showToast(lines.length ? 'Команды диалога:\n' + lines.join('\n') : 'Нет доступных команд');
+                return;
+            }
+            if (!dialogCommandsCache.some(c => c.name === cmd)) {
+                showToast(`Неизвестная команда диалога: /${cmd}`);
+                return;
+            }
+            if (args) {
+                showToast('У команд диалога нет аргументов');
+                return;
+            }
+            runDialogCommand(selectedUserId, cmd);
+        }
+        
+        // ---- Phase 6.6: sidebar pin marker + live reorder --------------------
+        const PIN_MARKER_HTML = '<span class="pin-marker" title="Закреплён"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 17v5"/><path d="M9 3h6l-1 7 3 2v2H7v-2l3-2-1-7z"/></svg></span>';
+        function setContactPinned(uid, pinned) {
+            const li = userList.querySelector(`.user-item[data-id="${uid}"]`);
+            if (!li) return;
+            li.dataset.pinned = pinned ? '1' : '0';
+            const nameEl = li.querySelector('.user-name');
+            let mark = li.querySelector('.pin-marker');
+            if (pinned && !mark && nameEl) nameEl.insertAdjacentHTML('afterbegin', PIN_MARKER_HTML);
+            if (!pinned && mark) mark.remove();
+            
+            if (pinned) {
+                userList.prepend(li); // pinned float to the top
+            } else {
+                // drop back below the pinned block
+                let anchor = null;
+                userList.querySelectorAll('.user-item[data-pinned="1"]').forEach(x => { anchor = x; });
+                if (anchor && anchor !== li) anchor.after(li);
+            }
+        }
+        
+        // ---- Phase 6.6: contact curtain - drag row down, "Удалить чат" behind it ----
+        // Touch engages only when the sidebar is scrolled to the top (pull-to-act),
+        // so normal list scrolling is never hijacked. Mouse drags work anywhere.
+        const CURTAIN_OPEN = 52;   // release beyond this keeps the curtain open
+        const CURTAIN_MAX = 88;
+        
+        function closeAllCurtains() {
+            document.querySelectorAll('.user-item.curtain-open').forEach(li => {
+                li.classList.remove('curtain-open');
+                li.style.paddingBottom = '';
+            });
+            document.querySelectorAll('.user-item.curtain-drag').forEach(li => {
+                li.classList.remove('curtain-drag');
+                li.style.paddingBottom = '';
+            });
+        }
+        
+        function attachContactCurtain(li) {
+            const btn = li.querySelector('.curtain-del-btn');
+            if (!btn) return;
+            
+            let startY = 0, startX = 0, dy = 0, pid = null, engaged = false;
+            
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const uid = parseInt(li.dataset.id);
+                if (Number.isNaN(uid)) return;
+                openChatDeleteConfirm(uid, li.dataset.name || '');
+            });
+            
+            li.addEventListener('pointerdown', (e) => {
+                if (e.button !== undefined && e.button !== 0) return;
+                if (e.target.closest('button, img, a')) return; // avatar/button keep native behavior
+                if (li.classList.contains('curtain-open')) return;
+                startY = e.clientY; startX = e.clientX; dy = 0; engaged = false; pid = e.pointerId;
+            });
+            
+            li.addEventListener('pointermove', (e) => {
+                if (pid === null || e.pointerId !== pid) return;
+                const y = e.clientY - startY;
+                if (!engaged) {
+                    if (y < 8) return; // downward intent only
+                    // touch: never fight the list scroll unless it can't scroll up anyway
+                    if (e.pointerType !== 'mouse' && userList.scrollTop > 1) { pid = null; return; }
+                    if (Math.abs(e.clientX - startX) > 18) { pid = null; return; }
+                    engaged = true;
+                    try { li.setPointerCapture(pid); } catch (_) {}
+                    li.classList.add('curtain-drag');
+                    closeAllCurtains();
+                }
+                dy = Math.max(0, Math.min(y - 8, CURTAIN_MAX));
+                li.style.paddingBottom = dy + 'px';
+                btn.style.opacity = String(Math.min(1, dy / CURTAIN_OPEN));
+                e.preventDefault();
+            });
+            
+            const finish = () => {
+                if (pid === null) return;
+                pid = null;
+                li.classList.remove('curtain-drag');
+                btn.style.opacity = '';
+                if (!engaged) { dy = 0; return; }
+                engaged = false;
+                if (dy >= CURTAIN_OPEN) {
+                    li.style.paddingBottom = '64px';
+                    li.classList.add('curtain-open');
+                } else {
+                    li.style.paddingBottom = '';
+                }
+                dy = 0;
+            };
+            
+            li.addEventListener('pointerup', finish);
+            li.addEventListener('pointercancel', finish);
+        }
+        
+        function openChatDeleteConfirm(uid, displayName) {
+            chatDeleteTarget = uid;
+            deleteChatUserName.textContent = displayName;
+            closeMsgDelMenu();
+            deleteChatConfirm.style.display = 'block';
         }
         
         async function loadGroupMessages(groupId) {
@@ -1597,17 +1839,27 @@
                 attsHtml = `<div class="message-attachments">${atts}</div>`;
             }
             
+            // Phase 6.6: quoted original - glass island inside the bubble, clickable
+            let quoteHtml = '';
+            if (msg.reply_to_id) {
+                const snippet = msg.reply_to_text || 'Сообщение недоступно';
+                quoteHtml = `<div class="reply-quote" data-reply-id="${msg.reply_to_id}">
+                    <div class="reply-quote-name">${escapeHtml(msg.reply_to_name || '')}</div>
+                    <div class="reply-quote-text">${escapeHtml(snippet)}</div>
+                </div>`;
+            }
+            
             const timeHtml = `<div class="message-time">${formatTime(msg.created_at)}</div>`;
             
             // Phase 6.1: in groups other people's bubbles show sender name above the text;
-            // 1-on-1 keeps the legacy flat structure byte-for-byte (regression safety)
+            // messages WITHOUT a reply keep the legacy structure byte-for-byte (regression safety)
             if (isGroupMsg && !mine) {
                 const nameHtml = msg.sender_name
                     ? `<div class="message-sender-name">${escapeHtml(msg.sender_name)}</div>`
                     : '';
-                div.innerHTML = avatarHtml + `<div class="message-body">${nameHtml}${escapeHtml(msg.text)}${attsHtml}${timeHtml}</div>`;
+                div.innerHTML = avatarHtml + `<div class="message-body">${nameHtml}${quoteHtml}${escapeHtml(msg.text)}${attsHtml}${timeHtml}</div>`;
             } else {
-                div.innerHTML = avatarHtml + escapeHtml(msg.text) + attsHtml + timeHtml;
+                div.innerHTML = avatarHtml + quoteHtml + escapeHtml(msg.text) + attsHtml + timeHtml;
             }
             
             // Phase 6.1b FIX: the div was built but never attached to the DOM
@@ -1621,62 +1873,137 @@
                 });
             });
             
-            // Phase 6.5: hover/longpress trash chip on eligible bubbles
-            attachDeleteControls(div, msg);
+            // Phase 6.6: quote -> smooth-scroll to the original bubble
+            div.querySelectorAll('.reply-quote').forEach(q => {
+                q.addEventListener('click', () => scrollToOriginal(parseInt(q.dataset.replyId)));
+            });
+            
+            // Phase 6.6: swipe gestures (light left = reply, snap = delete panel)
+            attachBubbleGestures(div, msg);
         }
         
-        // ===== Phase 6.5: message deletion UI =====
-        let msgDeleteCtx = null; // {bubble, id} while the mini-menu is open
+        // ===== Phase 6.6: bubble gestures - Pointer Events (mouse + touch) =====
+        // Light left swipe 40..110px (rubber band) -> REPLY chip above the input.
+        // Swipe past ~120px (snap) -> delete panel behind the bubble (roles per 6.5).
+        // The old hover/longpress trash chip is gone.
+        const SWIPE_REPLY_MIN = 40;
+        const SWIPE_SNAP = 120;
         
-        // Rules: dialogs - both participants can delete (self, admins also "all");
-        // groups - only your own bubbles and self mode only ("Удалить чат" is /leave there)
-        function attachDeleteControls(div, msg) {
+        let msgDeleteCtx = null; // {bubble, id} while the delete panel is open
+        
+        const GESTURE_ICONS = {
+            reply: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 6 6v4"/></svg>',
+            del: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>'
+        };
+        
+        function attachBubbleGestures(div, msg) {
             if (!msg.id) return;
-            const mine = msg.sender_id === currentUser;
-            if (msg.group_id && !mine) return;
-            
             div.dataset.msgId = msg.id;
             
-            let longPressTimer = null;
-            let lpFired = false;
-            let lpTouchAt = 0;
+            // Phase 6.5 rules kept: groups - only own bubbles are deletable (self mode)
+            const canDelete = !(msg.group_id && msg.sender_id !== currentUser);
             
-            const chip = document.createElement('button');
-            chip.type = 'button';
-            chip.className = 'msg-del-chip';
-            chip.title = 'Удалить сообщение';
-            chip.setAttribute('aria-label', 'Удалить сообщение');
-            chip.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>';
-            chip.addEventListener('click', (e) => {
-                e.stopPropagation();
-                if (msgDelMenu.style.display !== 'none' && msgDeleteCtx && msgDeleteCtx.bubble === div) {
-                    closeMsgDelMenu();
-                    return;
+            let startX = 0, startY = 0, dx = 0, engaged = false, armed = false, pid = null;
+            
+            const hint = document.createElement('div');
+            hint.className = 'swipe-hint';
+            hint.innerHTML = `<span class="swipe-hint-icon swipe-hint-reply">${GESTURE_ICONS.reply}</span><span class="swipe-hint-icon swipe-hint-del">${GESTURE_ICONS.del}</span>`;
+            div.appendChild(hint);
+            
+            div.addEventListener('pointerdown', (e) => {
+                if (e.button !== undefined && e.button !== 0) return;
+                if (e.target.closest('a, button, img')) return; // keep native clicks intact
+                startX = e.clientX; startY = e.clientY; dx = 0;
+                engaged = false; armed = false; pid = e.pointerId;
+            });
+            
+            div.addEventListener('pointermove', (e) => {
+                if (pid === null || e.pointerId !== pid) return;
+                const mx = e.clientX - startX;
+                const my = e.clientY - startY;
+                if (!engaged) {
+                    if (Math.abs(mx) < 8 && Math.abs(my) < 8) return;
+                    if (Math.abs(my) >= Math.abs(mx) || mx > 0) { pid = null; return; } // scroll or rightward intent
+                    engaged = true;
+                    try { div.setPointerCapture(pid); } catch (_) {}
+                    div.classList.add('swiping');
                 }
-                openMsgDelMenu(div, msg);
+                // rubber band: free run to the snap point, then resist hard
+                let v = Math.min(0, mx);
+                if (-v > SWIPE_SNAP) v = -(SWIPE_SNAP + (-v - SWIPE_SNAP) * 0.25);
+                v = Math.max(v, -(SWIPE_SNAP + 30));
+                dx = v;
+                armed = -dx >= SWIPE_SNAP;
+                div.classList.toggle('snap-armed', armed);
+                div.style.transform = `translateX(${dx}px)`;
+                hint.style.opacity = String(Math.min(1, (-dx / SWIPE_REPLY_MIN)));
+                e.preventDefault();
             });
-            div.appendChild(chip);
             
-            // mobile: longpress reveals the chip (desktop uses :hover)
-            div.addEventListener('touchstart', () => {
-                lpFired = false;
-                lpTouchAt = Date.now();
-                clearTimeout(longPressTimer);
-                longPressTimer = setTimeout(() => {
-                    lpFired = true;
-                    div.classList.add('msg-del-open');
-                }, 500);
-            }, { passive: true });
-            div.addEventListener('touchend', (e) => {
-                clearTimeout(longPressTimer);
-                if (lpFired) e.preventDefault(); // swallow the synthetic click after longpress
-            }, { passive: false });
-            div.addEventListener('touchmove', () => clearTimeout(longPressTimer), { passive: true });
-            div.addEventListener('touchcancel', () => clearTimeout(longPressTimer), { passive: true });
-            // no native context menu over a bubble right after a longpress
-            div.addEventListener('contextmenu', (e) => {
-                if (Date.now() - lpTouchAt < 900) e.preventDefault();
+            const resetVisual = () => {
+                div.classList.remove('swiping', 'snap-armed');
+                hint.style.opacity = '';
+                div.style.transform = '';
+            };
+            
+            div.addEventListener('pointerup', (e) => {
+                if (pid === null || e.pointerId !== pid) return;
+                const wasEngaged = engaged;
+                pid = null; engaged = false;
+                const wasArmed = armed;
+                armed = false;
+                resetVisual();
+                if (!wasEngaged) return;
+                e.preventDefault();
+                if (wasArmed && canDelete) {
+                    openMsgDelMenu(div, msg);          // snap zone -> delete panel
+                } else if (-dx >= SWIPE_REPLY_MIN) {
+                    armReply(msg);                      // light zone -> reply chip
+                }
             });
+            
+            div.addEventListener('pointercancel', () => {
+                if (pid === null) return;
+                pid = null; engaged = false; armed = false;
+                resetVisual();
+            });
+        }
+        
+        // ---- reply chip above the input -------------------------------------
+        function armReply(msg) {
+            closeMsgDelMenu();
+            const name = (msg.sender_id === currentUser)
+                ? currentName
+                : (msg.sender_name || chatHeaderName.textContent || '');
+            let snippet = (msg.text || '').trim();
+            if (!snippet && msg.attachments && msg.attachments.length) snippet = '📎 Вложение';
+            if (snippet.length > 60) snippet = snippet.slice(0, 60).replace(/\s+$/, '');
+            replyCtx = {
+                id: msg.id,
+                chatKey: selectedGroupId ? 'g' + selectedGroupId : 'u' + selectedUserId
+            };
+            replyBarText.textContent = 'Ответ: ' + name + ': ' + snippet;
+            replyBar.style.display = 'flex';
+            messageInput.focus();
+        }
+        
+        function cancelReply() {
+            replyCtx = null;
+            replyBar.style.display = 'none';
+            replyBarText.textContent = '';
+        }
+        
+        cancelReplyBtn.addEventListener('click', cancelReply);
+        
+        function scrollToOriginal(messageId) {
+            const el = messagesDiv.querySelector(`[data-msg-id="${messageId}"]`);
+            if (!el) {
+                showToast('Сообщение не найдено в открытой истории');
+                return;
+            }
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            el.classList.add('flash-highlight');
+            setTimeout(() => el.classList.remove('flash-highlight'), 1200);
         }
         
         function openMsgDelMenu(bubble, msg) {
@@ -1701,7 +2028,6 @@
             }
             
             msgDelMenu.style.display = 'block';
-            bubble.classList.add('msg-del-open');
             
             // position above the bubble (below if clipped), clamped inside the chat island
             const areaRect = chatArea.getBoundingClientRect();
@@ -1721,7 +2047,6 @@
         function closeMsgDelMenu() {
             msgDelMenu.style.display = 'none';
             msgDelMenu.innerHTML = '';
-            document.querySelectorAll('.message.msg-del-open').forEach(el => el.classList.remove('msg-del-open'));
             msgDeleteCtx = null;
         }
         
@@ -1802,12 +2127,25 @@
                 return;
             }
             
+            // Phase 6.6: "/" in a dialog runs the dialog command set (/pin /block ...)
+            if (!selectedGroupId && selectedUserId && text.startsWith('/')) {
+                messageInput.value = '';
+                runDialogSlash(text);
+                return;
+            }
+            
             const formData = new FormData();
             formData.append('recipient_id', selectedUserId || 0);
             if (selectedGroupId) {
                 formData.append('group_id', selectedGroupId);
             }
             formData.append('text', text);
+            
+            // Phase 6.6: armed reply rides along if it still belongs to THIS chat
+            const currentChatKey = selectedGroupId ? 'g' + selectedGroupId : 'u' + selectedUserId;
+            if (replyCtx && replyCtx.chatKey === currentChatKey) {
+                formData.append('reply_to_id', replyCtx.id);
+            }
             
             attachedFiles.forEach(file => {
                 formData.append('files', file);
@@ -1822,6 +2160,7 @@
                     messageInput.value = '';
                     attachedFiles = [];
                     updateChips();
+                    cancelReply(); // Phase 6.6: reply consumed with the send
                 } else {
                     const err = await res.json();
                     alert(err.detail || 'Failed to send message');

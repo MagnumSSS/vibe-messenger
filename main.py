@@ -78,14 +78,19 @@ THEME_TOKENS = {
 }
 
 # Phase 6.2: data-driven command registry (group commands).
-# roles = caller roles allowed; "*" = any member. scope reserved for future DM commands.
+# roles = caller roles allowed; "*" = any member.
+# Phase 6.6: scope="dialog" commands run via POST /api/dialog/{uid}/command (1-on-1 only).
 COMMAND_REGISTRY = [
-    {"name": "add",     "args_hint": "@username", "roles": ["owner", "admin"],           "scope": "group", "description": "Добавить участника в группу"},
-    {"name": "kick",    "args_hint": "@username", "roles": ["owner", "admin"],           "scope": "group", "description": "Исключить участника (матрица кика)"},
-    {"name": "promote", "args_hint": "@username", "roles": ["owner"],                    "scope": "group", "description": "Назначить групп-админом"},
-    {"name": "rename",  "args_hint": "<имя>",     "roles": ["owner", "admin"],           "scope": "group", "description": "Переименовать группу"},
-    {"name": "leave",   "args_hint": "",          "roles": ["owner", "admin", "member"], "scope": "group", "description": "Выйти из группы"},
-    {"name": "help",    "args_hint": "",          "roles": ["*"],                        "scope": "group", "description": "Показать доступные команды"},
+    {"name": "add",     "args_hint": "@username", "roles": ["owner", "admin"],           "scope": "group",  "description": "Добавить участника в группу"},
+    {"name": "kick",    "args_hint": "@username", "roles": ["owner", "admin"],           "scope": "group",  "description": "Исключить участника (матрица кика)"},
+    {"name": "promote", "args_hint": "@username", "roles": ["owner"],                    "scope": "group",  "description": "Назначить групп-админом"},
+    {"name": "rename",  "args_hint": "<имя>",     "roles": ["owner", "admin"],           "scope": "group",  "description": "Переименовать группу"},
+    {"name": "leave",   "args_hint": "",          "roles": ["owner", "admin", "member"], "scope": "group",  "description": "Выйти из группы"},
+    {"name": "help",    "args_hint": "",          "roles": ["*"],                        "scope": "group",  "description": "Показать доступные команды"},
+    # Phase 6.6: dialog commands (no args - target is always the dialog peer)
+    {"name": "block",   "args_hint": "",          "roles": ["*"],                        "scope": "dialog", "description": "Заблокировать собеседника"},
+    {"name": "unblock", "args_hint": "",          "roles": ["*"],                        "scope": "dialog", "description": "Разблокировать собеседника"},
+    {"name": "pin",     "args_hint": "",          "roles": ["*"],                        "scope": "dialog", "description": "Закрепить/открепить чат с собеседником"},
 ]
 
 
@@ -375,6 +380,23 @@ def ensure_schema():
             conn.execute("ALTER TABLE messages ADD COLUMN group_id INTEGER NULL")
             print("Added column messages.group_id")
         
+        # Phase 6.6: reply support (NULL = standalone message)
+        if "reply_to_id" not in msg_columns:
+            conn.execute("ALTER TABLE messages ADD COLUMN reply_to_id INTEGER NULL")
+            print("Added column messages.reply_to_id")
+        
+        # Phase 6.6: per-user contact pins (pinned contacts float to the top)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS pins (
+                user_id INTEGER NOT NULL,
+                contact_id INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, contact_id),
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (contact_id) REFERENCES users(id)
+            )
+        """)
+        
         # Phase 6.1: groups tables
         conn.execute("""
             CREATE TABLE IF NOT EXISTS groups (
@@ -630,7 +652,15 @@ async def chat_page(request: Request):
         return RedirectResponse(url="/")
     
     with get_db() as conn:
-        users = conn.execute("SELECT id, name, username, avatar_uuid FROM users WHERE id != ?", (user["id"],)).fetchall()
+        # Phase 6.6: pinned contacts float to the top (marker flag for the template)
+        users = conn.execute("""
+            SELECT u.id, u.name, u.username, u.avatar_uuid,
+                   CASE WHEN p.contact_id IS NULL THEN 0 ELSE 1 END AS pinned
+            FROM users u
+            LEFT JOIN pins p ON p.contact_id = u.id AND p.user_id = ?
+            WHERE u.id != ?
+            ORDER BY pinned DESC, u.id ASC
+        """, (user["id"], user["id"])).fetchall()
     
     # Ensure theme_json is never None - default to '{}'
     if user.get("theme_json") is None:
@@ -680,9 +710,13 @@ async def api_messages(request: Request, recipient_id: int):
     with get_db() as conn:
         messages = conn.execute("""
             SELECT m.id, m.sender_id, m.recipient_id, m.text, m.created_at, 
-                   sender.avatar_uuid as sender_avatar_uuid
+                   sender.avatar_uuid as sender_avatar_uuid,
+                   m.reply_to_id,
+                   r.text AS reply_to_text, ru.name AS reply_to_name
             FROM messages m
             JOIN users sender ON m.sender_id = sender.id
+            LEFT JOIN messages r ON r.id = m.reply_to_id
+            LEFT JOIN users ru ON ru.id = r.sender_id
             WHERE m.group_id IS NULL
               AND ((m.sender_id = ? AND m.recipient_id = ?) OR (m.sender_id = ? AND m.recipient_id = ?))
               -- Phase 6.5: hide rows this user deleted ("у себя" / "у всех" / delete-chat)
@@ -694,6 +728,8 @@ async def api_messages(request: Request, recipient_id: int):
         result = []
         for msg in messages:
             msg_dict = dict(msg)
+            if msg_dict.get("reply_to_id"):
+                msg_dict["reply_to_text"] = clip_reply_snippet(msg_dict.get("reply_to_text"))
             attachments = conn.execute(
                 "SELECT id, uuid_name, orig_name, mime, size, created_at FROM attachments WHERE message_id = ?",
                 (msg_dict["id"],)
@@ -915,9 +951,13 @@ async def group_messages(request: Request, group_id: int):
         messages = conn.execute("""
             SELECT m.id, m.sender_id, m.recipient_id, m.group_id, m.text, m.created_at,
                    u.name AS sender_name, u.username AS sender_username,
-                   u.avatar_uuid AS sender_avatar_uuid
+                   u.avatar_uuid AS sender_avatar_uuid,
+                   m.reply_to_id,
+                   r.text AS reply_to_text, ru.name AS reply_to_name
             FROM messages m
             JOIN users u ON m.sender_id = u.id
+            LEFT JOIN messages r ON r.id = m.reply_to_id
+            LEFT JOIN users ru ON ru.id = r.sender_id
             WHERE m.group_id = ?
               -- Phase 6.5: group deletion is self-only, so hide a message just for
               -- the member who deleted their own copy (everyone else still sees it)
@@ -928,6 +968,8 @@ async def group_messages(request: Request, group_id: int):
         result = []
         for msg in messages:
             msg_dict = dict(msg)
+            if msg_dict.get("reply_to_id"):
+                msg_dict["reply_to_text"] = clip_reply_snippet(msg_dict.get("reply_to_text"))
             attachments = conn.execute(
                 "SELECT id, uuid_name, orig_name, mime, size, created_at FROM attachments WHERE message_id = ?",
                 (msg_dict["id"],)
@@ -942,13 +984,18 @@ async def group_messages(request: Request, group_id: int):
 
 @app.get("/api/commands")
 async def api_commands(request: Request, group_id: int = 0):
-    """Commands available to the caller in the given group context (role-aware)"""
+    """Commands available to the caller in the given context (role-aware).
+    Phase 6.6: group_id<=0 returns dialog-scope commands for 1-on-1 chats."""
     user = get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
     
     if group_id <= 0:
-        return []
+        # Phase 6.6: dialog chips - same for every authed user (target is the open peer)
+        return JSONResponse([
+            dict(c) for c in COMMAND_REGISTRY
+            if c["scope"] == "dialog"
+        ])
     
     role, _grp = get_effective_group_role(user, group_id)
     if not role:
@@ -956,8 +1003,99 @@ async def api_commands(request: Request, group_id: int = 0):
     
     return JSONResponse([
         dict(c) for c in COMMAND_REGISTRY
-        if "*" in c["roles"] or role in c["roles"]
+        if c["scope"] == "group" and ("*" in c["roles"] or role in c["roles"])
     ])
+
+
+# ===== Phase 6.6: dialog commands (/block /unblock /pin) =====
+
+def get_dialog_state(user_id, peer_id):
+    """Per-user dialog state vs a peer: my pin + block matrix (both directions)."""
+    with get_db() as conn:
+        pinned = conn.execute(
+            "SELECT 1 FROM pins WHERE user_id = ? AND contact_id = ?", (user_id, peer_id)
+        ).fetchone() is not None
+        blocked_by_me = conn.execute(
+            "SELECT 1 FROM blocks WHERE blocker_id = ? AND blocked_id = ?", (user_id, peer_id)
+        ).fetchone() is not None
+        blocked_me = conn.execute(
+            "SELECT 1 FROM blocks WHERE blocker_id = ? AND blocked_id = ?", (peer_id, user_id)
+        ).fetchone() is not None
+    return {"pinned": pinned, "blocked_by_me": blocked_by_me, "blocked_me": blocked_me}
+
+
+@app.get("/api/dialog/{uid}/state")
+async def dialog_state(request: Request, uid: int):
+    """State snapshot for the dialog chips (pin/block labels)."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if uid == user["id"]:
+        raise HTTPException(status_code=400, detail="Cannot target yourself")
+    
+    with get_db() as conn:
+        if not conn.execute("SELECT 1 FROM users WHERE id = ?", (uid,)).fetchone():
+            raise HTTPException(status_code=404, detail="User not found")
+    
+    return JSONResponse(get_dialog_state(user["id"], uid))
+
+
+@app.post("/api/dialog/{uid}/command")
+async def dialog_command(request: Request, uid: int, cmd: str = Form(...)):
+    """Execute a dialog command against the peer. ALL checks happen server-side."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if uid == user["id"]:
+        raise HTTPException(status_code=400, detail="Cannot target yourself")
+    
+    with get_db() as conn:
+        peer = conn.execute("SELECT id, username FROM users WHERE id = ?", (uid,)).fetchone()
+    if not peer:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    cmd_clean = (cmd or "").strip().lstrip("/").lower()
+    spec = next((c for c in COMMAND_REGISTRY if c["name"] == cmd_clean and c["scope"] == "dialog"), None)
+    if not spec:
+        raise HTTPException(status_code=400, detail=f"Неизвестная команда диалога: /{cmd_clean}")
+    
+    with get_db() as conn:
+        if cmd_clean == "block":
+            already = conn.execute(
+                "SELECT 1 FROM blocks WHERE blocker_id = ? AND blocked_id = ?", (user["id"], uid)
+            ).fetchone()
+            if not already:
+                conn.execute(
+                    "INSERT OR IGNORE INTO blocks (blocker_id, blocked_id) VALUES (?, ?)",
+                    (user["id"], uid)
+                )
+                conn.commit()
+                return JSONResponse({"ok": True, "text": f"@{peer['username']} заблокирован", "state": get_dialog_state(user["id"], uid)})
+            return JSONResponse({"ok": True, "text": "Уже заблокирован", "state": get_dialog_state(user["id"], uid)})
+        
+        if cmd_clean == "unblock":
+            cur = conn.execute(
+                "DELETE FROM blocks WHERE blocker_id = ? AND blocked_id = ?", (user["id"], uid)
+            )
+            conn.commit()
+            text = "Разблокирован" if cur.rowcount else "И не был заблокирован"
+            return JSONResponse({"ok": True, "text": text, "state": get_dialog_state(user["id"], uid)})
+        
+        if cmd_clean == "pin":
+            existing = conn.execute(
+                "SELECT 1 FROM pins WHERE user_id = ? AND contact_id = ?", (user["id"], uid)
+            ).fetchone()
+            if existing:
+                conn.execute("DELETE FROM pins WHERE user_id = ? AND contact_id = ?", (user["id"], uid))
+                conn.commit()
+                return JSONResponse({"ok": True, "text": "Чат откреплён", "pinned": False, "state": get_dialog_state(user["id"], uid)})
+            conn.execute(
+                "INSERT OR IGNORE INTO pins (user_id, contact_id) VALUES (?, ?)", (user["id"], uid)
+            )
+            conn.commit()
+            return JSONResponse({"ok": True, "text": "Чат закреплён", "pinned": True, "state": get_dialog_state(user["id"], uid)})
+    
+    raise HTTPException(status_code=400, detail="Неизвестная команда")
 
 
 def _notify_group_changed(group_id: int, exclude_uid=None):
@@ -987,7 +1125,8 @@ async def group_command(request: Request, group_id: int, cmd: str = Form(""), ar
         raise HTTPException(status_code=403, detail="Not a group member")
     
     cmd_clean = (cmd or "").strip().lstrip("/").lower()
-    spec = next((c for c in COMMAND_REGISTRY if c["name"] == cmd_clean), None)
+    # Phase 6.6: scope filter - dialog commands (/block /unblock /pin) never run in groups
+    spec = next((c for c in COMMAND_REGISTRY if c["name"] == cmd_clean and c["scope"] == "group"), None)
     if not spec:
         raise HTTPException(status_code=400, detail=f"Неизвестная команда: /{cmd_clean}. /help — список")
     
@@ -1000,7 +1139,7 @@ async def group_command(request: Request, group_id: int, cmd: str = Form(""), ar
     if cmd_clean == "help":
         lines = [
             f"/{c['name']}" + (f" {c['args_hint']}" if c["args_hint"] else "") + f" — {c['description']}"
-            for c in COMMAND_REGISTRY if "*" in c["roles"] or role in c["roles"]
+            for c in COMMAND_REGISTRY if c["scope"] == "group" and ("*" in c["roles"] or role in c["roles"])
         ]
         return JSONResponse({"ok": True, "text": "Доступные команды:\n" + "\n".join(lines)})
     
@@ -1320,12 +1459,40 @@ async def delete_theme_image(request: Request, image_type: str):
     return JSONResponse({"success": True})
 
 
+REPLY_SNIPPET_MAX = 140
+
+
+def clip_reply_snippet(text):
+    """Phase 6.6: quote snippets are capped identically everywhere."""
+    s = (text or "").strip()
+    if len(s) > REPLY_SNIPPET_MAX:
+        s = s[:REPLY_SNIPPET_MAX].rstrip() + "…"
+    return s
+
+
+def reply_payload(reply_to_id):
+    """Phase 6.6: quote fields for a message payload (empty dict = no reply).
+    Text is truncated server-side so both history and WS stay consistent."""
+    if not reply_to_id:
+        return {}
+    with get_db() as conn:
+        row = conn.execute("""
+            SELECT m.text, m.sender_id, u.name
+            FROM messages m JOIN users u ON u.id = m.sender_id
+            WHERE m.id = ?
+        """, (reply_to_id,)).fetchone()
+    if not row:
+        return {"reply_to_id": int(reply_to_id), "reply_to_text": "", "reply_to_name": ""}
+    return {"reply_to_id": int(reply_to_id), "reply_to_text": clip_reply_snippet(row["text"]), "reply_to_name": row["name"] or ""}
+
+
 @app.post("/api/send")
 async def send_message(
     request: Request,
     recipient_id: int = Form(0),
     group_id: int = Form(0),
     text: str = Form(""),
+    reply_to_id: int = Form(0),
     files: list[UploadFile] = File(default=[])
 ):
     user = get_current_user_fresh(request)  # Use fresh data to catch ban status
@@ -1380,9 +1547,26 @@ async def send_message(
                 except (ValueError, AttributeError):
                     pass
         
+        # Phase 6.6: reply validation - target must exist in the SAME conversation
+        reply_target = None
+        if reply_to_id and reply_to_id > 0:
+            if is_group:
+                reply_target = conn.execute(
+                    "SELECT id, sender_id, text FROM messages WHERE id = ? AND group_id = ?",
+                    (reply_to_id, group_id)
+                ).fetchone()
+            else:
+                reply_target = conn.execute("""
+                    SELECT id, sender_id, text FROM messages
+                    WHERE id = ? AND group_id IS NULL
+                      AND ((sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?))
+                """, (reply_to_id, user["id"], recipient_id, recipient_id, user["id"])).fetchone()
+            if not reply_target:
+                raise HTTPException(status_code=404, detail="Сообщение для ответа не найдено")
+        
         conn.execute(
-            "INSERT INTO messages (sender_id, recipient_id, text, group_id) VALUES (?, ?, ?, ?)",
-            (user["id"], recipient_id, text, group_id if is_group else None)
+            "INSERT INTO messages (sender_id, recipient_id, text, group_id, reply_to_id) VALUES (?, ?, ?, ?, ?)",
+            (user["id"], recipient_id, text, group_id if is_group else None, reply_target["id"] if reply_target else None)
         )
         message_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         
@@ -1425,7 +1609,7 @@ async def send_message(
         
         # Get the inserted message with attachments
         msg = conn.execute(
-            "SELECT id, sender_id, recipient_id, group_id, text, created_at FROM messages WHERE id = ?",
+            "SELECT id, sender_id, recipient_id, group_id, text, created_at, reply_to_id FROM messages WHERE id = ?",
             (message_id,)
         ).fetchone()
         
@@ -1438,6 +1622,8 @@ async def send_message(
     # Build response with attachments
     msg_dict = dict(msg)
     msg_dict["attachments"] = [dict(a) for a in attachments]
+    # Phase 6.6: reply payload for both clients (sender + WS receivers)
+    msg_dict.update(reply_payload(msg_dict.get("reply_to_id")))
     
     if is_group:
         # Phase 6.1: group message carries sender identity so receivers can render name/avatar
