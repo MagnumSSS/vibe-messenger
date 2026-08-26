@@ -1,4 +1,5 @@
 import os
+import re
 import sqlite3
 import hashlib
 import secrets
@@ -15,7 +16,7 @@ from urllib.parse import quote
 import aiofiles
 import aiofiles.os
 from fastapi import FastAPI, Request, Form, Depends, HTTPException, status, WebSocket, WebSocketDisconnect, UploadFile, File
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse, Response
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 from fastapi.staticfiles import StaticFiles 
@@ -169,6 +170,108 @@ def merge_theme_with_defaults(theme_json_str):
     except Exception as e:
         print(f"Theme merge error: {e}")
         return THEME_PRESETS["default"]
+
+
+# Phase 6.3: live legacy color tokens that are NOT in the editor manifest
+# (chip_cmd drives --chip-cmd-bg; border is auto-derived from bg, so not stored)
+PRESET_EXTRA_COLORS = {"chip_cmd": "#dbe7ff"}
+# Phase 6.3: built-in names can never be overwritten by user presets
+PRESET_RESERVED_NAMES = {"default", "dark"}
+PRESET_NAME_MAX_LEN = 50
+THEME_IMPORT_MAX_BYTES = 256 * 1024
+
+
+def sanitize_color_value(value, default):
+    """Phase 6.3: keep only valid #rgb / #rrggbb strings, anything else -> default"""
+    if not isinstance(value, str):
+        return default
+    v = value.strip().lstrip('#')
+    if re.fullmatch(r'[0-9a-fA-F]{6}', v):
+        return '#' + v.lower()
+    m3 = re.fullmatch(r'[0-9a-fA-F]{3}', v)
+    if m3:
+        return '#' + ''.join(c * 2 for c in m3.group(0)).lower()
+    return default
+
+
+def sanitize_theme_config(raw):
+    """
+    Phase 6.3: validate an arbitrary theme config against the THEME_TOKENS manifest.
+    Extra keys are dropped, missing/invalid values fall back to defaults.
+    Image tokens are intentionally NOT portable: their uuids point at private
+    uploads, so a foreign config must never grant access to someone's files.
+    """
+    raw = raw if isinstance(raw, dict) else {}
+    raw_colors = raw.get("colors") if isinstance(raw.get("colors"), dict) else {}
+    raw_effects = raw.get("effects") if isinstance(raw.get("effects"), dict) else {}
+
+    colors = {}
+    for key, spec in THEME_TOKENS["colors"].items():
+        colors[key] = sanitize_color_value(raw_colors.get(key), spec["default"])
+    for key, default in PRESET_EXTRA_COLORS.items():
+        if key in raw_colors:
+            colors[key] = sanitize_color_value(raw_colors[key], default)
+
+    effects = {}
+    for key, spec in THEME_TOKENS["effects"].items():
+        try:
+            n = int(float(raw_effects.get(key)))
+        except (TypeError, ValueError):
+            n = int(spec["default"])
+        effects[key] = max(int(spec.get("min", 0)), min(int(spec.get("max", 20)), n))
+
+    return {"colors": colors, "images": {}, "effects": effects}
+
+
+def resolve_preset_name(explicit, parsed, fallback):
+    """Phase 6.3: import name priority: form field > config "name" > filename.
+    Reserved/empty names fall back to the generic one."""
+    name = ""
+    if isinstance(explicit, str) and explicit.strip():
+        name = explicit.strip()
+    elif isinstance(parsed, dict) and isinstance(parsed.get("name"), str) and parsed["name"].strip():
+        name = parsed["name"].strip()
+    elif fallback:
+        name = Path(str(fallback)).stem.strip() or fallback
+    if not name or len(name) > PRESET_NAME_MAX_LEN or name.lower() in PRESET_RESERVED_NAMES:
+        name = "Импорт"
+    return name
+
+
+def load_user_presets(conn, user_id):
+    """Phase 6.3: all custom theme presets of a user, newest first"""
+    rows = conn.execute(
+        "SELECT id, name, theme_json FROM theme_presets WHERE user_id = ? ORDER BY id DESC",
+        (user_id,)
+    ).fetchall()
+    result = []
+    for r in rows:
+        try:
+            theme = json.loads(r["theme_json"])
+        except Exception:
+            theme = sanitize_theme_config(None)
+        result.append({"id": r["id"], "name": r["name"], "theme": theme})
+    return result
+
+
+def upsert_user_preset(conn, user_id, name, theme):
+    """Phase 6.3: save preset under a unique per-user name (re-save overwrites)"""
+    existing = conn.execute(
+        "SELECT id FROM theme_presets WHERE user_id = ? AND name = ?",
+        (user_id, name)
+    ).fetchone()
+    payload = json.dumps(theme)
+    if existing:
+        conn.execute(
+            "UPDATE theme_presets SET theme_json = ? WHERE id = ?",
+            (payload, existing["id"])
+        )
+        return existing["id"]
+    cur = conn.execute(
+        "INSERT INTO theme_presets (user_id, name, theme_json) VALUES (?, ?, ?)",
+        (user_id, name, payload)
+    )
+    return cur.lastrowid
 
 
 def hex_to_rgb(hex_color):
@@ -344,7 +447,20 @@ def ensure_schema():
                 FOREIGN KEY (blocked_id) REFERENCES users(id)
             )
         """)
-        
+
+        # Phase 6.3: user-defined theme presets (custom colors/effects configs)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS theme_presets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                theme_json TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, name),
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
+
         conn.commit()
 
 
@@ -569,8 +685,10 @@ async def api_messages(request: Request, recipient_id: int):
             JOIN users sender ON m.sender_id = sender.id
             WHERE m.group_id IS NULL
               AND ((m.sender_id = ? AND m.recipient_id = ?) OR (m.sender_id = ? AND m.recipient_id = ?))
+              -- Phase 6.5: hide rows this user deleted ("у себя" / "у всех" / delete-chat)
+              AND ((m.sender_id = ? AND m.deleted_for_sender = 0) OR (m.recipient_id = ? AND m.deleted_for_recipient = 0))
             ORDER BY m.created_at ASC
-        """, (user["id"], recipient_id, recipient_id, user["id"])).fetchall()
+        """, (user["id"], recipient_id, recipient_id, user["id"], user["id"], user["id"])).fetchall()
         
         # Build response with attachments for each message
         result = []
@@ -801,8 +919,11 @@ async def group_messages(request: Request, group_id: int):
             FROM messages m
             JOIN users u ON m.sender_id = u.id
             WHERE m.group_id = ?
+              -- Phase 6.5: group deletion is self-only, so hide a message just for
+              -- the member who deleted their own copy (everyone else still sees it)
+              AND (m.deleted_for_sender = 0 OR m.sender_id != ?)
             ORDER BY m.created_at ASC, m.id ASC
-        """, (group_id,)).fetchall()
+        """, (group_id, user["id"])).fetchall()
         
         result = []
         for msg in messages:
@@ -1795,6 +1916,8 @@ async def delete_account(request: Request):
     with get_db() as conn:
         conn.execute("UPDATE messages SET deleted_for_sender = 1 WHERE sender_id = ?", (user["id"],))
         conn.execute("UPDATE messages SET deleted_for_recipient = 1 WHERE recipient_id = ?", (user["id"],))
+        # Phase 6.3: drop the account's custom theme presets along with it
+        conn.execute("DELETE FROM theme_presets WHERE user_id = ?", (user["id"],))
         conn.execute("DELETE FROM users WHERE id = ?", (user["id"],))
         conn.commit()
     
@@ -1842,6 +1965,125 @@ async def save_theme(request: Request, theme_json: str = Form(...)):
         conn.commit()
     
     return JSONResponse({"success": True})
+
+
+# ========== CUSTOM THEME PRESETS (Phase 6.3) ==========
+
+@app.get("/api/theme/presets/custom")
+async def get_custom_presets(request: Request):
+    """List current user's saved theme presets"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    with get_db() as conn:
+        presets = load_user_presets(conn, user["id"])
+
+    return JSONResponse({"presets": presets})
+
+
+@app.post("/api/theme/presets/custom")
+async def save_custom_preset(request: Request, name: str = Form(...), theme_json: str = Form(...)):
+    """Save current editor state as a named preset (validated against the manifest)"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    name = name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Preset name is required")
+    if len(name) > PRESET_NAME_MAX_LEN:
+        raise HTTPException(status_code=400, detail=f"Preset name too long (max {PRESET_NAME_MAX_LEN})")
+    if name.lower() in PRESET_RESERVED_NAMES:
+        raise HTTPException(status_code=400, detail="This name is reserved for built-in presets")
+
+    try:
+        parsed = json.loads(theme_json)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid theme JSON")
+
+    clean = sanitize_theme_config(parsed)
+    with get_db() as conn:
+        preset_id = upsert_user_preset(conn, user["id"], name, clean)
+        conn.commit()
+
+    return JSONResponse({"id": preset_id, "name": name})
+
+
+@app.delete("/api/theme/presets/custom/{preset_id}")
+async def delete_custom_preset(preset_id: int, request: Request):
+    """Delete one of the current user's presets (foreign ids are not reachable)"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    with get_db() as conn:
+        cur = conn.execute(
+            "DELETE FROM theme_presets WHERE id = ? AND user_id = ?",
+            (preset_id, user["id"])
+        )
+        conn.commit()
+
+    if cur.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Preset not found")
+
+    return JSONResponse({"success": True})
+
+
+@app.post("/api/theme/presets/import")
+async def import_theme_preset(request: Request, file: UploadFile = File(...), name: str = Form("")):
+    """Import a shared JSON theme config - it becomes a new custom preset.
+    Keys are validated against the manifest: extra keys dropped, invalid
+    values fall back to defaults, so a broken/hostile file can never crash."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    raw = await file.read()
+    if len(raw) > THEME_IMPORT_MAX_BYTES:
+        raise HTTPException(status_code=400, detail=f"File too large (max {THEME_IMPORT_MAX_BYTES // 1024} KB)")
+
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON file")
+
+    clean = sanitize_theme_config(parsed)
+    preset_name = resolve_preset_name(name, parsed, file.filename)
+
+    with get_db() as conn:
+        preset_id = upsert_user_preset(conn, user["id"], preset_name, clean)
+        conn.commit()
+
+    return JSONResponse({"id": preset_id, "name": preset_name})
+
+
+@app.get("/api/theme/export")
+async def export_theme(request: Request):
+    """Download current theme as a portable JSON config (colors + effects).
+    Re-importable via /api/theme/presets/import; images are binary uploads,
+    so they are not part of the portable config."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    with get_db() as conn:
+        row = conn.execute("SELECT theme_json FROM users WHERE id = ?", (user["id"],)).fetchone()
+
+    merged = merge_theme_with_defaults(row["theme_json"] if row else None)
+    payload = {
+        "format": "vibe-theme",
+        "version": 1,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "colors": merged.get("colors", {}),
+        "effects": merged.get("effects", {})
+    }
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    return Response(
+        content=json.dumps(payload, indent=2, ensure_ascii=False),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="vibe-theme-{stamp}.json"'}
+    )
 
 
 # ========== MESSAGE DELETE ENDPOINT ==========

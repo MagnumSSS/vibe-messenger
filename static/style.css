@@ -439,12 +439,32 @@ header h1 {
 }
 
 .messages { 
-    flex: 1; 
+    flex: 1;
+    /* hotfix scroll: let the island's layout cap this container - without it
+       the flex child refuses to shrink and bubbles get squashed instead */
+    min-height: 0;
     overflow-y: auto; 
     padding: 1rem; 
     display: flex; 
     flex-direction: column; 
     gap: 0.5rem; 
+}
+
+/* hotfix scroll: thin scrollbar scoped to the chat island
+   (thumb follows --border-color, track stays transparent) */
+.messages {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-color) transparent;
+}
+.messages::-webkit-scrollbar {
+    width: 6px;
+}
+.messages::-webkit-scrollbar-track {
+    background: transparent;
+}
+.messages::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 3px;
 }
 
 .message { 
@@ -478,8 +498,10 @@ header h1 {
 /* Phase 5.4b: bubble_img lives on a ::before layer so bubble_blur can blur
    ONLY the picture - text stays sharp. position:relative comes from .message;
    overflow:hidden clips the blurred layer strictly INSIDE the bubble */
+/* hotfix scroll: overflow:hidden zeroes the flex auto-min-size, so bubbles
+   could be squashed by the column when many messages pile up */
 .message.sent,
-.message.received { overflow: hidden; }
+.message.received { overflow: hidden; flex-shrink: 0; }
 
 .message.sent::before,
 .message.received::before {
@@ -544,13 +566,16 @@ header h1 {
     text-decoration: underline; 
 }
 
-/* Phase 5.3: input pill - its own floating island inside the chat island */
+/* Phase 5.3: input pill - its own floating island inside the chat island
+   Phase 6.4: compact - tight vertical padding, 6px gap to the chip rows,
+   position:relative anchors the @mention dropdown island */
 .input-area {
     margin: 0 12px 12px;
-    padding: 0.6rem 0.75rem;
+    padding: 0.5rem 0.65rem;
     display: flex; 
     flex-direction: column; 
-    gap: 0.5rem; 
+    gap: 6px;
+    position: relative;
     border-radius: 22px;
 }
 
@@ -568,9 +593,7 @@ header h1 {
 
 .chips-container { 
     display: flex; 
-    flex-wrap: wrap; 
     gap: 0.5rem; 
-    min-height: 20px; 
 }
 
 /* ===== Phase 6.2: command chips island ===== */
@@ -652,9 +675,11 @@ header h1 {
 
 .input-area input { 
     flex: 1; 
-    padding: 0.75rem 1rem; 
+    min-width: 0;
+    height: 46px;
+    padding: 0.55rem 1rem; 
     border: 1px solid var(--border-color); 
-    border-radius: 20px; 
+    border-radius: 23px; 
     font-size: 1rem; 
     outline: none; 
     background: var(--input-bg);
@@ -665,11 +690,12 @@ header h1 {
 }
 
 .input-area button { 
-    padding: 0.75rem 1.5rem; 
+    height: 46px;
+    padding: 0 1.25rem;
     background: var(--btn-primary-bg); 
     color: var(--btn-primary-text, white); 
     border: none; 
-    border-radius: 20px; 
+    border-radius: 23px; 
     cursor: pointer; 
     font-weight: 600; 
 }
@@ -688,10 +714,16 @@ header h1 {
     background: var(--input-bg, #ffffff); 
     color: var(--text-primary); 
     border: none; 
-    padding: 0.75rem; 
+    width: 46px;
+    height: 46px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
     border-radius: 50%; 
     cursor: pointer; 
-    font-size: 1.2rem; 
+    font-size: 1.15rem; 
 }
 
 .attach-btn:hover { 
@@ -974,6 +1006,211 @@ header h1 {
     color: var(--text-primary, #333333);
 }
 
+/* ===== Phase 6.3: custom theme presets ===== */
+.preset-save-row {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.preset-save-row input {
+    flex: 1;
+    min-width: 0;
+    background: var(--input-bg, #ffffff);
+    color: var(--input-text, #333333);
+    border: 1px solid var(--border-color, #dddddd);
+    border-radius: 4px;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.9rem;
+}
+
+.custom-preset-row { margin-top: 0.75rem; }
+
+.custom-preset-item {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    min-width: 0;
+    width: 100%;
+}
+
+.custom-preset-item .custom-preset-apply {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left;
+}
+
+/* Delete cross: transparent chip with danger outline; CSS-only colors because
+   applyEditorContrast skips it (computed bg of a transparent chip is unusable) */
+.preset-del-btn {
+    background: transparent;
+    color: var(--btn-danger-bg, #dc3545);
+    border: 1px solid var(--border-color, #dddddd);
+    padding: 0.3rem 0.55rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    line-height: 1;
+    flex-shrink: 0;
+}
+
+.preset-del-btn:hover {
+    background: var(--btn-danger-bg, #dc3545);
+    color: var(--btn-danger-text, #ffffff);
+}
+
+.preset-io-row {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+}
+
+/* ===== Phase 6.4: UI polish ===== */
+
+/* Chip rows NEVER wrap: single line, horizontal scroll, scrollbar hidden */
+.cmd-chips,
+.chips-container {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    min-width: 0;
+}
+
+.cmd-chips::-webkit-scrollbar,
+.chips-container::-webkit-scrollbar {
+    display: none;
+    height: 0;
+}
+
+/* chips keep their size while the row scrolls */
+.cmd-chips > *,
+.chips-container > * {
+    flex-shrink: 0;
+}
+
+/* Header glass ICON chips (profile / theme / logout) - labels live in tooltips */
+.header-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+}
+
+.icon-chip {
+    width: 38px;
+    height: 34px;
+    padding: 0;
+    margin-left: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.icon-chip svg {
+    width: 18px;
+    height: 18px;
+    display: block;
+}
+
+.profile-btn.icon-chip,
+.settings-btn.icon-chip {
+    color: var(--text-secondary, #dddddd);
+}
+
+.profile-btn.icon-chip:hover,
+.settings-btn.icon-chip:hover {
+    background: var(--header-btn-hover-bg, rgba(255,255,255,0.3));
+    color: var(--text-primary, #ffffff);
+    filter: none;
+}
+
+/* logout keeps the danger tone, hover fills it */
+.logout-icon-chip {
+    color: var(--btn-danger-bg, #dc3545);
+}
+
+.logout-icon-chip:hover {
+    background: var(--btn-danger-bg, #dc3545);
+    color: var(--btn-danger-text, #ffffff);
+}
+
+/* @mention dropdown - Liquid Glass island floating above the input pill
+   (same material recipe as the shared island rule) */
+.mention-menu {
+    position: absolute;
+    left: 12px;
+    right: 12px;
+    bottom: calc(100% + 8px);
+    z-index: 1150;
+    max-height: 240px;
+    overflow-y: auto;
+    padding: 0.35rem;
+    border-radius: 16px;
+    border: 1px solid var(--border-color, #dddddd);
+    background-color: var(--panel-color);
+    background-color: color-mix(in srgb, var(--panel-color) 72%, transparent);
+    box-shadow: 0 4px 16px var(--shadow-2, rgba(0,0,0,0.2));
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-color) transparent;
+}
+
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .mention-menu {
+        -webkit-backdrop-filter: blur(20px) saturate(1.4);
+        backdrop-filter: blur(20px) saturate(1.4);
+    }
+}
+
+.mention-menu::-webkit-scrollbar { width: 6px; }
+.mention-menu::-webkit-scrollbar-track { background: transparent; }
+.mention-menu::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 3px; }
+
+.mention-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.45rem 0.6rem;
+    border-radius: 12px;
+    cursor: pointer;
+    min-width: 0;
+}
+
+.mention-item img {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    object-fit: cover;
+    flex-shrink: 0;
+}
+
+.mention-name {
+    font-size: 0.9rem;
+    color: var(--text-primary, #333333);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mention-username {
+    font-size: 0.8rem;
+    color: var(--text-secondary, #666666);
+    margin-left: auto;
+    flex-shrink: 0;
+}
+
+.mention-item.active {
+    background: var(--active-bg, #e6f2ff);
+}
+
+.mention-empty {
+    padding: 0.5rem 0.6rem;
+    font-size: 0.85rem;
+    color: var(--text-secondary, #666666);
+}
+
 /* Phase 5.4: image slots are VERTICAL islands - label on top, full-width
    button row below; nothing can overflow the drawer horizontally */
 .image-slot {
@@ -1189,6 +1426,153 @@ header h1 {
 .message-action-btn.delete-all {
     color: var(--btn-danger-bg, #dc3545);
 }
+
+/* ===== Phase 6.5: message & chat deletion ===== */
+
+/* Header trash chip (1-on-1 "Удалить чат") - neutral SVG on the header pill */
+.delete-chat-btn svg {
+    width: 16px;
+    height: 16px;
+    display: block;
+}
+
+#deleteChatBtn { padding: 0.5rem 0.7rem; line-height: 0; }
+
+/* Trash chip ON the bubble. Bubbles clip via overflow:hidden and paint their
+   bubble_img on a z-index:-1 ::before - the chip stays inside bounds and
+   z-index:2 keeps it above that layer */
+.msg-del-chip {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    border: 1px solid var(--border-color, #dddddd);
+    background-color: var(--panel-color, #ffffff);
+    background-color: color-mix(in srgb, var(--panel-color) 55%, transparent);
+    color: var(--text-secondary, #666666);
+    cursor: pointer;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease, filter 0.15s ease;
+    z-index: 2;
+}
+
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .msg-del-chip {
+        -webkit-backdrop-filter: blur(8px) saturate(1.4);
+        backdrop-filter: blur(8px) saturate(1.4);
+    }
+}
+
+.msg-del-chip svg { width: 13px; height: 13px; }
+
+.msg-del-chip:hover { filter: brightness(0.95); color: var(--text-primary, #333333); }
+
+/* desktop: hover reveals; mobile: .msg-del-open set by longpress (and while its menu is open) */
+.message:hover .msg-del-chip,
+.message.msg-del-open .msg-del-chip {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+/* mini-menu island anchored to a bubble - same material recipe as the mention menu */
+.msg-del-menu {
+    position: absolute;
+    z-index: 1160;
+    min-width: 180px;
+    padding: 0.35rem;
+    border-radius: 16px;
+    border: 1px solid var(--border-color, #dddddd);
+    background-color: var(--panel-color);
+    background-color: color-mix(in srgb, var(--panel-color) 72%, transparent);
+    box-shadow: 0 4px 16px var(--shadow-2, rgba(0,0,0,0.2));
+    max-width: calc(100% - 16px);
+}
+
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .msg-del-menu {
+        -webkit-backdrop-filter: blur(20px) saturate(1.4);
+        backdrop-filter: blur(20px) saturate(1.4);
+    }
+}
+
+.msg-del-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    text-align: left;
+    padding: 0.5rem 0.65rem;
+    border-radius: 12px;
+    border: none;
+    background: none;
+    cursor: pointer;
+    font-size: 0.88rem;
+    color: var(--text-primary, #333333);
+    white-space: nowrap;
+}
+
+.msg-del-item:hover { background: var(--hover-bg, #f5f5f5); }
+
+/* "Удалить у всех" keeps the btn_danger tone */
+.msg-del-item.danger { color: var(--btn-danger-bg, #dc3545); font-weight: 600; }
+.msg-del-item.danger:hover { background: color-mix(in srgb, var(--btn-danger-bg, #dc3545) 10%, transparent); }
+
+/* delete-chat confirmation island under the chat header */
+.chat-del-confirm {
+    position: absolute;
+    top: 62px;
+    right: 12px;
+    z-index: 1160;
+    width: min(300px, calc(100% - 24px));
+    padding: 0.9rem 1rem;
+    border-radius: 16px;
+    border: 1px solid var(--border-color, #dddddd);
+    background-color: var(--panel-color);
+    background-color: color-mix(in srgb, var(--panel-color) 72%, transparent);
+    box-shadow: 0 4px 16px var(--shadow-2, rgba(0,0,0,0.2));
+}
+
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .chat-del-confirm {
+        -webkit-backdrop-filter: blur(20px) saturate(1.4);
+        backdrop-filter: blur(20px) saturate(1.4);
+    }
+}
+
+.chat-del-title {
+    font-weight: 700;
+    color: var(--text-primary, #333333);
+    margin-bottom: 0.35rem;
+}
+
+.chat-del-text {
+    font-size: 0.85rem;
+    color: var(--text-secondary, #666666);
+    line-height: 1.35;
+    margin-bottom: 0.75rem;
+    overflow-wrap: anywhere;
+}
+
+.chat-del-buttons {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+}
+
+.chat-del-buttons .cancel-btn,
+.chat-del-buttons .btn_danger {
+    padding: 0.45rem 1rem;
+    border-radius: 999px;
+    font-size: 0.88rem;
+}
+
 
 /* Scrollbar styling */
 ::-webkit-scrollbar {

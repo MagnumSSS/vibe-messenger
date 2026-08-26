@@ -4,19 +4,33 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Chat - VibeBunker</title>
-    <link rel="stylesheet" href="/static/style.css?v=6.2">
+    <link rel="stylesheet" href="/static/style.css?v=6.5">
 </head>
 <body>
     <header>
         <h1>VibeBunker</h1>
-        <div style="display: flex; align-items: center; gap: 0.5rem;">
+        <!-- Phase 6.4: profile/theme/logout are glass ICON chips (labels live in title tooltips) -->
+        <div class="header-actions">
             {% if user.is_admin %}
             <span class="badge">admin</span>
             <a href="/admin" class="logout-btn">Админ-панель</a>
             {% endif %}
-            <button id="profileBtn" class="profile-btn">👤 Профиль</button>
-            <button id="settingsBtn" class="settings-btn">🎨 Тема</button>
-            <a href="/logout" class="logout-btn">Logout</a>
+            <button id="profileBtn" class="profile-btn icon-chip" title="Профиль" aria-label="Профиль">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6 8-6s8 2 8 6"/>
+                </svg>
+            </button>
+            <button id="settingsBtn" class="settings-btn icon-chip" title="Тема" aria-label="Тема">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M12 3a9 9 0 0 0 0 18h1.5a2 2 0 0 0 1.8-2.9c-.5-1 .1-2.1 1.2-2.1H19a2.5 2.5 0 0 0 2.5-2.5C21.5 7.5 17.2 3 12 3z"/>
+                    <circle cx="7.5" cy="10.5" r="1"/><circle cx="12" cy="7.5" r="1"/><circle cx="16.5" cy="10.5" r="1"/>
+                </svg>
+            </button>
+            <a href="/logout" class="logout-btn icon-chip logout-icon-chip" title="Выйти" aria-label="Выйти">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/>
+                </svg>
+            </a>
         </div>
     </header>
     
@@ -53,19 +67,39 @@
                 <span id="chatHeaderName" style="cursor: pointer;" title="View profile">Select a contact</span>
                 <div class="chat-header-actions" id="chatHeaderActions" style="display: none;">
                     <button id="groupMembersBtn" class="delete-chat-btn" title="Участники" style="display: none;">👥 Участники</button>
-                    <button id="deleteChatBtn" class="delete-chat-btn" title="Delete chat">🗑️</button>
+                    <!-- Phase 6.5: glass trash chip, neutral SVG icon -->
+                    <button id="deleteChatBtn" class="delete-chat-btn" title="Удалить чат" aria-label="Удалить чат">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>
+                        </svg>
+                    </button>
                 </div>
             </div>
             <div class="messages" id="messages"></div>
             <div class="input-area" id="inputArea" style="display: none;">
                 <!-- Phase 6.2: command chips island above the input -->
                 <div class="cmd-chips" id="cmdChips" style="display: none;"></div>
-                <div class="chips-container" id="chipsContainer"></div>
+                <div class="chips-container" id="chipsContainer" style="display: none;"></div>
                 <div class="input-row">
+                    <!-- Phase 6.4: @mention dropdown - Liquid Glass island floating ABOVE the input -->
+                    <div class="mention-menu" id="mentionMenu" style="display: none;"></div>
                     <button type="button" id="attachBtn" class="attach-btn" title="Attach files">📎</button>
                     <input type="file" id="fileInput" multiple style="display: none;" accept="image/*,*/*">
                     <input type="text" id="messageInput" placeholder="Type a message..." autocomplete="off">
                     <button id="sendBtn">Send</button>
+                </div>
+            </div>
+
+            <!-- Phase 6.5: message delete mini-menu - Liquid Glass island anchored to a bubble -->
+            <div class="msg-del-menu" id="msgDelMenu" style="display: none;"></div>
+
+            <!-- Phase 6.5: delete-chat confirmation island (Да/Отмена), 1-on-1 only -->
+            <div class="chat-del-confirm" id="deleteChatConfirm" style="display: none;">
+                <div class="chat-del-title">Удалить чат?</div>
+                <p class="chat-del-text">Вся переписка с <strong id="deleteChatUserName"></strong> исчезнет у вас. Контакт останется в списке.</p>
+                <div class="chat-del-buttons">
+                    <button type="button" class="cancel-btn" id="cancelDeleteChatBtn">Отмена</button>
+                    <button type="button" class="btn_danger" id="confirmDeleteChatBtn">Да</button>
                 </div>
             </div>
         </div>
@@ -92,7 +126,18 @@
                 </div>
                 <div class="settings-section">
                     <h3>Пресеты</h3>
+                    <!-- Phase 6.3: custom presets - save current state under a name -->
+                    <div class="preset-save-row">
+                        <input type="text" id="presetNameInput" maxlength="50" placeholder="Название пресета" autocomplete="off">
+                        <button type="button" class="slot-btn" id="savePresetBtn">Сохранить как пресет</button>
+                    </div>
                     <div class="preset-row" id="presetButtons"></div>
+                    <div class="preset-row custom-preset-row" id="customPresetList"></div>
+                    <div class="preset-io-row">
+                        <button type="button" class="slot-btn" id="exportThemeBtn">Экспорт JSON</button>
+                        <button type="button" class="slot-btn" id="importPresetBtn">Импорт JSON</button>
+                        <input type="file" id="importPresetFile" accept=".json,application/json" style="display: none;">
+                    </div>
                 </div>
             </div>
         </aside>
@@ -170,18 +215,6 @@
         </div>
     </div>
 
-    <!-- Delete Chat Modal -->
-    <div class="modal" id="deleteChatModal">
-        <div class="delete-modal-content">
-            <h2>Удалить чат?</h2>
-            <p>Это удалит всю переписку с <strong id="deleteChatUserName"></strong>. Действие необратимо.</p>
-            <div class="delete-modal-buttons">
-                <button class="cancel-btn" id="cancelDeleteChatBtn">Отмена</button>
-                <button class="delete-confirm-btn" id="confirmDeleteChatBtn">Удалить</button>
-            </div>
-        </div>
-    </div>
-    
     <!-- Delete Account Modal -->
     <div class="modal" id="deleteAccountModal">
         <div class="delete-account-modal-content">
@@ -286,9 +319,18 @@
         const effectSliders = document.getElementById('effectSliders');
         const presetButtons = document.getElementById('presetButtons');
         const resetThemeBtn = document.getElementById('resetThemeBtn');
+        // Phase 6.3: custom theme presets
+        const presetNameInput = document.getElementById('presetNameInput');
+        const savePresetBtn = document.getElementById('savePresetBtn');
+        const customPresetList = document.getElementById('customPresetList');
+        const exportThemeBtn = document.getElementById('exportThemeBtn');
+        const importPresetBtn = document.getElementById('importPresetBtn');
+        const importPresetFile = document.getElementById('importPresetFile');
         
-        // Delete chat modal
-        const deleteChatModal = document.getElementById('deleteChatModal');
+        // Delete chat confirmation island + message delete menu (Phase 6.5)
+        const chatArea = document.querySelector('.chat-area');
+        const msgDelMenu = document.getElementById('msgDelMenu');
+        const deleteChatConfirm = document.getElementById('deleteChatConfirm');
         const deleteChatBtn = document.getElementById('deleteChatBtn');
         const deleteChatUserName = document.getElementById('deleteChatUserName');
         const cancelDeleteChatBtn = document.getElementById('cancelDeleteChatBtn');
@@ -526,6 +568,7 @@
                 }
                 currentTheme = await fetchJson('/api/theme');
                 renderEditor();
+                loadCustomPresets();
             } catch (e) {
                 console.error('Failed to load theme editor data:', e);
             }
@@ -718,6 +761,127 @@
             });
         }
 
+        // ===== Phase 6.3: custom theme presets =====
+        let customPresets = [];
+
+        async function loadCustomPresets() {
+            try {
+                const data = await fetchJson('/api/theme/presets/custom');
+                customPresets = (data && data.presets) || [];
+            } catch (e) {
+                console.error('Failed to load custom presets:', e);
+                customPresets = [];
+            }
+            renderCustomPresets();
+        }
+
+        // Custom preset rows: name applies the preset, cross deletes it.
+        // Unlike built-ins, a custom preset restores everything it captured:
+        // colors AND blur effects. Images stay untouched (binary uploads are
+        // not part of the portable config).
+        function renderCustomPresets() {
+            customPresetList.innerHTML = '';
+            for (const p of customPresets) {
+                const item = document.createElement('div');
+                item.className = 'custom-preset-item';
+
+                const applyBtn = document.createElement('button');
+                applyBtn.type = 'button';
+                applyBtn.className = 'preset-btn custom-preset-apply';
+                applyBtn.textContent = p.name;
+                applyBtn.title = 'Применить пресет';
+                applyBtn.addEventListener('click', () => {
+                    const preset = normalizeTheme(JSON.parse(JSON.stringify(p.theme || {})));
+                    currentTheme.colors = Object.assign({}, preset.colors);
+                    currentTheme.effects = Object.assign({}, preset.effects);
+                    applyThemeDirect(currentTheme);
+                    syncEditorInputs();
+                    scheduleThemeSave();
+                    applyEditorContrast();
+                });
+
+                const delBtn = document.createElement('button');
+                delBtn.type = 'button';
+                delBtn.className = 'preset-del-btn';
+                delBtn.textContent = '✕';
+                delBtn.title = 'Удалить пресет';
+                delBtn.addEventListener('click', async () => {
+                    if (!confirm(`Удалить пресет «${p.name}»?`)) return;
+                    try {
+                        await fetchJson(`/api/theme/presets/custom/${p.id}`, { method: 'DELETE' });
+                        customPresets = customPresets.filter(x => x.id !== p.id);
+                        renderCustomPresets();
+                        applyEditorContrast();
+                    } catch (err) {
+                        console.error('Custom preset delete failed:', err);
+                        alert('Не удалось удалить пресет');
+                    }
+                });
+
+                item.appendChild(applyBtn);
+                item.appendChild(delBtn);
+                customPresetList.appendChild(item);
+            }
+        }
+
+        async function saveCurrentAsPreset() {
+            const name = (presetNameInput.value || '').trim();
+            if (!name) {
+                alert('Введите название пресета');
+                return;
+            }
+            try {
+                await fetchJson('/api/theme/presets/custom', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: new URLSearchParams({
+                        name: name,
+                        theme_json: JSON.stringify({ colors: currentTheme.colors, effects: currentTheme.effects })
+                    }).toString()
+                });
+                presetNameInput.value = '';
+                await loadCustomPresets();
+                applyEditorContrast();
+            } catch (err) {
+                console.error('Custom preset save failed:', err);
+                alert('Не удалось сохранить пресет (проверьте имя - оно не должно совпадать со встроенным)');
+            }
+        }
+
+        async function exportCurrentTheme() {
+            try {
+                const res = await fetch('/api/theme/export');
+                if (!res.ok) throw new Error(`/api/theme/export -> ${res.status}`);
+                const blob = await res.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'vibe-theme.json';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(url);
+            } catch (err) {
+                console.error('Theme export failed:', err);
+                alert('Не удалось экспортировать тему');
+            }
+        }
+
+        async function importPresetFileSelected(file) {
+            if (!file) return;
+            const formData = new FormData();
+            formData.append('file', file);
+            try {
+                const data = await fetchJson('/api/theme/presets/import', { method: 'POST', body: formData });
+                await loadCustomPresets();
+                applyEditorContrast();
+                alert(`Пресет «${data.name}» импортирован`);
+            } catch (err) {
+                console.error('Preset import failed:', err);
+                alert('Не удалось импортировать пресет: нужен корректный JSON-конфиг темы');
+            }
+        }
+
         // Re-sync theme (incl. images) from server on page load so everything survives re-login
         (async () => {
             try {
@@ -752,8 +916,9 @@
         }
 
         // Self-defense: autocontrast text + visible border on every button in the theme drawer
+        // (.preset-del-btn excluded: transparent by design, CSS drives its danger colors)
         function applyEditorContrast() {
-            themeDrawer.querySelectorAll('button').forEach(btn => {
+            themeDrawer.querySelectorAll('button:not(.preset-del-btn)').forEach(btn => {
                 if (btn.disabled) return;
                 const bg = getComputedStyle(btn).backgroundColor;
                 btn.style.color = contrastText(rgbToHex(bg));
@@ -898,6 +1063,19 @@
                 scheduleThemeSave();
                 applyEditorContrast();
             });
+
+            // ===== Phase 6.3: custom presets - static controls =====
+            savePresetBtn.addEventListener('click', saveCurrentAsPreset);
+            presetNameInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') saveCurrentAsPreset();
+            });
+            exportThemeBtn.addEventListener('click', exportCurrentTheme);
+            importPresetBtn.addEventListener('click', () => importPresetFile.click());
+            importPresetFile.addEventListener('change', async () => {
+                const file = importPresetFile.files[0];
+                importPresetFile.value = '';
+                await importPresetFileSelected(file);
+            });
             
             // ===== Phase 6.1: group modals =====
             createGroupBtn.addEventListener('click', () => {
@@ -962,6 +1140,63 @@
             memberSearchInput.addEventListener('keypress', (e) => {
                 if (e.key === 'Enter') addMemberByInput();
             });
+
+            // ===== Phase 6.5: delete chat (1-on-1 only) - glass island confirm =====
+            deleteChatBtn.addEventListener('click', () => {
+                if (!selectedUserId) return; // groups use /leave, not chat deletion
+                deleteChatUserName.textContent = chatHeaderName.textContent || '';
+                closeMsgDelMenu();
+                deleteChatConfirm.style.display = 'block';
+            });
+
+            cancelDeleteChatBtn.addEventListener('click', closeChatDelConfirm);
+
+            confirmDeleteChatBtn.addEventListener('click', async () => {
+                if (!selectedUserId) return;
+                try {
+                    const body = new URLSearchParams({ recipient_id: selectedUserId }).toString();
+                    const res = await fetch('/api/delete-chat', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: body
+                    });
+                    if (res.ok) {
+                        // dialog goes empty for me now and stays empty after reload
+                        // (history endpoint filters deleted flags); contact remains
+                        messagesDiv.innerHTML = '';
+                        showToast('Чат удалён');
+                    } else {
+                        const err = await res.json().catch(() => ({}));
+                        showToast(err.detail || 'Не удалось удалить чат');
+                    }
+                } catch (e) {
+                    console.error('Delete chat error:', e);
+                    showToast('Ошибка сети при удалении чата');
+                }
+                closeChatDelConfirm();
+            });
+
+            // Phase 6.5: click outside any open island closes it
+            // (trash chips excluded so a second tap toggles its own menu)
+            document.addEventListener('mousedown', (e) => {
+                if (msgDelMenu.style.display !== 'none' &&
+                    !msgDelMenu.contains(e.target) &&
+                    !(e.target.closest && e.target.closest('.msg-del-chip'))) {
+                    closeMsgDelMenu();
+                }
+                if (deleteChatConfirm.style.display !== 'none' &&
+                    !deleteChatConfirm.contains(e.target) &&
+                    e.target !== deleteChatBtn && !deleteChatBtn.contains(e.target)) {
+                    closeChatDelConfirm();
+                }
+            });
+
+            // Phase 6.5: Escape closes the islands too
+            document.addEventListener('keydown', (e) => {
+                if (e.key !== 'Escape') return;
+                closeMsgDelMenu();
+                closeChatDelConfirm();
+            });
         });
 
         // Search functionality
@@ -998,6 +1233,8 @@
         // Update chips display
         function updateChips() {
             chipsContainer.innerHTML = '';
+            // Phase 6.4: an empty row must not reserve height above the input
+            chipsContainer.style.display = attachedFiles.length ? 'flex' : 'none';
             attachedFiles.forEach((file, index) => {
                 const chip = document.createElement('div');
                 chip.className = 'chip';
@@ -1106,7 +1343,8 @@
                 chatHeaderAvatar.src = getAvatarUrl(userAvatar);
                 // restore dialog-mode header controls
                 chatHeaderAvatar.style.display = '';
-                chatHeaderActions.style.display = 'none';
+                // Phase 6.5: 1-on-1 shows the "Удалить чат" trash chip (members btn stays group-only)
+                chatHeaderActions.style.display = 'flex';
                 groupMembersBtn.style.display = 'none';
                 deleteChatBtn.style.display = '';
                 inputArea.style.display = 'flex';
@@ -1382,6 +1620,137 @@
                     openModal(img.src, img.dataset.origName);
                 });
             });
+            
+            // Phase 6.5: hover/longpress trash chip on eligible bubbles
+            attachDeleteControls(div, msg);
+        }
+        
+        // ===== Phase 6.5: message deletion UI =====
+        let msgDeleteCtx = null; // {bubble, id} while the mini-menu is open
+        
+        // Rules: dialogs - both participants can delete (self, admins also "all");
+        // groups - only your own bubbles and self mode only ("Удалить чат" is /leave there)
+        function attachDeleteControls(div, msg) {
+            if (!msg.id) return;
+            const mine = msg.sender_id === currentUser;
+            if (msg.group_id && !mine) return;
+            
+            div.dataset.msgId = msg.id;
+            
+            let longPressTimer = null;
+            let lpFired = false;
+            let lpTouchAt = 0;
+            
+            const chip = document.createElement('button');
+            chip.type = 'button';
+            chip.className = 'msg-del-chip';
+            chip.title = 'Удалить сообщение';
+            chip.setAttribute('aria-label', 'Удалить сообщение');
+            chip.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>';
+            chip.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (msgDelMenu.style.display !== 'none' && msgDeleteCtx && msgDeleteCtx.bubble === div) {
+                    closeMsgDelMenu();
+                    return;
+                }
+                openMsgDelMenu(div, msg);
+            });
+            div.appendChild(chip);
+            
+            // mobile: longpress reveals the chip (desktop uses :hover)
+            div.addEventListener('touchstart', () => {
+                lpFired = false;
+                lpTouchAt = Date.now();
+                clearTimeout(longPressTimer);
+                longPressTimer = setTimeout(() => {
+                    lpFired = true;
+                    div.classList.add('msg-del-open');
+                }, 500);
+            }, { passive: true });
+            div.addEventListener('touchend', (e) => {
+                clearTimeout(longPressTimer);
+                if (lpFired) e.preventDefault(); // swallow the synthetic click after longpress
+            }, { passive: false });
+            div.addEventListener('touchmove', () => clearTimeout(longPressTimer), { passive: true });
+            div.addEventListener('touchcancel', () => clearTimeout(longPressTimer), { passive: true });
+            // no native context menu over a bubble right after a longpress
+            div.addEventListener('contextmenu', (e) => {
+                if (Date.now() - lpTouchAt < 900) e.preventDefault();
+            });
+        }
+        
+        function openMsgDelMenu(bubble, msg) {
+            closeMsgDelMenu();
+            closeChatDelConfirm();
+            msgDeleteCtx = { bubble: bubble, id: msg.id };
+            const isAdminUser = currentIsAdmin === 1 || currentIsAdmin === true;
+            
+            const mkItem = (label, danger, onClick) => {
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.className = 'msg-del-item' + (danger ? ' danger' : '');
+                b.textContent = label;
+                b.addEventListener('click', onClick);
+                return b;
+            };
+            
+            msgDelMenu.appendChild(mkItem('Удалить у себя', false, () => performMsgDelete('self')));
+            // "Удалить у всех" - platform admins, 1-on-1 dialogs only
+            if (!msg.group_id && isAdminUser) {
+                msgDelMenu.appendChild(mkItem('Удалить у всех', true, () => performMsgDelete('all')));
+            }
+            
+            msgDelMenu.style.display = 'block';
+            bubble.classList.add('msg-del-open');
+            
+            // position above the bubble (below if clipped), clamped inside the chat island
+            const areaRect = chatArea.getBoundingClientRect();
+            const r = bubble.getBoundingClientRect();
+            const mw = msgDelMenu.offsetWidth;
+            const mh = msgDelMenu.offsetHeight;
+            let top = r.top - areaRect.top - mh - 6;
+            if (top < 8) top = r.bottom - areaRect.top + 6;
+            let left = (msg.sender_id === currentUser)
+                ? (r.right - areaRect.left - mw)
+                : (r.left - areaRect.left);
+            left = Math.max(8, Math.min(left, areaRect.width - mw - 8));
+            msgDelMenu.style.top = Math.round(top) + 'px';
+            msgDelMenu.style.left = Math.round(left) + 'px';
+        }
+        
+        function closeMsgDelMenu() {
+            msgDelMenu.style.display = 'none';
+            msgDelMenu.innerHTML = '';
+            document.querySelectorAll('.message.msg-del-open').forEach(el => el.classList.remove('msg-del-open'));
+            msgDeleteCtx = null;
+        }
+        
+        async function performMsgDelete(mode) {
+            if (!msgDeleteCtx) { closeMsgDelMenu(); return; }
+            const target = msgDeleteCtx;
+            try {
+                const body = new URLSearchParams({ message_id: target.id, mode: mode }).toString();
+                const res = await fetch('/api/delete-message', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: body
+                });
+                if (res.ok) {
+                    // gone from my UI immediately, no reload
+                    target.bubble.remove();
+                } else {
+                    const err = await res.json().catch(() => ({}));
+                    showToast(err.detail || 'Не удалось удалить сообщение');
+                }
+            } catch (e) {
+                console.error('Delete message error:', e);
+                showToast('Ошибка сети при удалении сообщения');
+            }
+            closeMsgDelMenu();
+        }
+        
+        function closeChatDelConfirm() {
+            deleteChatConfirm.style.display = 'none';
         }
         
         // Modal functions
@@ -1421,6 +1790,7 @@
         // Send message
         async function sendMessage() {
             const text = messageInput.value.trim();
+            closeMentionMenu(); // Phase 6.4: never leak the open @menu into the next message
             if (!text && attachedFiles.length === 0) return;
             // Phase 6.1: need either a dialog or a group selected
             if (!selectedUserId && !selectedGroupId) return;
@@ -1466,6 +1836,143 @@
         sendBtn.addEventListener('click', sendMessage);
         messageInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') sendMessage();
+        });
+        
+        // ===== Phase 6.4: @mention autocomplete =====
+        // Typing "@prefix" (ending at the caret) opens a Liquid Glass island of
+        // candidates: group members first, then other contacts; plain contacts
+        // in 1-on-1 dialogs. Arrows navigate, Tab inserts "@username ", Enter
+        // still sends the message, click picks.
+        const mentionMenu = document.getElementById('mentionMenu');
+        let mention = null;       // {start, items, active} while the menu is open
+        let mentionFetchSeq = 0;  // drops stale async candidate fetches
+
+        function closeMentionMenu() {
+            mention = null;
+            mentionMenu.style.display = 'none';
+            mentionMenu.innerHTML = '';
+        }
+
+        // The "@" token must END exactly at the caret position
+        function getMentionQuery(text, caret) {
+            const m = /(?:^|\s)@([A-Za-z0-9_]*)$/.exec(text.slice(0, caret));
+            if (!m) return null;
+            return { query: m[1].toLowerCase(), start: caret - m[1].length - 1 };
+        }
+
+        async function collectMentionCandidates() {
+            const contacts = [...document.querySelectorAll('#userList .user-item')].map(el => ({
+                name: el.dataset.name || '',
+                username: el.dataset.username || '',
+                avatar: el.dataset.avatar || ''
+            }));
+            if (!selectedGroupId) return contacts;
+            let members = [];
+            try {
+                const res = await fetch(`/api/groups/${selectedGroupId}/members`);
+                if (res.ok) members = await res.json();
+            } catch (e) {
+                console.error('Mention members fetch failed:', e);
+            }
+            const seen = new Set();
+            const list = [];
+            for (const m of members) {
+                if (seen.has(m.username)) continue;
+                seen.add(m.username);
+                list.push({ name: m.name || '', username: m.username, avatar: m.avatar_uuid || '' });
+            }
+            for (const c of contacts) {
+                if (seen.has(c.username)) continue;
+                seen.add(c.username);
+                list.push(c);
+            }
+            return list;
+        }
+
+        async function refreshMentionMenu() {
+            const parsed = getMentionQuery(messageInput.value, messageInput.selectionStart);
+            if (!parsed) { closeMentionMenu(); return; }
+            const seq = ++mentionFetchSeq;
+            const all = await collectMentionCandidates();
+            if (seq !== mentionFetchSeq) return; // caret moved on while fetching
+            if (!getMentionQuery(messageInput.value, messageInput.selectionStart)) return;
+            const items = all.filter(c => c.username.toLowerCase().startsWith(parsed.query)).slice(0, 30);
+            mention = { start: parsed.start, items: items, active: items.length ? 0 : -1 };
+            renderMentionMenu(items);
+        }
+
+        function renderMentionMenu(items) {
+            mentionMenu.innerHTML = '';
+            if (!items.length) {
+                const empty = document.createElement('div');
+                empty.className = 'mention-empty';
+                empty.textContent = 'Никого не найдено';
+                mentionMenu.appendChild(empty);
+            }
+            items.forEach((item, idx) => {
+                const row = document.createElement('div');
+                row.className = 'mention-item' + (idx === mention.active ? ' active' : '');
+                row.dataset.idx = idx;
+                const img = document.createElement('img');
+                img.src = getAvatarUrl(item.avatar);
+                img.alt = '';
+                const name = document.createElement('span');
+                name.className = 'mention-name';
+                name.textContent = item.name || item.username;
+                const uname = document.createElement('span');
+                uname.className = 'mention-username';
+                uname.textContent = '@' + item.username;
+                row.appendChild(img);
+                row.appendChild(name);
+                row.appendChild(uname);
+                // mousedown, not click: applies BEFORE the input can lose focus
+                row.addEventListener('mousedown', (e) => {
+                    e.preventDefault();
+                    applyMention(item);
+                });
+                mentionMenu.appendChild(row);
+            });
+            mentionMenu.style.display = 'block';
+        }
+
+        function moveMentionSelection(dir) {
+            if (!mention || !mention.items.length) return;
+            const n = mention.items.length;
+            mention.active = (mention.active + dir + n) % n;
+            mentionMenu.querySelectorAll('.mention-item').forEach(el => {
+                el.classList.toggle('active', parseInt(el.dataset.idx) === mention.active);
+            });
+            const el = mentionMenu.querySelector(`.mention-item[data-idx="${mention.active}"]`);
+            if (el) el.scrollIntoView({ block: 'nearest' });
+        }
+
+        function activeMentionItem() {
+            return (mention && mention.active >= 0) ? mention.items[mention.active] : null;
+        }
+
+        function applyMention(item) {
+            if (!item || !mention) return;
+            const st = mention;
+            const sel = messageInput.selectionEnd;
+            const caret = (sel != null) ? sel : messageInput.value.length;
+            const before = messageInput.value.slice(0, st.start) + '@' + item.username + ' ';
+            const after = messageInput.value.slice(caret);
+            messageInput.value = before + after;
+            messageInput.setSelectionRange(before.length, before.length);
+            closeMentionMenu();
+            messageInput.focus();
+        }
+
+        messageInput.addEventListener('input', () => refreshMentionMenu());
+        messageInput.addEventListener('keydown', (e) => {
+            if (!mention || mentionMenu.style.display === 'none') return;
+            if (e.key === 'ArrowDown') { e.preventDefault(); moveMentionSelection(1); }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); moveMentionSelection(-1); }
+            else if (e.key === 'Tab') { e.preventDefault(); applyMention(activeMentionItem()); }
+            else if (e.key === 'Escape') { closeMentionMenu(); }
+        });
+        document.addEventListener('mousedown', (e) => {
+            if (mention && e.target !== messageInput && !mentionMenu.contains(e.target)) closeMentionMenu();
         });
         
         // ===== Phase 6.2: group command execution =====
