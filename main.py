@@ -680,17 +680,16 @@ async def register(request: Request, name: str = Form(...), email: str = Form(..
     import re
     
     ip = _get_client_ip(request)
-    if _record_failure(ip) >= _RATE_LIMIT_MAX:
-        retry_after = _RATE_LIMIT_WINDOW
-        return JSONResponse(
-            status_code=429,
-            content={"detail": "Too many registration attempts. Try again later."},
-            headers={"Retry-After": str(retry_after)}
-        )
-    
     email_clean = email.strip().lower()
     
     if not validate_email_format(email_clean):
+        count = _record_failure(ip)
+        if count >= _RATE_LIMIT_MAX:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Too many attempts. Try again later."},
+                headers={"Retry-After": str(_RATE_LIMIT_WINDOW)}
+            )
         return templates.TemplateResponse(request, "register.html", {
             "error": "Invalid email format",
             "invite_code": invite_code,
@@ -699,6 +698,13 @@ async def register(request: Request, name: str = Form(...), email: str = Form(..
         })
     
     if len(password) < 4:
+        count = _record_failure(ip)
+        if count >= _RATE_LIMIT_MAX:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Too many attempts. Try again later."},
+                headers={"Retry-After": str(_RATE_LIMIT_WINDOW)}
+            )
         return templates.TemplateResponse(request, "register.html", {
             "error": "Password must be at least 4 characters",
             "invite_code": invite_code,
@@ -712,6 +718,13 @@ async def register(request: Request, name: str = Form(...), email: str = Form(..
     with get_db() as conn:
         existing_email = conn.execute("SELECT id FROM users WHERE email = ?", (email_clean,)).fetchone()
         if existing_email:
+            count = _record_failure(ip)
+            if count >= _RATE_LIMIT_MAX:
+                return JSONResponse(
+                    status_code=429,
+                    content={"detail": "Too many attempts. Try again later."},
+                    headers={"Retry-After": str(_RATE_LIMIT_WINDOW)}
+                )
             return templates.TemplateResponse(request, "register.html", {
                 "error": "Email already registered",
                 "invite_code": invite_code,
@@ -724,6 +737,13 @@ async def register(request: Request, name: str = Form(...), email: str = Form(..
         
         if count > 0 or not FIRST_USER_ADMIN:
             if not invite_code:
+                count_f = _record_failure(ip)
+                if count_f >= _RATE_LIMIT_MAX:
+                    return JSONResponse(
+                        status_code=429,
+                        content={"detail": "Too many attempts. Try again later."},
+                        headers={"Retry-After": str(_RATE_LIMIT_WINDOW)}
+                    )
                 return templates.TemplateResponse(request, "register.html", {
                     "error": "Invite code is required",
                     "invite_code": invite_code,
@@ -733,6 +753,13 @@ async def register(request: Request, name: str = Form(...), email: str = Form(..
             
             invite = conn.execute("SELECT * FROM invites WHERE code = ? AND used_by IS NULL", (invite_code,)).fetchone()
             if not invite:
+                count_f = _record_failure(ip)
+                if count_f >= _RATE_LIMIT_MAX:
+                    return JSONResponse(
+                        status_code=429,
+                        content={"detail": "Too many attempts. Try again later."},
+                        headers={"Retry-After": str(_RATE_LIMIT_WINDOW)}
+                    )
                 return templates.TemplateResponse(request, "register.html", {
                     "error": "Invalid or expired invite code",
                     "invite_code": invite_code,
@@ -751,24 +778,25 @@ async def register(request: Request, name: str = Form(...), email: str = Form(..
         
         conn.commit()
     
+    _clear_failures(ip)
     return RedirectResponse(url="/", status_code=303)
 
 
 @app.post("/login")
 async def login(request: Request, username: str = Form(...), password: str = Form(...)):
     ip = _get_client_ip(request)
-    if _record_failure(ip) >= _RATE_LIMIT_MAX:
-        retry_after = _RATE_LIMIT_WINDOW
-        return JSONResponse(
-            status_code=429,
-            content={"detail": "Too many login attempts. Try again later."},
-            headers={"Retry-After": str(retry_after)}
-        )
     
     with get_db() as conn:
         user = conn.execute("SELECT * FROM users WHERE email = ?", (username.strip().lower(),)).fetchone()
     
     if not user or not verify_password(password, user["password_hash"]):
+        count = _record_failure(ip)
+        if count >= _RATE_LIMIT_MAX:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Too many login attempts. Try again later."},
+                headers={"Retry-After": str(_RATE_LIMIT_WINDOW)}
+            )
         return templates.TemplateResponse(request, "login.html", {"error": "Invalid email or password"})
     
     _clear_failures(ip)
@@ -1709,14 +1737,16 @@ async def send_message(
         
         # Handle file uploads with chunked streaming (64KB chunks)
         attachment_ids = []
-        # Phase 7.1b: read upload limits from settings
+        # Phase 7.1b-fix: read upload limits from settings ON EVERY REQUEST
         with get_db() as settings_conn:
             rate_row = settings_conn.execute("SELECT value FROM settings WHERE key = 'upload_rate_kbps'").fetchone()
             max_mb_row = settings_conn.execute("SELECT value FROM settings WHERE key = 'max_upload_mb'").fetchone()
         upload_rate_kbps = int(rate_row["value"]) if rate_row else 0
         max_upload_mb = int(max_mb_row["value"]) if max_mb_row else (MAX_UPLOAD_BYTES // (1024 * 1024))
         effective_max_bytes = max_upload_mb * 1024 * 1024
-        chunk_interval = (64 / (upload_rate_kbps * 1024)) if upload_rate_kbps > 0 else 0
+        # budget per 64KB chunk in seconds; rate=0 → no sleep
+        chunk_bytes = 64 * 1024
+        chunk_budget = (chunk_bytes / (upload_rate_kbps * 1024)) if upload_rate_kbps > 0 else 0
 
         for file in files:
             if file.filename:
@@ -1731,22 +1761,23 @@ async def send_message(
                 
                 # Stream file to disk in 64KB chunks while counting bytes
                 total_bytes = 0
-                chunk_size = 64 * 1024  # 64KB
                 async with aiofiles.open(file_path, 'wb') as f:
                     while True:
-                        # Phase 5.3 fix: UploadFile.read is the async API; .file.read is sync and cannot be awaited
-                        chunk = await file.read(chunk_size)
+                        chunk_start = time.monotonic()
+                        chunk = await file.read(chunk_bytes)
                         if not chunk:
                             break
                         total_bytes += len(chunk)
                         if total_bytes > effective_max_bytes:
-                            # Delete partial file on exceed
                             await aiofiles.os.remove(file_path)
                             raise HTTPException(status_code=413, detail=f"File '{file.filename}' exceeds {max_upload_mb} MB limit")
                         await f.write(chunk)
-                        # Phase 7.1b: token-bucket rate limit
-                        if chunk_interval > 0:
-                            await asyncio.sleep(chunk_interval)
+                        # Phase 7.1b-fix: token-bucket – sleep = budget − elapsed
+                        if chunk_budget > 0:
+                            elapsed = time.monotonic() - chunk_start
+                            sleep_time = chunk_budget - elapsed
+                            if sleep_time > 0:
+                                await asyncio.sleep(sleep_time)
                 
                 # Detect mime type from extension
                 mime_type = mimetypes.guess_type(file.filename)[0] or file.content_type or "application/octet-stream"

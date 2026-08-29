@@ -569,6 +569,31 @@ header h1 {
     text-decoration: underline; 
 }
 
+/* Phase 7.1b-fix: upload progress bar inside bubble */
+.upload-progress-wrap {
+    min-width: 180px;
+    padding: 0.4rem 0;
+}
+.upload-progress-label {
+    font-size: 0.8rem;
+    margin-bottom: 0.25rem;
+    display: flex;
+    justify-content: space-between;
+}
+.upload-progress-bar {
+    height: 4px;
+    background: rgba(255,255,255,0.25);
+    border-radius: 2px;
+    overflow: hidden;
+}
+.upload-progress-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--bubble-sent-text, #fff);
+    border-radius: 2px;
+    transition: width 0.15s linear;
+}
+
 /* Phase 5.3: input pill - its own floating island inside the chat island
    Phase 6.4: compact - tight vertical padding, 6px gap to the chip rows,
    position:relative anchors the @mention dropdown island */

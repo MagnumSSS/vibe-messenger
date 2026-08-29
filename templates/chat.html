@@ -2379,20 +2379,32 @@
                 formData.append('reply_to_id', replyCtx.id);
             }
             
-            attachedFiles.forEach(file => {
+            const filesToSend = [...attachedFiles];
+            filesToSend.forEach(file => {
                 formData.append('files', file);
             });
             
+            // Save state then clear input immediately
+            messageInput.value = '';
+            attachedFiles = [];
+            updateChips();
+            cancelReply();
+            
+            // Phase 7.1b-fix: if files, use XHR with progress bar
+            if (filesToSend.length > 0) {
+                sendWithProgress(formData, filesToSend, text);
+            } else {
+                sendPlainFetch(formData);
+            }
+        }
+        
+        async function sendPlainFetch(formData) {
             try {
                 const res = await fetch('/api/send', { method: 'POST', body: formData });
                 if (res.ok) {
                     const msg = await res.json();
                     appendMessage(msg);
                     scrollToBottom();
-                    messageInput.value = '';
-                    attachedFiles = [];
-                    updateChips();
-                    cancelReply(); // Phase 6.6: reply consumed with the send
                 } else {
                     const err = await res.json();
                     alert(err.detail || 'Failed to send message');
@@ -2401,6 +2413,71 @@
                 console.error('Send error:', err);
                 alert('Failed to send message');
             }
+        }
+        
+        function sendWithProgress(formData, files, text) {
+            // Calculate total size for progress
+            let totalSize = 0;
+            files.forEach(f => totalSize += f.size);
+            const label = files.length === 1 ? files[0].name : `${files.length} files`;
+            
+            // Create progress bubble
+            const bubble = document.createElement('div');
+            bubble.className = 'message sent';
+            bubble.innerHTML = `
+                <div class="upload-progress-wrap">
+                    <div class="upload-progress-label">
+                        <span>${escapeHtml(label)}</span>
+                        <span class="upload-progress-pct">0%</span>
+                    </div>
+                    <div class="upload-progress-bar">
+                        <div class="upload-progress-fill"></div>
+                    </div>
+                </div>
+            `;
+            messagesDiv.appendChild(bubble);
+            scrollToBottom();
+            
+            const fill = bubble.querySelector('.upload-progress-fill');
+            const pctLabel = bubble.querySelector('.upload-progress-pct');
+            
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', '/api/send');
+            
+            xhr.upload.onprogress = (e) => {
+                if (e.lengthComputable) {
+                    const pct = Math.round((e.loaded / e.total) * 100);
+                    fill.style.width = pct + '%';
+                    pctLabel.textContent = pct + '%';
+                }
+            };
+            
+            xhr.onload = () => {
+                bubble.remove();
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    try {
+                        const msg = JSON.parse(xhr.responseText);
+                        appendMessage(msg);
+                        scrollToBottom();
+                    } catch (e) {
+                        alert('Failed to parse server response');
+                    }
+                } else {
+                    try {
+                        const err = JSON.parse(xhr.responseText);
+                        alert(err.detail || 'Failed to send message');
+                    } catch (e) {
+                        alert('Failed to send message');
+                    }
+                }
+            };
+            
+            xhr.onerror = () => {
+                bubble.remove();
+                alert('Failed to send message');
+            };
+            
+            xhr.send(formData);
         }
         
         // Event listeners for send button (outside DOMContentLoaded since these are critical)
