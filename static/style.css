@@ -47,6 +47,9 @@
     /* Phase 5.4: blur effect tokens (0..20px, driven by editor range sliders) */
     --wallpaper-blur: 0px;
     --bubble-blur: 0px;
+
+    /* Phase 6.6b: chip scale multiplier (0.8..1.3) for cmd-chips & toggle icon */
+    --chip-scale: 1;
     
     /* Auto-calculated text colors for contrast (YIQ) - updated dynamically */
     --bubble-sent-text: #ffffff;
@@ -609,8 +612,8 @@ header h1 {
     color: var(--chip-cmd-text, #1c2733);
     border: 1px solid var(--border-color, #dddddd);
     border-radius: 999px;
-    padding: 0.35rem 0.8rem;
-    font-size: 0.82rem;
+    padding: calc(0.35rem * var(--chip-scale, 1)) calc(0.8rem * var(--chip-scale, 1));
+    font-size: calc(0.82rem * var(--chip-scale, 1));
     cursor: pointer;
     transition: filter 0.15s;
     max-width: 100%;
@@ -666,6 +669,48 @@ header h1 {
 }
 
 .chip-remove { cursor: pointer; font-weight: bold; }
+
+/* Phase 6.6b: chip toggle icon - round island at input, toggles cmd-chips row.
+   Size follows --chip-scale. */
+.chip-toggle {
+    width: calc(36px * var(--chip-scale, 1));
+    height: calc(36px * var(--chip-scale, 1));
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border-color, #dddddd);
+    background-color: var(--panel-color);
+    background-color: color-mix(in srgb, var(--panel-color) 72%, transparent);
+    box-shadow: 0 2px 6px var(--shadow-1, rgba(0,0,0,0.15));
+    color: var(--chip-toggle-text, var(--text-secondary, #666666));
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background 0.15s, color 0.15s;
+}
+
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .chip-toggle {
+        -webkit-backdrop-filter: blur(12px) saturate(1.4);
+        backdrop-filter: blur(12px) saturate(1.4);
+    }
+}
+
+.chip-toggle svg {
+    width: calc(16px * var(--chip-scale, 1));
+    height: calc(16px * var(--chip-scale, 1));
+    display: block;
+}
+
+.chip-toggle:hover {
+    background: var(--active-bg, #e6f2ff);
+    color: var(--accent-color, #0084ff);
+}
+
+.chip-toggle.active {
+    background: var(--accent-color, #0084ff);
+    color: var(--btn-primary-text, #ffffff);
+}
 
 .input-row { 
     display: flex; 
@@ -868,32 +913,90 @@ header h1 {
     min-height: 80px;
 }
 
-/* Phase 5.4: profile modal buttons are glass chips; JS autocontrasts their text
-   against the computed chip background (applyProfileContrast) */
-.profile-save-btn,
-.glass-chip {
-    display: block;
-    width: 100%;
-    background: var(--header-btn-bg, rgba(0,0,0,0.35));
-    color: var(--header-chip-text, #ffffff);
-    border: 1px solid var(--border-color, #dddddd);
-    border-radius: 999px;
-    padding: 0.7rem 1.25rem;
-    cursor: pointer;
-    font-size: 0.95rem;
-    -webkit-backdrop-filter: blur(8px);
-    backdrop-filter: blur(8px);
+/* Hotfix2 7.1a: profile drawer buttons — btn tokens + YIQ contrast (no hardcoded light) */
+/* Bridge underscore-named tokens (per requirement) to the manifest's hyphenated vars */
+.profile-drawer {
+    --input_bg: var(--input-bg);
+    --text: var(--text-primary);
+    --muted: var(--text-secondary);
+    --btn_primary_text: var(--btn-primary-text);
+    --btn_danger_text: var(--btn-danger-text);
 }
 
-.glass-chip { margin-bottom: 1rem; }
+.profile-drawer .slot-btn,
+.profile-drawer .btn_danger {
+    display: block;
+    width: 100%;
+    border: none;
+    border-radius: 8px;
+    padding: 0.65rem 1rem;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 600;
+}
+
+.profile-drawer .slot-btn {
+    background: var(--btn-primary-bg, #0084ff);
+    color: var(--btn_primary_text, #ffffff);
+}
+
+.profile-drawer .slot-btn:hover { opacity: 0.85; }
+
+.profile-drawer .btn_danger {
+    background: var(--btn-danger-bg, #dc3545);
+    color: var(--btn_danger_text, #ffffff);
+}
+
+.profile-drawer .btn_danger:hover { opacity: 0.85; }
+
+/* Hotfix2 7.1a: profile inputs — input_bg + text + muted placeholder (no hardcoded light) */
+.profile-drawer .profile-form-group input,
+.profile-drawer .profile-form-group textarea {
+    background: var(--input_bg, #ffffff);
+    color: var(--text, #333333);
+    border: 1px solid var(--border-color, #dddddd);
+    border-radius: 8px;
+    padding: 0.65rem 0.75rem;
+    font-size: 0.9rem;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.profile-drawer .profile-form-group input::placeholder,
+.profile-drawer .profile-form-group textarea::placeholder {
+    color: var(--muted, #999999);
+}
+
+.profile-drawer .profile-form-group input[readonly] {
+    background: color-mix(in srgb, var(--input_bg, #ffffff) 60%, var(--panel-color, #fff));
+    opacity: 0.7;
+    cursor: default;
+}
+
+.profile-drawer .profile-form-group input:focus,
+.profile-drawer .profile-form-group textarea:focus {
+    outline: none;
+    border-color: var(--accent-color, #0084ff);
+}
+
+.profile-drawer .profile-form-group label {
+    display: block;
+    margin-bottom: 0.35rem;
+    color: var(--muted, #666666);
+    font-size: 0.85rem;
+}
+
+.profile-drawer .profile-form-group {
+    margin-bottom: 0.75rem;
+}
+
+.profile-drawer .profile-form-group textarea {
+    resize: vertical;
+    min-height: 60px;
+}
 
 /* Phase 5.4b: breathing room between bio and "Закрыть" in the other-user profile */
 #otherProfileBio { margin-bottom: 1.25rem; }
-
-.profile-save-btn:hover,
-.glass-chip:hover {
-    background: var(--header-btn-hover-bg, rgba(255,255,255,0.3));
-}
 
 /* Settings modal */
 .settings-modal-content {
@@ -972,6 +1075,35 @@ header h1 {
     font-size: 1.2rem;
     line-height: 1;
     padding: 0.25rem 0.6rem;
+}
+
+/* Hotfix3: profile drawer close button - small round island ~32px */
+.profile-drawer .theme-drawer-close {
+    padding: 0;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border-color, #dddddd);
+    background: color-mix(in srgb, var(--panel-color) 72%, transparent);
+    color: var(--text-secondary, #666666);
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .profile-drawer .theme-drawer-close {
+        -webkit-backdrop-filter: blur(12px) saturate(1.4);
+        backdrop-filter: blur(12px) saturate(1.4);
+    }
+}
+
+.profile-drawer .theme-drawer-close:hover {
+    background: var(--btn-danger-bg, #dc3545);
+    color: var(--btn-danger-text, #ffffff);
+    border-color: var(--btn-danger-bg, #dc3545);
 }
 
 .theme-drawer-body {
@@ -1447,34 +1579,77 @@ header h1 {
 
 .message.swiping { transition: none; }
 
-/* hint icons revealed inside the right edge while dragging left;
-   snap-armed swaps the accent to the danger tone */
-.swipe-hint {
+/* Phase 6.6b: bubble action islands - round circles, reply LEFT / delete RIGHT
+   Shown on hover (desktop) or after snap (touch). Hover shows reply only;
+   snap-armed shows both with delete in danger tone. */
+.bubble-actions {
     position: absolute;
     top: 50%;
-    right: 8px;
     transform: translateY(-50%);
     display: flex;
     align-items: center;
-    justify-content: center;
-    width: 26px;
-    height: 26px;
+    gap: 6px;
     opacity: 0;
     pointer-events: none;
-    z-index: 2;
+    z-index: 3;
+    transition: opacity 0.15s ease;
 }
 
-.swipe-hint-icon {
-    display: none;
+/* reply island: LEFT side of the bubble */
+.bubble-actions-left {
+    right: calc(100% + 8px);
+}
+
+/* delete island: RIGHT side of the bubble */
+.bubble-actions-right {
+    left: calc(100% + 8px);
+}
+
+.bubble-action-island {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border-color, #dddddd);
+    background-color: var(--panel-color);
+    background-color: color-mix(in srgb, var(--panel-color) 72%, transparent);
+    box-shadow: 0 2px 6px var(--shadow-1, rgba(0,0,0,0.15));
     color: var(--text-secondary, #666666);
+    cursor: pointer;
+    pointer-events: auto;
+    flex-shrink: 0;
 }
 
-.message:not(.snap-armed) .swipe-hint-reply,
-.message.snap-armed .swipe-hint-del { display: block; }
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .bubble-action-island {
+        -webkit-backdrop-filter: blur(12px) saturate(1.4);
+        backdrop-filter: blur(12px) saturate(1.4);
+    }
+}
 
-.message.snap-armed .swipe-hint-del { color: var(--btn-danger-bg, #dc3545); }
+.bubble-action-island:hover {
+    background: var(--active-bg, #e6f2ff);
+    color: var(--accent-color, #0084ff);
+}
 
-.swipe-hint svg { width: 16px; height: 16px; display: block; }
+.bubble-action-island svg { width: 14px; height: 14px; display: block; }
+
+/* delete island danger tone */
+.bubble-action-del { color: var(--btn-danger-bg, #dc3545); }
+.bubble-action-del:hover {
+    background: color-mix(in srgb, var(--btn-danger-bg, #dc3545) 15%, transparent);
+    color: var(--btn-danger-bg, #dc3545);
+}
+
+/* desktop: hover reveals reply only; snap reveals both */
+.message:hover .bubble-actions-left { opacity: 1; }
+.message.snap-armed .bubble-actions { opacity: 1; }
+.message.snap-armed .bubble-actions-right { opacity: 1; }
+
+/* swiping: hide action islands so they don't interfere */
+.message.swiping .bubble-actions { opacity: 0 !important; }
 
 /* mini-menu island anchored to a bubble - same material recipe as the mention menu */
 .msg-del-menu {
@@ -1670,49 +1845,86 @@ header h1 {
 
 .pin-marker svg { width: 12px; height: 12px; display: block; }
 
-/* contact curtain: dragging a row down reveals "Удалить чат" behind it.
-   overflow:hidden clips the revealed strip to the rounded row box */
+/* Hotfix 7.1a: contact curtain - click-to-slide (no drag).
+   curtain-actions sits behind; curtain-slide glides left on .curtain-open */
 .user-item {
     position: relative;
     overflow: hidden;
-    transition: padding-bottom 0.18s ease;
+    padding: 0;
 }
 
-.user-item.curtain-drag { transition: none; }
+.curtain-actions {
+    position: absolute;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: flex-end;
+    background: color-mix(in srgb, var(--btn-danger-bg, #dc3545) 14%, transparent);
+    z-index: 0;
+}
+
+.user-item.curtain-open .curtain-actions {
+    display: flex;
+}
+
+.curtain-slide {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 1rem;
+    background: inherit;
+    z-index: 1;
+    transition: transform 0.2s ease;
+}
+
+.user-item.curtain-open .curtain-slide {
+    transform: translateX(-56px);
+}
 
 .curtain-del-btn {
-    position: absolute;
-    left: auto;
-    right: 1rem;
-    bottom: 8px;
-    display: inline-flex;
+    display: flex;
     align-items: center;
-    gap: 0.4rem;
-    padding: 0.35rem 0.85rem;
-    border-radius: 999px;
-    border: 1px solid var(--btn-danger-bg, #dc3545);
-    background: color-mix(in srgb, var(--btn-danger-bg, #dc3545) 14%, transparent);
-    color: var(--btn-danger-bg, #dc3545);
-    font-size: 0.82rem;
-    font-weight: 600;
-    cursor: pointer;
-    opacity: 0;
-    pointer-events: none;
-    z-index: 1;
-}
-
-.user-item.curtain-drag .curtain-del-btn,
-.user-item.curtain-open .curtain-del-btn {
-    opacity: 1;
-    pointer-events: auto;
-}
-
-.curtain-del-btn svg { width: 13px; height: 13px; }
-
-.curtain-del-btn:hover {
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    border-radius: 10px;
+    border: none;
     background: var(--btn-danger-bg, #dc3545);
     color: var(--btn-danger-text, #ffffff);
+    cursor: pointer;
+    flex-shrink: 0;
 }
+
+.curtain-del-btn svg { width: 18px; height: 18px; }
+
+.curtain-toggle-btn {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    border: 1px solid var(--border-color, rgba(0,0,0,0.08));
+    background: color-mix(in srgb, var(--panel-color, #fff) 60%, transparent);
+    color: var(--text-secondary, #888);
+    cursor: pointer;
+    flex-shrink: 0;
+    margin-left: auto;
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+}
+
+.curtain-toggle-btn svg { width: 14px; height: 14px; }
+
+.curtain-toggle-btn:hover {
+    background: color-mix(in srgb, var(--btn-danger-bg, #dc3545) 12%, transparent);
+    color: var(--btn-danger-bg, #dc3545);
+    border-color: var(--btn-danger-bg, #dc3545);
+}
+
+/* Hotfix3: curtain toggle button always visible (not just on hover) */
+.curtain-toggle-btn { display: flex; }
 
 
 /* Scrollbar styling */

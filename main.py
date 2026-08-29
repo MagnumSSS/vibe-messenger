@@ -74,6 +74,10 @@ THEME_TOKENS = {
     "effects": {
         "wallpaper_blur": {"key": "wallpaper_blur", "css_var": "--wallpaper-blur", "default": 0, "type": "range", "min": 0, "max": 20, "unit": "px"},
         "bubble_blur": {"key": "bubble_blur", "css_var": "--bubble-blur", "default": 0, "type": "range", "min": 0, "max": 20, "unit": "px"},
+    },
+    # Phase 6.6b: sizing tokens - scale multiplier for command chips & toggle icon
+    "sizing": {
+        "chip_size": {"key": "chip_size", "css_var": "--chip-scale", "default": 1.0, "type": "range", "min": 0.8, "max": 1.3, "unit": "", "step": 0.05},
     }
 }
 
@@ -116,7 +120,8 @@ THEME_PRESETS = {
             "chip_cmd": "#dbe7ff"
         },
         "images": {},
-        "effects": {"wallpaper_blur": 0, "bubble_blur": 0}
+        "effects": {"wallpaper_blur": 0, "bubble_blur": 0},
+        "sizing": {"chip_size": 1.0}
     },
     "dark": {
         "colors": {
@@ -138,7 +143,8 @@ THEME_PRESETS = {
             "chip_cmd": "#2a3550",
         },
         "images": {},
-        "effects": {"wallpaper_blur": 0, "bubble_blur": 0}
+        "effects": {"wallpaper_blur": 0, "bubble_blur": 0},
+        "sizing": {"chip_size": 1.0}
     }
 }
 
@@ -169,7 +175,8 @@ def merge_theme_with_defaults(theme_json_str):
         result = {
             "colors": {**THEME_PRESETS["default"]["colors"], **theme.get("colors", {})},
             "images": {**THEME_PRESETS["default"]["images"], **theme.get("images", {})},
-            "effects": {**THEME_PRESETS["default"].get("effects", {}), **theme.get("effects", {})}
+            "effects": {**THEME_PRESETS["default"].get("effects", {}), **theme.get("effects", {})},
+            "sizing": {**THEME_PRESETS["default"].get("sizing", {}), **theme.get("sizing", {})}
         }
         return result
     except Exception as e:
@@ -209,6 +216,7 @@ def sanitize_theme_config(raw):
     raw = raw if isinstance(raw, dict) else {}
     raw_colors = raw.get("colors") if isinstance(raw.get("colors"), dict) else {}
     raw_effects = raw.get("effects") if isinstance(raw.get("effects"), dict) else {}
+    raw_sizing = raw.get("sizing") if isinstance(raw.get("sizing"), dict) else {}
 
     colors = {}
     for key, spec in THEME_TOKENS["colors"].items():
@@ -225,7 +233,15 @@ def sanitize_theme_config(raw):
             n = int(spec["default"])
         effects[key] = max(int(spec.get("min", 0)), min(int(spec.get("max", 20)), n))
 
-    return {"colors": colors, "images": {}, "effects": effects}
+    sizing = {}
+    for key, spec in THEME_TOKENS.get("sizing", {}).items():
+        try:
+            v = float(raw_sizing.get(key))
+        except (TypeError, ValueError):
+            v = float(spec["default"])
+        sizing[key] = max(float(spec.get("min", 0.5)), min(float(spec.get("max", 2)), v))
+
+    return {"colors": colors, "images": {}, "effects": effects, "sizing": sizing}
 
 
 def resolve_preset_name(explicit, parsed, fallback):
@@ -483,6 +499,11 @@ def ensure_schema():
             )
         """)
 
+        # Phase 7.1a: email column for registration
+        if "email" not in user_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN email TEXT NULL")
+            print("Added column users.email")
+
         conn.commit()
 
 
@@ -502,6 +523,63 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
     new_hash = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 100000).hex()
     return secrets.compare_digest(new_hash, stored_hash)
+
+
+# ========== Phase 7.1a: auto-username from name ==========
+
+_TRANSLIT_MAP = {
+    'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'yo',
+    'ж': 'zh', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm',
+    'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
+    'ф': 'f', 'х': 'kh', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'shch',
+    'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya',
+}
+
+
+def transliterate_name(name: str) -> str:
+    """Transliterate Cyrillic name to latin/digits/_ (Phase 7.1a)"""
+    result = []
+    for ch in name.lower():
+        if ch in _TRANSLIT_MAP:
+            result.append(_TRANSLIT_MAP[ch])
+        elif ch.isascii() and ch.isalnum():
+            result.append(ch)
+        elif ch in (' ', '-', '.'):
+            result.append('_')
+    return ''.join(result)
+
+
+def generate_username(name: str) -> str:
+    """Generate unique username from name: transliterate, fallback user_XXXX (Phase 7.1a)"""
+    base = transliterate_name(name).strip('_')
+    if not base or len(base) < 2:
+        base = "user"
+    # Ensure only valid chars
+    base = re.sub(r'[^a-z0-9_]', '', base)
+    if not base:
+        base = "user"
+
+    with get_db() as conn:
+        # Try base first
+        existing = conn.execute("SELECT 1 FROM users WHERE username = ?", (base,)).fetchone()
+        if not existing:
+            return base
+        # Collision: append random suffix
+        for _ in range(20):
+            candidate = f"{base}_{secrets.token_hex(2)}"
+            existing = conn.execute("SELECT 1 FROM users WHERE username = ?", (candidate,)).fetchone()
+            if not existing:
+                return candidate
+        # Fallback
+        return f"user_{secrets.token_hex(4)}"
+
+
+def validate_email_format(email: str) -> bool:
+    """Basic email format validation (Phase 7.1a)"""
+    if not email or len(email) > 254:
+        return False
+    pattern = r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$'
+    return re.match(pattern, email) is not None
 
 
 def get_current_user(request: Request):
@@ -546,27 +624,17 @@ async def register_page(request: Request):
 
 
 @app.post("/register")
-async def register(request: Request, name: str = Form(...), username: str = Form(...), password: str = Form(...), invite_code: str = Form("")):
+async def register(request: Request, name: str = Form(...), email: str = Form(...), password: str = Form(...), invite_code: str = Form("")):
     import re
     
-    # Strip @ prefix if user entered it
-    username_clean = username.lstrip('@')
+    email_clean = email.strip().lower()
     
-    # Validate username format: only latin letters, digits, underscore
-    if not re.match(r'^[a-zA-Z0-9_]+$', username_clean):
+    if not validate_email_format(email_clean):
         return templates.TemplateResponse(request, "register.html", {
-            "error": "Username must contain only Latin letters, digits, and underscore",
+            "error": "Invalid email format",
             "invite_code": invite_code,
             "name": name,
-            "username": username_clean
-        })
-    
-    if len(username_clean) < 3:
-        return templates.TemplateResponse(request, "register.html", {
-            "error": "Username must be at least 3 characters",
-            "invite_code": invite_code,
-            "name": name,
-            "username": username_clean
+            "email": email,
         })
     
     if len(password) < 4:
@@ -574,33 +642,32 @@ async def register(request: Request, name: str = Form(...), username: str = Form
             "error": "Password must be at least 4 characters",
             "invite_code": invite_code,
             "name": name,
-            "username": username_clean
+            "email": email,
         })
     
     password_hash = hash_password(password)
+    username = generate_username(name)
     
     with get_db() as conn:
-        existing = conn.execute("SELECT id FROM users WHERE username = ?", (username_clean,)).fetchone()
-        if existing:
+        existing_email = conn.execute("SELECT id FROM users WHERE email = ?", (email_clean,)).fetchone()
+        if existing_email:
             return templates.TemplateResponse(request, "register.html", {
-                "error": "Username already exists",
+                "error": "Email already registered",
                 "invite_code": invite_code,
                 "name": name,
-                "username": username_clean
+                "email": email,
             })
         
-        # Check if this is the first user
         count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         is_admin = 1 if (count == 0 and FIRST_USER_ADMIN) else 0
         
-        # Validate invite code (not required for first user)
         if count > 0 or not FIRST_USER_ADMIN:
             if not invite_code:
                 return templates.TemplateResponse(request, "register.html", {
                     "error": "Invite code is required",
                     "invite_code": invite_code,
                     "name": name,
-                    "username": username_clean
+                    "email": email,
                 })
             
             invite = conn.execute("SELECT * FROM invites WHERE code = ? AND used_by IS NULL", (invite_code,)).fetchone()
@@ -609,16 +676,15 @@ async def register(request: Request, name: str = Form(...), username: str = Form
                     "error": "Invalid or expired invite code",
                     "invite_code": invite_code,
                     "name": name,
-                    "username": username_clean
+                    "email": email,
                 })
         
         conn.execute(
-            "INSERT INTO users (name, username, password_hash, is_admin) VALUES (?, ?, ?, ?)",
-            (name, username_clean, password_hash, is_admin)
+            "INSERT INTO users (name, username, password_hash, is_admin, email) VALUES (?, ?, ?, ?, ?)",
+            (name, username, password_hash, is_admin, email_clean)
         )
         new_user_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         
-        # Mark invite as used
         if invite_code and count > 0:
             conn.execute("UPDATE invites SET used_by = ? WHERE code = ?", (new_user_id, invite_code))
         
@@ -630,10 +696,10 @@ async def register(request: Request, name: str = Form(...), username: str = Form
 @app.post("/login")
 async def login(request: Request, username: str = Form(...), password: str = Form(...)):
     with get_db() as conn:
-        user = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+        user = conn.execute("SELECT * FROM users WHERE email = ?", (username.strip().lower(),)).fetchone()
     
     if not user or not verify_password(password, user["password_hash"]):
-        return templates.TemplateResponse(request, "login.html", {"error": "Invalid username or password"})
+        return templates.TemplateResponse(request, "login.html", {"error": "Invalid email or password"})
     
     request.session["user_id"] = user["id"]
     return RedirectResponse(url="/chat", status_code=303)
@@ -1995,7 +2061,7 @@ async def get_profile(request: Request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
     with get_db() as conn:
-        row = conn.execute("SELECT id, name, username, avatar_uuid, bio FROM users WHERE id = ?", (user["id"],)).fetchone()
+        row = conn.execute("SELECT id, name, username, email, avatar_uuid, bio FROM users WHERE id = ?", (user["id"],)).fetchone()
     
     return JSONResponse(dict(row))
 
@@ -2023,6 +2089,89 @@ async def update_profile_put(request: Request, name: str = Form(...), bio: str =
     
     with get_db() as conn:
         conn.execute("UPDATE users SET name = ?, bio = ? WHERE id = ?", (name, bio, user["id"]))
+        conn.commit()
+    
+    return JSONResponse({"success": True})
+
+
+# ========== Phase 7.1a: username / email / password changes ==========
+
+@app.post("/api/profile/username")
+async def change_username(request: Request, username: str = Form(...), password: str = Form(...)):
+    """Change current user's username (requires current password for confirmation)"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    username_clean = username.strip().lstrip('@')
+    if not re.match(r'^[a-zA-Z0-9_]+$', username_clean) or len(username_clean) < 3:
+        raise HTTPException(status_code=400, detail="Username must be 3+ chars: Latin letters, digits, underscore only")
+    
+    if not verify_password(password, user["password_hash"]):
+        raise HTTPException(status_code=400, detail="Incorrect password")
+    
+    with get_db() as conn:
+        existing = conn.execute("SELECT id FROM users WHERE username = ? AND id != ?", (username_clean, user["id"])).fetchone()
+        if existing:
+            raise HTTPException(status_code=400, detail="Username already taken")
+        conn.execute("UPDATE users SET username = ? WHERE id = ?", (username_clean, user["id"]))
+        conn.commit()
+    
+    return JSONResponse({"success": True, "username": username_clean})
+
+
+@app.post("/api/profile/email")
+async def change_email(request: Request, email: str = Form(...), password: str = Form(...)):
+    """Change current user's email (requires current password)"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    email_clean = email.strip().lower()
+    if not validate_email_format(email_clean):
+        raise HTTPException(status_code=400, detail="Invalid email format")
+    
+    if not verify_password(password, user["password_hash"]):
+        raise HTTPException(status_code=400, detail="Incorrect password")
+    
+    with get_db() as conn:
+        existing = conn.execute("SELECT id FROM users WHERE email = ? AND id != ?", (email_clean, user["id"])).fetchone()
+        if existing:
+            raise HTTPException(status_code=400, detail="Email already registered")
+        conn.execute("UPDATE users SET email = ? WHERE id = ?", (email_clean, user["id"]))
+        conn.commit()
+    
+    return JSONResponse({"success": True, "email": email_clean})
+
+
+@app.post("/api/profile/password")
+async def change_password(request: Request, current_password: str = Form(...), new_password: str = Form(...), confirm_password: str = Form(...), email_code: str = Form("")):
+    """Change current user's password.
+    If email is set, email_code must match the email address.
+    If email is NULL, only current password is required (with a hint)."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    if not verify_password(current_password, user["password_hash"]):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    
+    # Email verification step
+    if user.get("email"):
+        if not email_code:
+            raise HTTPException(status_code=400, detail="Email confirmation required: enter your email address")
+        if email_code.strip().lower() != user["email"]:
+            raise HTTPException(status_code=400, detail="Email does not match")
+    
+    if new_password != confirm_password:
+        raise HTTPException(status_code=400, detail="New passwords do not match")
+    
+    if len(new_password) < 4:
+        raise HTTPException(status_code=400, detail="New password must be at least 4 characters")
+    
+    new_hash = hash_password(new_password)
+    with get_db() as conn:
+        conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_hash, user["id"]))
         conn.commit()
     
     return JSONResponse({"success": True})
@@ -2262,7 +2411,8 @@ async def export_theme(request: Request):
         "version": 1,
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "colors": merged.get("colors", {}),
-        "effects": merged.get("effects", {})
+        "effects": merged.get("effects", {}),
+        "sizing": merged.get("sizing", {})
     }
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     return Response(
