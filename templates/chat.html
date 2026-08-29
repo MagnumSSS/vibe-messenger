@@ -96,10 +96,19 @@
                     <span class="reply-bar-text" id="replyBarText"></span>
                     <button type="button" class="reply-bar-cancel" id="cancelReplyBtn" title="Отменить ответ" aria-label="Отменить ответ">&times;</button>
                 </div>
+                <!-- Phase 7.2: edit bar -->
+                <div class="reply-bar" id="editBar" style="display: none;">
+                    <span style="opacity:0.6;">✏️</span>
+                    <span class="reply-bar-text" style="flex:1;">Редактирование</span>
+                    <button type="button" class="reply-bar-cancel" id="cancelEditBtn" title="Отменить">&times;</button>
+                </div>
+                <!-- Phase 7.2: emoji grid -->
+                <div class="emoji-grid" id="emojiGrid" style="display: none;"></div>
                 <div class="input-row">
                     <!-- Phase 6.4: @mention dropdown - Liquid Glass island floating ABOVE the input -->
                     <div class="mention-menu" id="mentionMenu" style="display: none;"></div>
                     <button type="button" id="attachBtn" class="attach-btn" title="Attach files">📎</button>
+                    <button type="button" id="emojiBtn" class="attach-btn" title="Эмодзи">😀</button>
                     <input type="file" id="fileInput" multiple style="display: none;" accept="image/*,*/*">
                     <input type="text" id="messageInput" placeholder="Type a message..." autocomplete="off">
                     <!-- Phase 6.6c: chip toggle icon - round island, toggles cmd-chips row -->
@@ -1601,6 +1610,40 @@
                     loadGroups();
                     return;
                 }
+                // Phase 7.2: message edited
+                if (msg.type === 'message_edited') {
+                    const bubble = document.querySelector(`[data-msg-id="${msg.message_id}"]`);
+                    if (bubble) {
+                        const body = bubble.querySelector('.message-body');
+                        if (body) {
+                            // update text content but preserve attachments, time, etc.
+                            const textNode = body.childNodes;
+                            for (let i = 0; i < textNode.length; i++) {
+                                if (textNode[i].nodeType === 3) { textNode[i].textContent = msg.text; break; }
+                            }
+                        } else {
+                            // flat structure: rebuild innerHTML keeping avatar/quote/atts/time
+                            const time = bubble.querySelector('.message-time');
+                            const oldTimeHtml = time ? time.outerHTML : '';
+                            const editedHtml = '<span class="message-edited"> (изм.)</span>';
+                            bubble.innerHTML = bubble.innerHTML.replace(/<div class="message-time">[^<]*(<span class="message-edited">[^<]*<\/span>)?<\/div>/, `<div class="message-time">${formatTime(msg.edited_at)}${editedHtml}</div>`);
+                        }
+                        // ensure edited label
+                        if (!bubble.querySelector('.message-edited')) {
+                            const time = bubble.querySelector('.message-time');
+                            if (time && !time.querySelector('.message-edited')) {
+                                time.insertAdjacentHTML('beforeend', '<span class="message-edited"> (изм.)</span>');
+                            }
+                        }
+                    }
+                    return;
+                }
+                // Phase 7.2: reaction updated
+                if (msg.type === 'reaction_updated') {
+                    const bubble = document.querySelector(`[data-msg-id="${msg.message_id}"]`);
+                    if (bubble) renderReactionChips(bubble, msg.reactions, msg.message_id);
+                    return;
+                }
                 // Phase 6.1: group messages route by group_id, dialogs by participant ids
                 if (msg.group_id) {
                     if (msg.group_id === selectedGroupId) {
@@ -2166,7 +2209,7 @@
                 </div>`;
             }
             
-            const timeHtml = `<div class="message-time">${formatTime(msg.created_at)}</div>`;
+            const timeHtml = `<div class="message-time">${formatTime(msg.created_at)}${msg.edited_at ? '<span class="message-edited"> (изм.)</span>' : ''}</div>`;
             
             // Phase 6.1: in groups other people's bubbles show sender name above the text;
             // messages WITHOUT a reply keep the legacy structure byte-for-byte (regression safety)
@@ -2197,6 +2240,11 @@
             
             // Phase 6.6: swipe gestures (light left = reply, snap = delete panel)
             attachBubbleGestures(div, msg);
+            
+            // Phase 7.2: render existing reactions
+            if (msg.reactions && msg.reactions.length > 0) {
+                renderReactionChips(div, msg.reactions, msg.id);
+            }
         }
         
         // ===== Phase 6.6c: bubble gestures - Pointer Events (mouse + touch) =====
@@ -2210,7 +2258,9 @@
         
         const GESTURE_ICONS = {
             reply: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 6 6v4"/></svg>',
-            del: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>'
+            del: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>',
+            edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>',
+            heart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>'
         };
         
         function attachBubbleGestures(div, msg) {
@@ -2219,6 +2269,7 @@
             
             // Phase 6.5 rules kept: groups - only own bubbles are deletable (self mode)
             const canDelete = !(msg.group_id && msg.sender_id !== currentUser);
+            const isMine = msg.sender_id === currentUser;
             
             let startX = 0, startY = 0, dx = 0, engaged = false, armed = false, pid = null;
             
@@ -2230,11 +2281,31 @@
                 e.stopPropagation();
                 armReply(msg);
             });
+            // Phase 7.2: edit icon (own messages only)
+            if (isMine) {
+                const editIsland = document.createElement('span');
+                editIsland.className = 'bubble-action-island bubble-action-edit';
+                editIsland.innerHTML = GESTURE_ICONS.edit;
+                editIsland.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    startEdit(msg);
+                });
+                actionsLeft.appendChild(editIsland);
+            }
             div.appendChild(actionsLeft);
             
             const actionsRight = document.createElement('div');
             actionsRight.className = 'bubble-actions bubble-actions-right';
-            actionsRight.innerHTML = `<span class="bubble-action-island bubble-action-del">${GESTURE_ICONS.del}</span>`;
+            // Phase 7.2: reaction icon (heart)
+            const heartIsland = document.createElement('span');
+            heartIsland.className = 'bubble-action-island bubble-action-heart';
+            heartIsland.innerHTML = GESTURE_ICONS.heart;
+            heartIsland.addEventListener('click', (e) => {
+                e.stopPropagation();
+                toggleReactionPicker(div, msg);
+            });
+            actionsRight.appendChild(heartIsland);
+            actionsRight.innerHTML += `<span class="bubble-action-island bubble-action-del">${GESTURE_ICONS.del}</span>`;
             actionsRight.querySelector('.bubble-action-del').addEventListener('click', (e) => {
                 e.stopPropagation();
                 if (canDelete) openMsgDelMenu(div, msg);
@@ -2323,6 +2394,112 @@
         }
         
         cancelReplyBtn.addEventListener('click', cancelReply);
+        
+        // Phase 7.2: edit chip
+        let editCtx = null;
+        function startEdit(msg) {
+            closeMsgDelMenu();
+            editCtx = { id: msg.id, origText: msg.text || '' };
+            messageInput.value = msg.text || '';
+            editBar.style.display = 'flex';
+            messageInput.focus();
+            messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
+        }
+        function cancelEdit() {
+            editCtx = null;
+            editBar.style.display = 'none';
+            messageInput.value = '';
+        }
+        document.getElementById('cancelEditBtn').addEventListener('click', cancelEdit);
+        async function submitEdit() {
+            if (!editCtx) return;
+            const text = messageInput.value.trim();
+            if (!text) { cancelEdit(); return; }
+            try {
+                const fd = new FormData(); fd.append('text', text);
+                const res = await fetch(`/api/messages/${editCtx.id}/edit`, { method: 'POST', body: fd });
+                if (res.ok) { cancelEdit(); } else { const e = await res.json(); alert(e.detail || 'Edit failed'); }
+            } catch (e) { alert('Edit failed'); }
+        }
+        
+        // Phase 7.2: emoji grid
+        const EMOJIS = ['😀','😂','😍','🥰','😊','😎','🤔','😢','😭','😡','👍','👎','❤️','🔥','✨','🎉','😢','🤣','😘','🥳','😈','💀','👻','🤡','🙌','💪','🙏','👏','🤝','💔','💯','🎶','🫡','🤗','😴','🤯','🥳','😈','🥺','🫠'];
+        const emojiGrid = document.getElementById('emojiGrid');
+        let emojiOpen = false;
+        function buildEmojiGrid() {
+            emojiGrid.innerHTML = '';
+            EMOJIS.forEach(e => {
+                const b = document.createElement('button');
+                b.type = 'button'; b.textContent = e;
+                b.addEventListener('click', () => {
+                    const inp = messageInput;
+                    const pos = inp.selectionStart || inp.value.length;
+                    inp.value = inp.value.slice(0, pos) + e + inp.value.slice(pos);
+                    inp.setSelectionRange(pos + e.length, pos + e.length);
+                    inp.focus();
+                    emojiGrid.style.display = 'none'; emojiOpen = false;
+                });
+                emojiGrid.appendChild(b);
+            });
+        }
+        buildEmojiGrid();
+        document.getElementById('emojiBtn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            emojiOpen = !emojiOpen;
+            emojiGrid.style.display = emojiOpen ? 'grid' : 'none';
+        });
+        document.addEventListener('click', (e) => {
+            if (emojiOpen && !emojiGrid.contains(e.target) && e.target.id !== 'emojiBtn') {
+                emojiGrid.style.display = 'none'; emojiOpen = false;
+            }
+        });
+        
+        // Phase 7.2: reaction picker row
+        const REACTION_EMOJIS = ['👍','❤️','😮','😢','🔥','😂'];
+        function toggleReactionPicker(div, msg) {
+            let existing = div.querySelector('.reaction-picker-row');
+            if (existing) { existing.remove(); return; }
+            const row = document.createElement('div');
+            row.className = 'reaction-picker-row';
+            row.style.cssText = 'display:flex;gap:4px;margin-top:4px;';
+            REACTION_EMOJIS.forEach(e => {
+                const b = document.createElement('button');
+                b.type = 'button'; b.textContent = e;
+                b.style.cssText = 'background:none;border:none;font-size:1.2rem;cursor:pointer;padding:2px 4px;border-radius:6px;';
+                b.addEventListener('click', (ev) => { ev.stopPropagation(); toggleReaction(msg.id, e); row.remove(); });
+                row.appendChild(b);
+            });
+            div.appendChild(row);
+            setTimeout(() => document.addEventListener('click', function close() { row.remove(); document.removeEventListener('click', close); }, { once: true }), 10);
+        }
+        async function toggleReaction(messageId, emoji) {
+            try {
+                const fd = new FormData(); fd.append('emoji', emoji);
+                await fetch(`/api/messages/${messageId}/reaction`, { method: 'POST', body: fd });
+            } catch (e) { console.error('Reaction failed:', e); }
+        }
+        function renderReactionChips(div, reactions, msgId) {
+            let container = div.querySelector('.reaction-chips');
+            if (!container) {
+                container = document.createElement('div');
+                container.className = 'reaction-chips';
+                div.appendChild(container);
+            }
+            container.innerHTML = '';
+            const grouped = {};
+            reactions.forEach(r => {
+                if (!grouped[r.emoji]) grouped[r.emoji] = [];
+                grouped[r.emoji].push(r.user_id);
+            });
+            Object.entries(grouped).forEach(([emoji, users]) => {
+                const chip = document.createElement('span');
+                const isOwn = users.includes(currentUser);
+                chip.className = 'reaction-chip' + (isOwn ? ' own' : '');
+                chip.innerHTML = `${emoji}<span class="r-count">${users.length}</span>`;
+                chip.addEventListener('click', (e) => { e.stopPropagation(); toggleReaction(msgId, emoji); });
+                container.appendChild(chip);
+            });
+        }
         
         function scrollToOriginal(messageId) {
             const el = messagesDiv.querySelector(`[data-msg-id="${messageId}"]`);
@@ -2446,6 +2623,13 @@
             const text = messageInput.value.trim();
             closeMentionMenu(); // Phase 6.4: never leak the open @menu into the next message
             if (!text && attachedFiles.length === 0) return;
+            
+            // Phase 7.2: edit mode — submit edit instead of new message
+            if (editCtx) {
+                await submitEdit();
+                return;
+            }
+            
             // Phase 6.1: need either a dialog or a group selected
             if (!selectedUserId && !selectedGroupId) return;
             

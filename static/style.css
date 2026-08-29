@@ -619,6 +619,46 @@ header h1 {
     transform: translateX(20px);
 }
 
+/* Phase 7.2: emoji grid island */
+.emoji-grid {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    gap: 4px;
+    padding: 8px;
+    background: var(--modal-bg, #fff);
+    border-radius: 12px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+    max-width: 320px;
+    z-index: 50;
+}
+.emoji-grid button {
+    background: none; border: none; font-size: 1.4rem;
+    cursor: pointer; border-radius: 6px; padding: 4px;
+    line-height: 1;
+}
+.emoji-grid button:hover { background: var(--hover-bg, #f0f0f0); }
+
+/* Phase 7.2: reaction chips under bubble */
+.reaction-chips {
+    display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap;
+}
+.reaction-chip {
+    display: inline-flex; align-items: center; gap: 2px;
+    padding: 2px 6px; border-radius: 10px;
+    background: var(--bubble-overlay-bg, rgba(0,0,0,0.06));
+    font-size: 0.8rem; cursor: pointer; border: 1.5px solid transparent;
+    transition: background 0.15s;
+}
+.reaction-chip:hover { background: var(--hover-bg, #e0e0e0); }
+.reaction-chip.own { border-color: var(--accent-color, #0084ff); background: var(--active-bg, #e6f2ff); }
+.reaction-chip .r-count { font-size: 0.7rem; opacity: 0.7; }
+
+/* Phase 7.2: edited label */
+.message-edited {
+    font-size: 0.65rem; opacity: 0.55; font-style: italic;
+    margin-left: 4px;
+}
+
 /* Phase 5.3: input pill - its own floating island inside the chat island
    Phase 6.4: compact - tight vertical padding, 6px gap to the chip rows,
    position:relative anchors the @mention dropdown island */
