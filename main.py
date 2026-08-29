@@ -618,12 +618,7 @@ def ensure_schema():
             )
         """)
 
-        # Phase 7.2: message editing
         msg_cols = {col[1] for col in conn.execute("PRAGMA table_info(messages)").fetchall()}
-        if "edited_at" not in msg_cols:
-            conn.execute("ALTER TABLE messages ADD COLUMN edited_at TIMESTAMP NULL")
-            print("Added column messages.edited_at")
-
         conn.commit()
 
 
@@ -944,7 +939,7 @@ async def api_messages(request: Request, recipient_id: int):
     
     with get_db() as conn:
         messages = conn.execute("""
-            SELECT m.id, m.sender_id, m.recipient_id, m.text, m.created_at, m.edited_at,
+            SELECT m.id, m.sender_id, m.recipient_id, m.text, m.created_at,
                    sender.avatar_uuid as sender_avatar_uuid,
                    m.reply_to_id,
                    r.text AS reply_to_text, ru.name AS reply_to_name
@@ -1189,7 +1184,7 @@ async def group_messages(request: Request, group_id: int):
     
     with get_db() as conn:
         messages = conn.execute("""
-            SELECT m.id, m.sender_id, m.recipient_id, m.group_id, m.text, m.created_at, m.edited_at,
+            SELECT m.id, m.sender_id, m.recipient_id, m.group_id, m.text, m.created_at,
                    u.name AS sender_name, u.username AS sender_username,
                    u.avatar_uuid AS sender_avatar_uuid,
                    m.reply_to_id,
@@ -2704,41 +2699,6 @@ async def export_theme(request: Request):
         media_type="application/json",
         headers={"Content-Disposition": f'attachment; filename="vibe-theme-{stamp}.json"'}
     )
-
-
-# ========== Phase 7.2: MESSAGE EDIT ==========
-@app.post("/api/messages/{message_id}/edit")
-async def edit_message(message_id: int, request: Request, text: str = Form(...)):
-    user = get_current_user(request)
-    if not user:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    with get_db() as conn:
-        msg = conn.execute("SELECT id, sender_id, group_id, recipient_id FROM messages WHERE id = ?", (message_id,)).fetchone()
-        if not msg:
-            raise HTTPException(status_code=404, detail="Message not found")
-        if msg["sender_id"] != user["id"]:
-            raise HTTPException(status_code=403, detail="Cannot edit other user's message")
-        if not text.strip():
-            raise HTTPException(status_code=400, detail="Empty message")
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        conn.execute("UPDATE messages SET text = ?, edited_at = ? WHERE id = ?", (text, now, message_id))
-        conn.commit()
-    # broadcast edit to participants
-    participants = set()
-    if msg["group_id"]:
-        with get_db() as conn:
-            rows = conn.execute("SELECT user_id FROM group_members WHERE group_id = ?", (msg["group_id"],)).fetchall()
-            participants = {r["user_id"] for r in rows}
-    else:
-        participants = {msg["sender_id"], msg["recipient_id"]}
-    for uid in participants:
-        ws_conn = app.state.connections.get(uid)
-        if ws_conn:
-            try:
-                await ws_conn.send_json({"type": "message_edited", "message_id": message_id, "text": text, "edited_at": now, "group_id": msg["group_id"], "sender_id": msg["sender_id"], "recipient_id": msg["recipient_id"]})
-            except Exception:
-                pass
-    return JSONResponse({"ok": True, "edited_at": now})
 
 
 # ========== MESSAGE DELETE ENDPOINT ==========

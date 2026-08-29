@@ -96,12 +96,6 @@
                     <span class="reply-bar-text" id="replyBarText"></span>
                     <button type="button" class="reply-bar-cancel" id="cancelReplyBtn" title="Отменить ответ" aria-label="Отменить ответ">&times;</button>
                 </div>
-                <!-- Phase 7.2: edit bar -->
-                <div class="reply-bar" id="editBar" style="display: none;">
-                    <span style="opacity:0.6;">✏️</span>
-                    <span class="reply-bar-text" style="flex:1;">Редактирование</span>
-                    <button type="button" class="reply-bar-cancel" id="cancelEditBtn" title="Отменить">&times;</button>
-                </div>
                 <!-- Phase 7.2: emoji grid -->
                 <div class="emoji-grid" id="emojiGrid" style="display: none;"></div>
                 <div class="input-row">
@@ -1610,24 +1604,6 @@
                     loadGroups();
                     return;
                 }
-                // Phase 7.2: message edited
-                if (msg.type === 'message_edited') {
-                    const bubble = document.querySelector(`[data-msg-id="${msg.message_id}"]`);
-                    if (bubble) {
-                        const time = bubble.querySelector('.message-time');
-                        if (time && !time.querySelector('.message-edited')) {
-                            time.insertAdjacentHTML('beforeend', '<span class="message-edited"> (изм.)</span>');
-                        }
-                        // update text
-                        const body = bubble.querySelector('.message-body');
-                        if (body) {
-                            // group message: rebuild text content
-                        } else {
-                            // flat: find text node after avatar/quote
-                        }
-                    }
-                    return;
-                }
                 // Phase 6.1: group messages route by group_id, dialogs by participant ids
                 if (msg.group_id) {
                     if (msg.group_id === selectedGroupId) {
@@ -2193,7 +2169,7 @@
                 </div>`;
             }
             
-            const timeHtml = `<div class="message-time">${formatTime(msg.created_at)}${msg.edited_at ? '<span class="message-edited"> (изм.)</span>' : ''}</div>`;
+            const timeHtml = `<div class="message-time">${formatTime(msg.created_at)}</div>`;
             
             // Phase 6.1: in groups other people's bubbles show sender name above the text;
             // messages WITHOUT a reply keep the legacy structure byte-for-byte (regression safety)
@@ -2237,8 +2213,7 @@
         
         const GESTURE_ICONS = {
             reply: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 6 6v4"/></svg>',
-            del: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>',
-            edit: '<svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>'
+            del: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>'
         };
         
         function attachBubbleGestures(div, msg) {
@@ -2269,15 +2244,7 @@
                 if (canDelete) openMsgDelMenu(div, msg);
             });
             div.appendChild(actionsRight);
-            
-            // Phase 7.2: floating edit island — sent: left, received: right
-            if (isMine) {
-                const editBtn = document.createElement('span');
-                editBtn.className = 'bubble-edit-island';
-                editBtn.innerHTML = GESTURE_ICONS.edit;
-                editBtn.addEventListener('click', (e) => { e.stopPropagation(); startEdit(msg); });
-                div.appendChild(editBtn);
-            }
+        }
             
             div.addEventListener('pointerdown', (e) => {
                 if (e.button !== undefined && e.button !== 0) return;
@@ -2361,33 +2328,6 @@
         }
         
         cancelReplyBtn.addEventListener('click', cancelReply);
-        
-        // Phase 7.2: edit chip
-        let editCtx = null;
-        function startEdit(msg) {
-            closeMsgDelMenu();
-            editCtx = { id: msg.id, origText: msg.text || '' };
-            messageInput.value = msg.text || '';
-            editBar.style.display = 'flex';
-            messageInput.focus();
-            messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
-        }
-        function cancelEdit() {
-            editCtx = null;
-            editBar.style.display = 'none';
-            messageInput.value = '';
-        }
-        document.getElementById('cancelEditBtn').addEventListener('click', cancelEdit);
-        async function submitEdit() {
-            if (!editCtx) return;
-            const text = messageInput.value.trim();
-            if (!text) { cancelEdit(); return; }
-            try {
-                const fd = new FormData(); fd.append('text', text);
-                const res = await fetch(`/api/messages/${editCtx.id}/edit`, { method: 'POST', body: fd });
-                if (res.ok) { cancelEdit(); } else { const e = await res.json(); alert(e.detail || 'Edit failed'); }
-            } catch (e) { alert('Edit failed'); }
-        }
         
         // Phase 7.2: emoji grid
         const EMOJIS = ['😀','😂','😍','🥰','😊','😎','🤔','😢','😭','😡','👍','👎','❤️','🔥','✨','🎉','😢','🤣','😘','🥳','😈','💀','👻','🤡','🙌','💪','🙏','👏','🤝','💔','💯','🎶','🫡','🤗','😴','🤯','🥳','😈','🥺','🫠'];
@@ -2543,12 +2483,6 @@
             const text = messageInput.value.trim();
             closeMentionMenu(); // Phase 6.4: never leak the open @menu into the next message
             if (!text && attachedFiles.length === 0) return;
-            
-            // Phase 7.2: edit mode — submit edit instead of new message
-            if (editCtx) {
-                await submitEdit();
-                return;
-            }
             
             // Phase 6.1: need either a dialog or a group selected
             if (!selectedUserId && !selectedGroupId) return;
