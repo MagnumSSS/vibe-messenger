@@ -7,6 +7,8 @@ import uuid
 import json
 import base64
 import mimetypes
+import time
+import asyncio
 from datetime import datetime, timezone, timedelta
 from contextlib import contextmanager
 from pathlib import Path
@@ -316,6 +318,43 @@ def calculate_yiq_contrast(hex_color):
 app = FastAPI()
 app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY)
 
+
+# ========== Phase 7.1b: rate-limiting & security headers ==========
+
+_login_failures: dict[str, list[float]] = {}
+_RATE_LIMIT_WINDOW = 600  # 10 minutes in seconds
+_RATE_LIMIT_MAX = 5       # max failures per window
+
+
+def _get_client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _record_failure(ip: str) -> int:
+    now = time.time()
+    if ip not in _login_failures:
+        _login_failures[ip] = []
+    _login_failures[ip].append(now)
+    _login_failures[ip] = [t for t in _login_failures[ip] if now - t < _RATE_LIMIT_WINDOW]
+    return len(_login_failures[ip])
+
+
+def _clear_failures(ip: str):
+    _login_failures.pop(ip, None)
+
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data: blob:; font-src 'self'"
+    return response
+
 templates = Jinja2Templates(directory="templates")
 
 
@@ -504,6 +543,19 @@ def ensure_schema():
             conn.execute("ALTER TABLE users ADD COLUMN email TEXT NULL")
             print("Added column users.email")
 
+        # Phase 7.1b: admin settings table (upload limits, etc.)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
+        # Seed defaults if missing
+        for key, default in [("upload_rate_kbps", "0"), ("max_upload_mb", str(MAX_UPLOAD_BYTES // (1024 * 1024)))]:
+            existing = conn.execute("SELECT 1 FROM settings WHERE key = ?", (key,)).fetchone()
+            if not existing:
+                conn.execute("INSERT INTO settings (key, value) VALUES (?, ?)", (key, default))
+
         conn.commit()
 
 
@@ -627,6 +679,15 @@ async def register_page(request: Request):
 async def register(request: Request, name: str = Form(...), email: str = Form(...), password: str = Form(...), invite_code: str = Form("")):
     import re
     
+    ip = _get_client_ip(request)
+    if _record_failure(ip) >= _RATE_LIMIT_MAX:
+        retry_after = _RATE_LIMIT_WINDOW
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Too many registration attempts. Try again later."},
+            headers={"Retry-After": str(retry_after)}
+        )
+    
     email_clean = email.strip().lower()
     
     if not validate_email_format(email_clean):
@@ -695,12 +756,22 @@ async def register(request: Request, name: str = Form(...), email: str = Form(..
 
 @app.post("/login")
 async def login(request: Request, username: str = Form(...), password: str = Form(...)):
+    ip = _get_client_ip(request)
+    if _record_failure(ip) >= _RATE_LIMIT_MAX:
+        retry_after = _RATE_LIMIT_WINDOW
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Too many login attempts. Try again later."},
+            headers={"Retry-After": str(retry_after)}
+        )
+    
     with get_db() as conn:
         user = conn.execute("SELECT * FROM users WHERE email = ?", (username.strip().lower(),)).fetchone()
     
     if not user or not verify_password(password, user["password_hash"]):
         return templates.TemplateResponse(request, "login.html", {"error": "Invalid email or password"})
     
+    _clear_failures(ip)
     request.session["user_id"] = user["id"]
     return RedirectResponse(url="/chat", status_code=303)
 
@@ -1638,8 +1709,21 @@ async def send_message(
         
         # Handle file uploads with chunked streaming (64KB chunks)
         attachment_ids = []
+        # Phase 7.1b: read upload limits from settings
+        with get_db() as settings_conn:
+            rate_row = settings_conn.execute("SELECT value FROM settings WHERE key = 'upload_rate_kbps'").fetchone()
+            max_mb_row = settings_conn.execute("SELECT value FROM settings WHERE key = 'max_upload_mb'").fetchone()
+        upload_rate_kbps = int(rate_row["value"]) if rate_row else 0
+        max_upload_mb = int(max_mb_row["value"]) if max_mb_row else (MAX_UPLOAD_BYTES // (1024 * 1024))
+        effective_max_bytes = max_upload_mb * 1024 * 1024
+        chunk_interval = (64 / (upload_rate_kbps * 1024)) if upload_rate_kbps > 0 else 0
+
         for file in files:
             if file.filename:
+                # Phase 7.1b: pre-check file size hint if available
+                if file.size and file.size > effective_max_bytes:
+                    raise HTTPException(status_code=413, detail=f"File '{file.filename}' exceeds {max_upload_mb} MB limit")
+
                 # Generate UUID filename with extension
                 ext = Path(file.filename).suffix.lower()
                 uuid_name = f"{uuid.uuid4().hex}{ext}"
@@ -1655,11 +1739,14 @@ async def send_message(
                         if not chunk:
                             break
                         total_bytes += len(chunk)
-                        if total_bytes > MAX_UPLOAD_BYTES:
+                        if total_bytes > effective_max_bytes:
                             # Delete partial file on exceed
                             await aiofiles.os.remove(file_path)
-                            raise HTTPException(status_code=400, detail=f"File '{file.filename}' exceeds size limit")
+                            raise HTTPException(status_code=413, detail=f"File '{file.filename}' exceeds {max_upload_mb} MB limit")
                         await f.write(chunk)
+                        # Phase 7.1b: token-bucket rate limit
+                        if chunk_interval > 0:
+                            await asyncio.sleep(chunk_interval)
                 
                 # Detect mime type from extension
                 mime_type = mimetypes.guess_type(file.filename)[0] or file.content_type or "application/octet-stream"
@@ -1989,6 +2076,31 @@ async def revoke_admin(request: Request, target_user_id: int = Form(...)):
         conn.execute("UPDATE users SET is_admin = 0 WHERE id = ?", (target_user_id,))
         conn.commit()
     
+    return JSONResponse({"success": True})
+
+
+# ========== Phase 7.1b: admin settings (upload limits) ==========
+
+@app.get("/api/admin/settings")
+async def get_admin_settings(request: Request):
+    user = get_current_user(request)
+    require_admin(user)
+    with get_db() as conn:
+        rows = conn.execute("SELECT key, value FROM settings").fetchall()
+    return JSONResponse({r["key"]: r["value"] for r in rows})
+
+
+@app.post("/api/admin/settings")
+async def save_admin_settings(request: Request):
+    user = get_current_user(request)
+    require_admin(user)
+    body = await request.json()
+    allowed = {"upload_rate_kbps", "max_upload_mb"}
+    with get_db() as conn:
+        for k, v in body.items():
+            if k in allowed:
+                conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (k, str(v)))
+        conn.commit()
     return JSONResponse({"success": True})
 
 

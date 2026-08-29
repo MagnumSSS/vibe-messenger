@@ -79,6 +79,23 @@
             <div class="invite-list" id="inviteList"></div>
         </div>
         
+        <!-- Phase 7.1b: Upload Limits -->
+        <div class="section">
+            <h2>Лимиты</h2>
+            <div style="display: flex; gap: 2rem; flex-wrap: wrap; align-items: flex-end;">
+                <div>
+                    <label style="display: block; font-size: 0.85rem; color: #555; margin-bottom: 0.25rem;">Upload rate limit (KB/s, 0 = off)</label>
+                    <input type="number" id="uploadRateKbps" min="0" value="0" style="padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px; width: 140px;">
+                </div>
+                <div>
+                    <label style="display: block; font-size: 0.85rem; color: #555; margin-bottom: 0.25rem;">Max upload size (MB)</label>
+                    <input type="number" id="maxUploadMb" min="1" value="10" style="padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px; width: 140px;">
+                </div>
+                <button class="invite-btn" id="saveLimitsBtn">Save</button>
+            </div>
+            <p id="limitsStatus" style="margin-top: 0.5rem; font-size: 0.85rem; color: #28a745; display: none;"></p>
+        </div>
+        
         <!-- Users Table -->
         <div class="section">
             <h2>Users</h2>
@@ -153,8 +170,9 @@
     </div>
 
     <script>
-        // Load invites on page load
+        // Load invites and limits on page load
         loadInvites();
+        loadLimits();
         
         async function loadInvites() {
             try {
@@ -304,6 +322,36 @@
                 alert('Failed to revoke admin');
             }
         }
+
+        // Phase 7.1b: load/save upload limits
+        async function loadLimits() {
+            try {
+                const res = await fetch('/api/admin/settings');
+                const data = await res.json();
+                document.getElementById('uploadRateKbps').value = data.upload_rate_kbps || 0;
+                document.getElementById('maxUploadMb').value = data.max_upload_mb || 10;
+            } catch (err) {
+                console.error('Failed to load limits:', err);
+            }
+        }
+
+        document.getElementById('saveLimitsBtn').addEventListener('click', async () => {
+            const rate = parseInt(document.getElementById('uploadRateKbps').value) || 0;
+            const maxMb = parseInt(document.getElementById('maxUploadMb').value) || 10;
+            try {
+                await fetch('/api/admin/settings', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({upload_rate_kbps: rate, max_upload_mb: maxMb})
+                });
+                const status = document.getElementById('limitsStatus');
+                status.textContent = 'Saved';
+                status.style.display = 'block';
+                setTimeout(() => status.style.display = 'none', 2000);
+            } catch (err) {
+                alert('Failed to save limits');
+            }
+        });
     </script>
 </body>
 </html>
