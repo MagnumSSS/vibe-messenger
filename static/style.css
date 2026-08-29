@@ -638,10 +638,12 @@ header h1 {
 }
 .emoji-grid button:hover { background: var(--hover-bg, #f0f0f0); }
 
-/* Phase 7.2: floating edit island — bottom of bubble, left for sent, right for received */
+/* Phase 7.2: floating edit island — bottom-left of bubble, left of reply island */
 .bubble-edit-island {
     position: absolute;
     bottom: -6px;
+    left: auto;
+    right: calc(100% + 42px);
     width: 26px;
     height: 26px;
     border-radius: 50%;
@@ -657,8 +659,6 @@ header h1 {
     pointer-events: auto;
 }
 .bubble-edit-island svg { width: 13px; height: 13px; }
-.message.sent .bubble-edit-island { right: -6px; }
-.message.received .bubble-edit-island { left: -6px; }
 .message:hover .bubble-edit-island { opacity: 1; }
 .message:active .bubble-edit-island { opacity: 1; }
 
