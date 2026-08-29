@@ -251,12 +251,11 @@
                     <button id="deleteAccountBtn" class="btn_danger" style="width: 100%;">Удалить аккаунт</button>
                 </div>
 
-                <div class="settings-section">
-                    <h3>Уведомления</h3>
-                    <div class="profile-form-group" style="display: flex; align-items: center; justify-content: space-between;">
-                        <label id="notifLabel" style="margin: 0;">Уведомления</label>
-                        <input type="checkbox" id="notifToggle" style="width: 20px; height: 20px; cursor: pointer;">
-                    </div>
+                <div class="settings-section" style="display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 0;">
+                    <label style="margin: 0; cursor: pointer;">Уведомления</label>
+                    <button type="button" id="notifToggle" class="glass-toggle" aria-label="Toggle notifications">
+                        <span class="glass-toggle-track"><span class="glass-toggle-thumb"></span></span>
+                    </button>
                 </div>
             </div>
         </aside>
@@ -1336,20 +1335,29 @@
                 }
             });
             
-            // Phase 7.1d: notification toggle
+            // Phase micro: notification toggle (glass switch)
             const notifToggle = document.getElementById('notifToggle');
-            notifToggle.checked = localStorage.getItem('vibe_notifications') === 'on';
-            notifToggle.addEventListener('change', async () => {
-                if (notifToggle.checked) {
-                    const perm = await Notification.requestPermission();
-                    if (perm !== 'granted') {
-                        notifToggle.checked = false;
-                        localStorage.setItem('vibe_notifications', 'off');
-                        return;
-                    }
-                    localStorage.setItem('vibe_notifications', 'on');
-                } else {
+            function syncNotifToggle() {
+                const on = localStorage.getItem('vibe_notifications') === 'on' && Notification.permission === 'granted';
+                notifToggle.classList.toggle('on', on);
+            }
+            syncNotifToggle();
+            notifToggle.addEventListener('click', async () => {
+                const isOn = notifToggle.classList.contains('on');
+                if (isOn) {
                     localStorage.setItem('vibe_notifications', 'off');
+                    syncNotifToggle();
+                } else {
+                    const perm = await Notification.requestPermission();
+                    if (perm === 'granted') {
+                        localStorage.setItem('vibe_notifications', 'on');
+                        syncNotifToggle();
+                        showToast('Уведомления включены');
+                    } else {
+                        localStorage.setItem('vibe_notifications', 'off');
+                        syncNotifToggle();
+                        showToast('Браузер запретил уведомления');
+                    }
                 }
             });
             
