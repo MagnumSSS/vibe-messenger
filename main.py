@@ -624,19 +624,6 @@ def ensure_schema():
             conn.execute("ALTER TABLE messages ADD COLUMN edited_at TIMESTAMP NULL")
             print("Added column messages.edited_at")
 
-        # Phase 7.2: message reactions
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS message_reactions (
-                message_id INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                emoji TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (message_id, user_id),
-                FOREIGN KEY (message_id) REFERENCES messages(id),
-                FOREIGN KEY (user_id) REFERENCES users(id)
-            )
-        """)
-
         conn.commit()
 
 
@@ -988,12 +975,6 @@ async def api_messages(request: Request, recipient_id: int):
                 (msg_dict["id"],)
             ).fetchall()
             msg_dict["attachments"] = [dict(a) for a in attachments]
-            # Phase 7.2: include reactions
-            rxns = conn.execute(
-                "SELECT user_id, emoji FROM message_reactions WHERE message_id = ?",
-                (msg_dict["id"],)
-            ).fetchall()
-            msg_dict["reactions"] = [{"user_id": r["user_id"], "emoji": r["emoji"]} for r in rxns]
             result.append(msg_dict)
     
     return JSONResponse({"messages": result, "muted_by_me": muted_by_me})
@@ -1234,12 +1215,6 @@ async def group_messages(request: Request, group_id: int):
                 (msg_dict["id"],)
             ).fetchall()
             msg_dict["attachments"] = [dict(a) for a in attachments]
-            # Phase 7.2: include reactions
-            rxns = conn.execute(
-                "SELECT user_id, emoji FROM message_reactions WHERE message_id = ?",
-                (msg_dict["id"],)
-            ).fetchall()
-            msg_dict["reactions"] = [{"user_id": r["user_id"], "emoji": r["emoji"]} for r in rxns]
             result.append(msg_dict)
     
     return JSONResponse(result)
@@ -2764,60 +2739,6 @@ async def edit_message(message_id: int, request: Request, text: str = Form(...))
             except Exception:
                 pass
     return JSONResponse({"ok": True, "edited_at": now})
-
-
-# ========== Phase 7.2: REACTIONS ==========
-REACTION_EMOJIS = ["👍", "❤️", "😮", "😢", "🔥", "😂"]
-
-@app.post("/api/messages/{message_id}/reaction")
-async def toggle_reaction(message_id: int, request: Request, emoji: str = Form(...)):
-    user = get_current_user(request)
-    if not user:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    if emoji not in REACTION_EMOJIS:
-        raise HTTPException(status_code=400, detail="Invalid emoji")
-    with get_db() as conn:
-        msg = conn.execute("SELECT id, sender_id, group_id, recipient_id FROM messages WHERE id = ?", (message_id,)).fetchone()
-        if not msg:
-            raise HTTPException(status_code=404, detail="Message not found")
-        existing = conn.execute("SELECT 1 FROM message_reactions WHERE message_id = ? AND user_id = ?", (message_id, user["id"])).fetchone()
-        if existing:
-            conn.execute("DELETE FROM message_reactions WHERE message_id = ? AND user_id = ?", (message_id, user["id"]))
-            action = "removed"
-        else:
-            conn.execute("INSERT OR REPLACE INTO message_reactions (message_id, user_id, emoji) VALUES (?, ?, ?)", (message_id, user["id"], emoji))
-            action = "added"
-        # collect all reactions for this message
-        rows = conn.execute("SELECT user_id, emoji FROM message_reactions WHERE message_id = ?", (message_id,)).fetchall()
-        reactions = [{"user_id": r["user_id"], "emoji": r["emoji"]} for r in rows]
-        conn.commit()
-    # broadcast to participants
-    participants = set()
-    if msg["group_id"]:
-        with get_db() as conn:
-            gro = conn.execute("SELECT user_id FROM group_members WHERE group_id = ?", (msg["group_id"],)).fetchall()
-            participants = {r["user_id"] for r in gro}
-    else:
-        participants = {msg["sender_id"], msg["recipient_id"]}
-    payload = {"type": "reaction_updated", "message_id": message_id, "reactions": reactions, "group_id": msg["group_id"], "sender_id": msg["sender_id"], "recipient_id": msg["recipient_id"]}
-    for uid in participants:
-        ws_conn = app.state.connections.get(uid)
-        if ws_conn:
-            try:
-                await ws_conn.send_json(payload)
-            except Exception:
-                pass
-    return JSONResponse({"ok": True, "action": action, "reactions": reactions})
-
-
-@app.get("/api/messages/{message_id}/reactions")
-async def get_reactions(message_id: int, request: Request):
-    user = get_current_user(request)
-    if not user:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    with get_db() as conn:
-        rows = conn.execute("SELECT user_id, emoji FROM message_reactions WHERE message_id = ?", (message_id,)).fetchall()
-    return JSONResponse([{"user_id": r["user_id"], "emoji": r["emoji"]} for r in rows])
 
 
 # ========== MESSAGE DELETE ENDPOINT ==========

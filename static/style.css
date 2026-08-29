@@ -638,26 +638,29 @@ header h1 {
 }
 .emoji-grid button:hover { background: var(--hover-bg, #f0f0f0); }
 
-/* Phase 7.2: reaction chips under bubble */
-.reaction-chips {
-    display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap;
+/* Phase 7.2: floating edit island — bottom of bubble, left for sent, right for received */
+.bubble-edit-island {
+    position: absolute;
+    bottom: -6px;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--accent-color, #0084ff);
+    box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s;
+    z-index: 4;
+    pointer-events: auto;
 }
-.reaction-chip {
-    display: inline-flex; align-items: center; gap: 2px;
-    padding: 2px 6px; border-radius: 10px;
-    background: var(--bubble-overlay-bg, rgba(0,0,0,0.06));
-    font-size: 0.8rem; cursor: pointer; border: 1.5px solid transparent;
-    transition: background 0.15s;
-}
-.reaction-chip:hover { background: var(--hover-bg, #e0e0e0); }
-.reaction-chip.own { border-color: var(--accent-color, #0084ff); background: var(--active-bg, #e6f2ff); }
-.reaction-chip .r-count { font-size: 0.7rem; opacity: 0.7; }
-
-/* Phase 7.2: edited label */
-.message-edited {
-    font-size: 0.65rem; opacity: 0.55; font-style: italic;
-    margin-left: 4px;
-}
+.bubble-edit-island svg { width: 13px; height: 13px; }
+.message.sent .bubble-edit-island { right: -6px; }
+.message.received .bubble-edit-island { left: -6px; }
+.message:hover .bubble-edit-island { opacity: 1; }
+.message:active .bubble-edit-island { opacity: 1; }
 
 /* Phase 5.3: input pill - its own floating island inside the chat island
    Phase 6.4: compact - tight vertical padding, 6px gap to the chip rows,
@@ -1735,6 +1738,9 @@ header h1 {
 
 /* desktop: hover reveals reply only; snap reveals both */
 .message:hover .bubble-actions-left { opacity: 1; }
+.message:hover .bubble-actions-right { opacity: 1; }
+.message:active .bubble-actions-left { opacity: 1; }
+.message:active .bubble-actions-right { opacity: 1; }
 .message.snap-armed .bubble-actions { opacity: 1; }
 .message.snap-armed .bubble-actions-right { opacity: 1; }
 
