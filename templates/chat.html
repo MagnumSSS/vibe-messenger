@@ -2244,8 +2244,7 @@
                 if (canDelete) openMsgDelMenu(div, msg);
             });
             div.appendChild(actionsRight);
-        }
-            
+
             div.addEventListener('pointerdown', (e) => {
                 if (e.button !== undefined && e.button !== 0) return;
                 if (e.target.closest('a, button, img')) return; // keep native clicks intact
