@@ -96,6 +96,28 @@
             <p id="limitsStatus" style="margin-top: 0.5rem; font-size: 0.85rem; color: #28a745; display: none;"></p>
         </div>
         
+        <!-- Phase 7.1c: Audit Log -->
+        <div class="section">
+            <h2>Аудит</h2>
+            <div style="max-height: 300px; overflow-y: auto;">
+                <table>
+                    <thead><tr><th>Время</th><th>Актор</th><th>Действие</th><th>Цель</th><th>Деталь</th></tr></thead>
+                    <tbody id="auditTable"></tbody>
+                </table>
+            </div>
+        </div>
+        
+        <!-- Phase 7.1c: Pulse -->
+        <div class="section">
+            <h2>Пульс <span id="pulseStatus" style="font-size: 0.75rem; color: #28a745; font-weight: normal;">● live</span></h2>
+            <div style="max-height: 300px; overflow-y: auto;" id="pulseWrap">
+                <table>
+                    <thead><tr><th>Время</th><th>Тип</th><th>Детали</th></tr></thead>
+                    <tbody id="pulseTable"></tbody>
+                </table>
+            </div>
+        </div>
+        
         <!-- Users Table -->
         <div class="section">
             <h2>Users</h2>
@@ -170,9 +192,12 @@
     </div>
 
     <script>
-        // Load invites and limits on page load
+        // Load invites, limits, audit and pulse on page load
         loadInvites();
         loadLimits();
+        loadAudit();
+        loadPulse();
+        setInterval(loadPulse, 5000);
         
         async function loadInvites() {
             try {
@@ -352,6 +377,40 @@
                 alert('Failed to save limits');
             }
         });
+
+        // Phase 7.1c: audit log
+        async function loadAudit() {
+            try {
+                const res = await fetch('/api/admin/audit');
+                const rows = await res.json();
+                const tbody = document.getElementById('auditTable');
+                tbody.innerHTML = rows.map(r => `<tr>
+                    <td style="white-space:nowrap">${r.created_at || ''}</td>
+                    <td>${r.actor ? '@' + r.actor : '-'}</td>
+                    <td>${r.action}</td>
+                    <td>${r.target ? '@' + r.target : '-'}</td>
+                    <td>${r.detail || ''}</td>
+                </tr>`).join('');
+            } catch (err) {
+                console.error('Failed to load audit:', err);
+            }
+        }
+
+        // Phase 7.1c: pulse
+        async function loadPulse() {
+            try {
+                const res = await fetch('/api/admin/pulse');
+                const rows = await res.json();
+                const tbody = document.getElementById('pulseTable');
+                tbody.innerHTML = rows.slice().reverse().map(r => `<tr>
+                    <td style="white-space:nowrap">${r.ts}</td>
+                    <td>${r.kind}</td>
+                    <td>${r.detail}</td>
+                </tr>`).join('');
+            } catch (err) {
+                console.error('Failed to load pulse:', err);
+            }
+        }
     </script>
 </body>
 </html>

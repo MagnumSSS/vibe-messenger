@@ -9,6 +9,8 @@ import base64
 import mimetypes
 import time
 import asyncio
+import logging
+from collections import deque
 from datetime import datetime, timezone, timedelta
 from contextlib import contextmanager
 from pathlib import Path
@@ -355,6 +357,39 @@ async def security_headers_middleware(request: Request, call_next):
     response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data: blob:; font-src 'self'"
     return response
 
+
+# ========== Phase 7.1c: PULSE ring-buffer ==========
+_pulse_buffer: deque = deque(maxlen=500)
+_pulse_logger = logging.getLogger("pulse")
+_login_logger = logging.getLogger("pulse.login")
+_upload_logger = logging.getLogger("pulse.upload")
+_ws_logger = logging.getLogger("pulse.ws")
+
+
+def _pulse_emit(kind: str, detail: str):
+    ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    _pulse_buffer.append({"ts": ts, "kind": kind, "detail": detail})
+
+
+@app.middleware("http")
+async def pulse_middleware(request: Request, call_next):
+    start = time.monotonic()
+    response = await call_next(request)
+    elapsed_ms = round((time.monotonic() - start) * 1000, 1)
+    path = request.url.path
+    if path.startswith("/static") or path.startswith("/api/avatar"):
+        return response
+    _pulse_emit("http", f"{request.method} {path} → {response.status_code} ({elapsed_ms}ms)")
+    return response
+
+
+@app.get("/api/admin/pulse")
+async def get_pulse(request: Request):
+    user = get_current_user(request)
+    require_admin(user)
+    return JSONResponse(list(_pulse_buffer))
+
+
 templates = Jinja2Templates(directory="templates")
 
 
@@ -555,6 +590,18 @@ def ensure_schema():
             existing = conn.execute("SELECT 1 FROM settings WHERE key = ?", (key,)).fetchone()
             if not existing:
                 conn.execute("INSERT INTO settings (key, value) VALUES (?, ?)", (key, default))
+
+        # Phase 7.1c: admin audit log
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS admin_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor_id INTEGER,
+                action TEXT NOT NULL,
+                target_id INTEGER,
+                detail TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
         conn.commit()
 
@@ -791,6 +838,7 @@ async def login(request: Request, username: str = Form(...), password: str = For
     
     if not user or not verify_password(password, user["password_hash"]):
         count = _record_failure(ip)
+        _pulse_emit("login", f"FAIL ip={ip} email={username.strip().lower()} attempts={count}")
         if count >= _RATE_LIMIT_MAX:
             return JSONResponse(
                 status_code=429,
@@ -800,6 +848,7 @@ async def login(request: Request, username: str = Form(...), password: str = For
         return templates.TemplateResponse(request, "login.html", {"error": "Invalid email or password"})
     
     _clear_failures(ip)
+    _pulse_emit("login", f"OK ip={ip} user={user['username']} id={user['id']}")
     request.session["user_id"] = user["id"]
     return RedirectResponse(url="/chat", status_code=303)
 
@@ -1448,15 +1497,18 @@ async def websocket_endpoint(websocket: WebSocket):
     
     # Store connection
     app.state.connections[user_id] = websocket
+    _pulse_emit("ws", f"CONNECT user_id={user_id}")
     
     try:
         while True:
             data = await websocket.receive_json()
             # Handle incoming messages if needed
     except WebSocketDisconnect:
+        _pulse_emit("ws", f"DISCONNECT user_id={user_id}")
         if user_id in app.state.connections:
             del app.state.connections[user_id]
     except Exception:
+        _pulse_emit("ws", f"DISCONNECT user_id={user_id} (error)")
         if user_id in app.state.connections:
             del app.state.connections[user_id]
 
@@ -1788,6 +1840,7 @@ async def send_message(
                     (message_id, uuid_name, file.filename, mime_type, total_bytes)
                 )
                 attachment_ids.append(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+                _pulse_emit("upload", f"file={file.filename} size={total_bytes} mime={mime_type}")
         
         conn.commit()
         
@@ -1920,6 +1973,15 @@ def require_admin(user):
         raise HTTPException(status_code=403, detail="Admin access required")
 
 
+def log_admin_action(actor_id, action, target_id=None, detail=None):
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO admin_log (actor_id, action, target_id, detail) VALUES (?, ?, ?, ?)",
+            (actor_id, action, target_id, detail)
+        )
+        conn.commit()
+
+
 def is_banned(user):
     """Check if user is currently banned"""
     if not user.get("banned_until"):
@@ -2030,10 +2092,12 @@ async def warn_user(request: Request, target_user_id: int = Form(...), reason: s
             banned_until = datetime.now() + timedelta(days=7)  # Default 7 day ban
             conn.execute("UPDATE users SET banned_until = ? WHERE id = ?", (banned_until.isoformat(), target_user_id))
             conn.commit()
+            log_admin_action(user["id"], "warn+auto_ban", target_user_id, f"reason={reason}; banned until {banned_until.strftime('%Y-%m-%d')}")
             return JSONResponse({"warn_count": warn_count, "auto_banned": True, "banned_until": banned_until.isoformat()})
         
         conn.commit()
     
+    log_admin_action(user["id"], "warn", target_user_id, f"reason={reason}; count={warn_count}")
     return JSONResponse({"warn_count": warn_count, "auto_banned": False})
 
 
@@ -2052,6 +2116,7 @@ async def ban_user(request: Request, target_user_id: int = Form(...), days: int 
         conn.execute("UPDATE users SET banned_until = ? WHERE id = ?", (banned_until.isoformat(), target_user_id))
         conn.commit()
     
+    log_admin_action(user["id"], "ban", target_user_id, f"days={days}; until {banned_until.strftime('%Y-%m-%d')}")
     return JSONResponse({"banned_until": banned_until.isoformat()})
 
 
@@ -2069,6 +2134,7 @@ async def unban_user(request: Request, target_user_id: int = Form(...)):
         conn.execute("UPDATE users SET banned_until = NULL WHERE id = ?", (target_user_id,))
         conn.commit()
     
+    log_admin_action(user["id"], "unban", target_user_id)
     return JSONResponse({"success": True})
 
 
@@ -2086,6 +2152,7 @@ async def grant_admin(request: Request, target_user_id: int = Form(...)):
         conn.execute("UPDATE users SET is_admin = 1 WHERE id = ?", (target_user_id,))
         conn.commit()
     
+    log_admin_action(user["id"], "grant_admin", target_user_id)
     return JSONResponse({"success": True})
 
 
@@ -2107,6 +2174,7 @@ async def revoke_admin(request: Request, target_user_id: int = Form(...)):
         conn.execute("UPDATE users SET is_admin = 0 WHERE id = ?", (target_user_id,))
         conn.commit()
     
+    log_admin_action(user["id"], "revoke_admin", target_user_id)
     return JSONResponse({"success": True})
 
 
@@ -2133,6 +2201,25 @@ async def save_admin_settings(request: Request):
                 conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (k, str(v)))
         conn.commit()
     return JSONResponse({"success": True})
+
+
+# ========== Phase 7.1c: admin audit log ==========
+
+@app.get("/api/admin/audit")
+async def get_admin_audit(request: Request):
+    user = get_current_user(request)
+    require_admin(user)
+    with get_db() as conn:
+        rows = conn.execute("""
+            SELECT a.id, a.created_at, u.username AS actor, a.action,
+                   t.username AS target, a.detail
+            FROM admin_log a
+            LEFT JOIN users u ON a.actor_id = u.id
+            LEFT JOIN users t ON a.target_id = t.id
+            ORDER BY a.id DESC
+            LIMIT 100
+        """).fetchall()
+    return JSONResponse([dict(r) for r in rows])
 
 
 @app.get("/api/settings/blocks")
@@ -2399,6 +2486,7 @@ async def delete_account(request: Request):
         conn.execute("DELETE FROM users WHERE id = ?", (user["id"],))
         conn.commit()
     
+    log_admin_action(user["id"], "delete_self", user["id"], "self-deletion")
     return JSONResponse({"success": True})
 
 
