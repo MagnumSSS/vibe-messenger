@@ -99,6 +99,9 @@ COMMAND_REGISTRY = [
     {"name": "block",   "args_hint": "",          "roles": ["*"],                        "scope": "dialog", "description": "Заблокировать собеседника"},
     {"name": "unblock", "args_hint": "",          "roles": ["*"],                        "scope": "dialog", "description": "Разблокировать собеседника"},
     {"name": "pin",     "args_hint": "",          "roles": ["*"],                        "scope": "dialog", "description": "Закрепить/открепить чат с собеседником"},
+    # Phase 7.1d: mute/unmute notifications
+    {"name": "mute",    "args_hint": "",          "roles": ["*"],                        "scope": "dialog", "description": "Заглушить уведомления от собеседника"},
+    {"name": "unmute",  "args_hint": "",          "roles": ["*"],                        "scope": "dialog", "description": "Снять заглушку с собеседника"},
 ]
 
 
@@ -603,6 +606,18 @@ def ensure_schema():
             )
         """)
 
+        # Phase 7.1d: per-user mute list (suppress notifications for specific contacts)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS mutes (
+                user_id INTEGER NOT NULL,
+                contact_id INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, contact_id),
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (contact_id) REFERENCES users(id)
+            )
+        """)
+
         conn.commit()
 
 
@@ -938,6 +953,11 @@ async def api_messages(request: Request, recipient_id: int):
             ORDER BY m.created_at ASC
         """, (user["id"], recipient_id, recipient_id, user["id"], user["id"], user["id"])).fetchall()
         
+        # Phase 7.1d: include mute state for this dialog
+        muted_by_me = conn.execute(
+            "SELECT 1 FROM mutes WHERE user_id = ? AND contact_id = ?", (user["id"], recipient_id)
+        ).fetchone() is not None
+        
         # Build response with attachments for each message
         result = []
         for msg in messages:
@@ -951,7 +971,7 @@ async def api_messages(request: Request, recipient_id: int):
             msg_dict["attachments"] = [dict(a) for a in attachments]
             result.append(msg_dict)
     
-    return JSONResponse(result)
+    return JSONResponse({"messages": result, "muted_by_me": muted_by_me})
 
 
 # ============== Phase 6.1: Groups ==============
@@ -1224,7 +1244,7 @@ async def api_commands(request: Request, group_id: int = 0):
 # ===== Phase 6.6: dialog commands (/block /unblock /pin) =====
 
 def get_dialog_state(user_id, peer_id):
-    """Per-user dialog state vs a peer: my pin + block matrix (both directions)."""
+    """Per-user dialog state vs a peer: my pin + block matrix + mute (both directions)."""
     with get_db() as conn:
         pinned = conn.execute(
             "SELECT 1 FROM pins WHERE user_id = ? AND contact_id = ?", (user_id, peer_id)
@@ -1235,7 +1255,11 @@ def get_dialog_state(user_id, peer_id):
         blocked_me = conn.execute(
             "SELECT 1 FROM blocks WHERE blocker_id = ? AND blocked_id = ?", (peer_id, user_id)
         ).fetchone() is not None
-    return {"pinned": pinned, "blocked_by_me": blocked_by_me, "blocked_me": blocked_me}
+        # Phase 7.1d: muted_by_me — I suppressed notifications from this contact
+        muted_by_me = conn.execute(
+            "SELECT 1 FROM mutes WHERE user_id = ? AND contact_id = ?", (user_id, peer_id)
+        ).fetchone() is not None
+    return {"pinned": pinned, "blocked_by_me": blocked_by_me, "blocked_me": blocked_me, "muted_by_me": muted_by_me}
 
 
 @app.get("/api/dialog/{uid}/state")
@@ -1308,6 +1332,29 @@ async def dialog_command(request: Request, uid: int, cmd: str = Form(...)):
             )
             conn.commit()
             return JSONResponse({"ok": True, "text": "Чат закреплён", "pinned": True, "state": get_dialog_state(user["id"], uid)})
+        
+        # Phase 7.1d: /mute — suppress notifications from this contact
+        if cmd_clean == "mute":
+            already = conn.execute(
+                "SELECT 1 FROM mutes WHERE user_id = ? AND contact_id = ?", (user["id"], uid)
+            ).fetchone()
+            if not already:
+                conn.execute(
+                    "INSERT OR IGNORE INTO mutes (user_id, contact_id) VALUES (?, ?)",
+                    (user["id"], uid)
+                )
+                conn.commit()
+                return JSONResponse({"ok": True, "text": f"Уведомления от @{peer['username']} отключены", "state": get_dialog_state(user["id"], uid)})
+            return JSONResponse({"ok": True, "text": "Уже заглушен", "state": get_dialog_state(user["id"], uid)})
+        
+        # Phase 7.1d: /unmute — restore notifications
+        if cmd_clean == "unmute":
+            cur = conn.execute(
+                "DELETE FROM mutes WHERE user_id = ? AND contact_id = ?", (user["id"], uid)
+            )
+            conn.commit()
+            text = "Уведомления восстановлены" if cur.rowcount else "И не был заглушен"
+            return JSONResponse({"ok": True, "text": text, "state": get_dialog_state(user["id"], uid)})
     
     raise HTTPException(status_code=400, detail="Неизвестная команда")
 

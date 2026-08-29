@@ -250,6 +250,14 @@
                     <h3 style="color: var(--btn-danger-bg, #dc3545);">Опасная зона</h3>
                     <button id="deleteAccountBtn" class="btn_danger" style="width: 100%;">Удалить аккаунт</button>
                 </div>
+
+                <div class="settings-section">
+                    <h3>Уведомления</h3>
+                    <div class="profile-form-group" style="display: flex; align-items: center; justify-content: space-between;">
+                        <label id="notifLabel" style="margin: 0;">Уведомления</label>
+                        <input type="checkbox" id="notifToggle" style="width: 20px; height: 20px; cursor: pointer;">
+                    </div>
+                </div>
             </div>
         </aside>
     </div>
@@ -1328,6 +1336,23 @@
                 }
             });
             
+            // Phase 7.1d: notification toggle
+            const notifToggle = document.getElementById('notifToggle');
+            notifToggle.checked = localStorage.getItem('vibe_notifications') === 'on';
+            notifToggle.addEventListener('change', async () => {
+                if (notifToggle.checked) {
+                    const perm = await Notification.requestPermission();
+                    if (perm !== 'granted') {
+                        notifToggle.checked = false;
+                        localStorage.setItem('vibe_notifications', 'off');
+                        return;
+                    }
+                    localStorage.setItem('vibe_notifications', 'on');
+                } else {
+                    localStorage.setItem('vibe_notifications', 'off');
+                }
+            });
+            
             // Reset theme: live apply defaults, then autosave
             resetThemeBtn.addEventListener('click', () => {
                 currentTheme.colors = Object.assign({}, (themePresets && themePresets.default.colors) || FALLBACK_COLORS);
@@ -1578,11 +1603,61 @@
                     appendMessage(msg);
                     scrollToBottom();
                 }
+                // Phase 7.1d: blip + notification for incoming messages (not my own)
+                if (msg.sender_id !== currentUser) {
+                    const peerId = msg.sender_id;
+                    const isMuted = dialogStateCache.muted_by_me && (msg.sender_id === selectedUserId);
+                    if (!isMuted) {
+                        playBlip();
+                        if (document.hidden) {
+                            const senderName = msg.sender_name || 'User';
+                            showDesktopNotification(senderName, msg.text || '📎 Вложение', peerId);
+                        }
+                    }
+                }
             };
             ws.onclose = () => setTimeout(connectWebSocket, 3000);
             ws.onerror = (err) => console.error('WS error:', err);
         }
         connectWebSocket();
+        
+        // Phase 7.1d: WebAudio blip (no binary files)
+        let _audioCtx = null;
+        function playBlip() {
+            try {
+                if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const now = _audioCtx.currentTime;
+                [660, 880].forEach(freq => {
+                    const osc = _audioCtx.createOscillator();
+                    const gain = _audioCtx.createGain();
+                    osc.type = 'sine';
+                    osc.frequency.value = freq;
+                    gain.gain.setValueAtTime(0, now);
+                    gain.gain.linearRampToValueAtTime(0.3, now + 0.005);
+                    gain.gain.linearRampToValueAtTime(0, now + 0.08);
+                    osc.connect(gain);
+                    gain.connect(_audioCtx.destination);
+                    osc.start(now);
+                    osc.stop(now + 0.08);
+                });
+            } catch (e) { /* no audio support */ }
+        }
+        
+        // Phase 7.1d: notification helper
+        function showDesktopNotification(name, text, peerId) {
+            if (Notification.permission !== 'granted') return;
+            const n = new Notification(name, {
+                body: text.slice(0, 80),
+                icon: '/static/default-avatar.png'
+            });
+            n.onclick = () => {
+                window.focus();
+                n.close();
+                // open the chat with this contact
+                const item = document.querySelector(`.user-item[data-user-id="${peerId}"]`);
+                if (item) item.click();
+            };
+        }
         
         // Helper function to get avatar URL
         function getAvatarUrl(avatarUuid) {
@@ -1645,10 +1720,15 @@
                 
                 // Load messages
                 const res = await fetch(`/api/messages/${selectedUserId}`);
-                const msgs = await res.json();
+                const data = await res.json();
                 messagesDiv.innerHTML = '';
-                msgs.forEach(appendMessage);
+                (data.messages || data).forEach(appendMessage);
                 scrollToBottom();
+                // Phase 7.1d: sync mute state from server
+                if (data.muted_by_me !== undefined) {
+                    dialogStateCache.muted_by_me = data.muted_by_me;
+                    renderDialogChips();
+                }
             });
             
             // Phase 6.6: pull-down curtain on the contact row ("Удалить чат" only)
@@ -1784,6 +1864,7 @@
             cmdChips.innerHTML = '';
             const hasPin = dialogCommandsCache.some(c => c.name === 'pin');
             const hasBlock = dialogCommandsCache.some(c => c.name === 'block');
+            const hasMute = dialogCommandsCache.some(c => c.name === 'mute');
             
             const mkChip = (label, title, cmd) => {
                 const b = document.createElement('button');
@@ -1808,6 +1889,14 @@
                     dialogStateCache.blocked_by_me ? 'Разблокировать' : 'Заблокировать',
                     '/' + (dialogStateCache.blocked_by_me ? 'unblock' : 'block'),
                     dialogStateCache.blocked_by_me ? 'unblock' : 'block'
+                ));
+            }
+            // Phase 7.1d: mute chip
+            if (hasMute) {
+                cmdChips.appendChild(mkChip(
+                    dialogStateCache.muted_by_me ? 'Снять заглушку' : 'Заглушить',
+                    dialogStateCache.muted_by_me ? '/unmute — Снять заглушку' : '/mute — Заглушить уведомления',
+                    dialogStateCache.muted_by_me ? 'unmute' : 'mute'
                 ));
             }
             // Phase 6.6c: row stays hidden - only the toggle icon expands it
