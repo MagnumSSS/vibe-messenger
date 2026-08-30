@@ -695,7 +695,8 @@ header h1 {
 .cmd-chip.active {
     background: var(--accent-color, #0084ff);
     color: #fff;
-    border-color: var(--accent-color, #0084ff);
+    border-color: var(--select-border, #0084ff);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--select-border, #0084ff) 30%, transparent);
 }
 
 /* Phase 6.2: command result toasts */
@@ -1722,8 +1723,6 @@ header h1 {
 .message:hover .bubble-actions-right { opacity: 1; }
 .message:active .bubble-actions-left { opacity: 1; }
 .message:active .bubble-actions-right { opacity: 1; }
-.message.snap-armed .bubble-actions { opacity: 1; }
-.message.snap-armed .bubble-actions-right { opacity: 1; }
 
 /* swiping: hide action islands so they don't interfere */
 .message.swiping .bubble-actions { opacity: 0 !important; }
@@ -1874,6 +1873,48 @@ header h1 {
     opacity: 0.55;
     font-style: italic;
     margin-left: 4px;
+}
+
+/* Phase 7.2-fix: message selected for edit (keeps frame while edit mode open) */
+.message.editing-selected {
+    outline: 2.5px solid var(--select-border, #0084ff);
+    outline-offset: 2px;
+    background-color: color-mix(in srgb, var(--select-border, #0084ff) 10%, transparent);
+}
+
+/* Phase 7.2-fix: mode hint island */
+.mode-hint {
+    text-align: center;
+    padding: 6px 14px;
+    font-size: 0.78rem;
+    color: var(--text-secondary, #666666);
+    border-radius: 14px;
+    border: 1px solid var(--border-color, #dddddd);
+    background-color: var(--panel-color);
+    background-color: color-mix(in srgb, var(--panel-color) 72%, transparent);
+    margin: 4px 0;
+    animation: hintFadeIn 0.2s ease;
+}
+@keyframes hintFadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+
+/* Phase 7.2-fix: chat header name marquee */
+.marquee-wrap {
+    display: inline-block;
+    max-width: 140px;
+    overflow: hidden;
+    vertical-align: middle;
+    cursor: pointer;
+}
+.marquee-wrap .marquee-inner {
+    display: inline-block;
+    white-space: nowrap;
+}
+.marquee-wrap.scrolling .marquee-inner {
+    animation: marqueeScroll linear infinite;
+}
+@keyframes marqueeScroll {
+    0% { transform: translateX(0); }
+    100% { transform: translateX(-100%); }
 }
 
 /* Phase 7.2b: delete confirm bar */

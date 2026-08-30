@@ -74,7 +74,7 @@
         <div class="chat-area">
             <div class="chat-header" id="chatHeader" style="display: none;">
                 <img class="chat-header-avatar" id="chatHeaderAvatar" src="/static/default-avatar.png" alt="" title="View profile" style="width: 32px; height: 32px; border-radius: 50%; margin-right: 8px; cursor: pointer;">
-                <span id="chatHeaderName" style="cursor: pointer;" title="View profile">Select a contact</span>
+                <span id="chatHeaderNameWrap" class="marquee-wrap" title="View profile"><span id="chatHeaderName" class="marquee-inner" style="cursor: pointer;">Select a contact</span></span>
                 <div class="chat-header-actions" id="chatHeaderActions" style="display: none;">
                     <button id="groupMembersBtn" class="delete-chat-btn" title="Участники" style="display: none;">👥 Участники</button>
                     <!-- Phase 6.5: glass trash chip, neutral SVG icon -->
@@ -89,6 +89,8 @@
             <div class="input-area" id="inputArea" style="display: none;">
                 <!-- Phase 6.2: command chips island above the input -->
                 <div class="cmd-chips" id="cmdChips" style="display: none;"></div>
+                <!-- Phase 7.2-fix: mode hint island -->
+                <div class="mode-hint" id="modeHint" style="display: none;"></div>
                 <div class="chips-container" id="chipsContainer" style="display: none;"></div>
                 <!-- Phase 6.6: swipe-to-reply chip - "Ответ: <имя>: <сниппет>" with cancel -->
                 <div class="reply-bar" id="replyBar" style="display: none;">
@@ -377,8 +379,22 @@
         const userList = document.getElementById('userList');
         const chatHeader = document.getElementById('chatHeader');
         const chatHeaderName = document.getElementById('chatHeaderName');
+        const chatHeaderNameWrap = document.getElementById('chatHeaderNameWrap');
         const chatHeaderAvatar = document.getElementById('chatHeaderAvatar');
         const chatHeaderActions = document.getElementById('chatHeaderActions');
+
+        // Phase 7.2-fix: marquee for long names
+        function checkMarquee() {
+            requestAnimationFrame(() => {
+                if (chatHeaderName.scrollWidth > chatHeaderName.clientWidth + 4) {
+                    chatHeaderNameWrap.classList.add('scrolling');
+                    const innerW = chatHeaderName.scrollWidth;
+                    chatHeaderName.style.animationDuration = (innerW / 40) + 's';
+                } else {
+                    chatHeaderNameWrap.classList.remove('scrolling');
+                }
+            });
+        }
         const messagesDiv = document.getElementById('messages');
         const inputArea = document.getElementById('inputArea');
         const messageInput = document.getElementById('messageInput');
@@ -1626,6 +1642,25 @@
                 if (msg.type === 'message_edited') {
                     const bubble = document.querySelector(`[data-msg-id="${msg.message_id}"]`);
                     if (bubble) {
+                        // Update text content
+                        const body = bubble.querySelector('.message-body');
+                        if (body) {
+                            // group: find text node in body
+                            const nodes = body.childNodes;
+                            for (let i = 0; i < nodes.length; i++) {
+                                if (nodes[i].nodeType === 3) { nodes[i].textContent = msg.text; break; }
+                            }
+                        } else {
+                            // flat: update direct text (skip avatar, quote, atts)
+                            const children = bubble.childNodes;
+                            for (let i = 0; i < children.length; i++) {
+                                if (children[i].nodeType === 3 && children[i].textContent.trim()) {
+                                    children[i].textContent = msg.text;
+                                    break;
+                                }
+                            }
+                        }
+                        // Add "изменено" label
                         const time = bubble.querySelector('.message-time');
                         if (time && !time.querySelector('.message-edited')) {
                             time.insertAdjacentHTML('beforeend', '<span class="message-edited"> (изм.)</span>');
@@ -1748,6 +1783,7 @@
                 const userAvatar = item.dataset.avatar;
                 
                 chatHeaderName.textContent = userName;
+                checkMarquee();
                 chatHeaderAvatar.src = getAvatarUrl(userAvatar);
                 // restore dialog-mode header controls
                 chatHeaderAvatar.style.display = '';
@@ -1759,7 +1795,8 @@
                 cancelReply();          // Phase 6.6: never carry a reply across chats
                 closeAllCurtains();     // Phase 6.6: nor an open curtain
                 searchInput.value = ''; // Hotfix 7.1a: clear search on chat switch
-                setChipsVisible(false); // Phase 6.6b: reset chip toggle on chat switch
+                // Phase 7.2-fix: preserve chip panel state across chat switches
+                exitEditMode(); exitDeleteMode(); // reset modes on chat switch
                 
                 // Phase 6.6: dialog chips (pin/block) replace the old empty state
                 loadDialogChips(selectedUserId);
@@ -1834,6 +1871,7 @@
             exitEditMode(); exitDeleteMode(); // Phase 7.2b: reset modes on chat switch
             
             chatHeaderName.textContent = groupName;
+            checkMarquee();
             chatHeaderAvatar.style.display = 'none'; // no peer avatar in group mode
             chatHeaderActions.style.display = 'flex';
             deleteChatBtn.style.display = 'none';    // dialog deletion is 1-on-1 only for now
@@ -1842,7 +1880,8 @@
             cancelReply();          // Phase 6.6: reply is dialog-scoped
             closeAllCurtains();     // Phase 6.6: nor curtains across modes
             searchInput.value = ''; // Hotfix 7.1a: clear search on chat switch
-            setChipsVisible(false); // Phase 6.6b: reset chip toggle on chat switch
+            // Phase 7.2-fix: preserve chip panel state across chat switches
+            exitEditMode(); exitDeleteMode(); // reset modes on chat switch
             
             loadCmdChips(groupId);
             await loadGroupMessages(groupId);
@@ -2000,7 +2039,8 @@
         function toggleEditMode() {
             exitDeleteMode();
             modeEdit = !modeEdit;
-            if (!modeEdit) { cancelEdit(); }
+            if (!modeEdit) { cancelEdit(); hideModeHint(); }
+            else { showModeHint('Кликни сообщение для редактирования'); }
             renderDialogChips();
         }
 
@@ -2016,12 +2056,19 @@
             editBar.style.display = 'none';
             messageInput.value = '';
             messageInput.placeholder = 'Type a message...';
+            // Phase 7.2-fix: clear editing selection
+            document.querySelectorAll('.message.editing-selected').forEach(el => el.classList.remove('editing-selected'));
         }
 
         function startEdit(msg) {
+            // Phase 7.2-fix: clear previous selection
+            document.querySelectorAll('.message.editing-selected').forEach(el => el.classList.remove('editing-selected'));
             editCtx = { id: msg.id, origText: msg.text || '' };
             messageInput.value = msg.text || '';
             editBar.style.display = 'flex';
+            // Phase 7.2-fix: keep frame on selected message
+            const bubble = document.querySelector(`[data-msg-id="${msg.id}"]`);
+            if (bubble) bubble.classList.add('editing-selected');
             messageInput.focus();
             messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
         }
@@ -2033,7 +2080,32 @@
             try {
                 const fd = new FormData(); fd.append('text', text);
                 const res = await fetch(`/api/messages/${editCtx.id}/edit`, { method: 'POST', body: fd });
-                if (res.ok) { cancelEdit(); exitEditMode(); } else { const e = await res.json(); alert(e.detail || 'Edit failed'); }
+                if (res.ok) {
+                    // Phase 7.2-fix: immediate sender-side update
+                    const bubble = document.querySelector(`[data-msg-id="${editCtx.id}"]`);
+                    if (bubble) {
+                        const body = bubble.querySelector('.message-body');
+                        if (body) {
+                            const nodes = body.childNodes;
+                            for (let i = 0; i < nodes.length; i++) {
+                                if (nodes[i].nodeType === 3) { nodes[i].textContent = text; break; }
+                            }
+                        } else {
+                            const children = bubble.childNodes;
+                            for (let i = 0; i < children.length; i++) {
+                                if (children[i].nodeType === 3 && children[i].textContent.trim()) {
+                                    children[i].textContent = text;
+                                    break;
+                                }
+                            }
+                        }
+                        const time = bubble.querySelector('.message-time');
+                        if (time && !time.querySelector('.message-edited')) {
+                            time.insertAdjacentHTML('beforeend', '<span class="message-edited"> (изм.)</span>');
+                        }
+                    }
+                    cancelEdit();
+                } else { const e = await res.json(); alert(e.detail || 'Edit failed'); }
             } catch (e) { alert('Edit failed'); }
         }
 
@@ -2043,12 +2115,13 @@
         function toggleDeleteMode() {
             exitEditMode();
             modeDelete = !modeDelete;
-            if (!modeDelete) { exitDeleteMode(); }
+            if (!modeDelete) { exitDeleteMode(); hideModeHint(); }
             else {
                 deleteScope = 'self';
                 deleteSelectedIds.clear();
                 updateDeleteConfirmBar();
                 showDeleteSubChips();
+                showModeHint('Кликни сообщения для удаления');
             }
             renderDialogChips();
         }
@@ -2060,7 +2133,18 @@
             document.getElementById('deleteConfirmBar').style.display = 'none';
             hideDeleteSubChips();
             document.querySelectorAll('.message.selected-for-delete').forEach(el => el.classList.remove('selected-for-delete'));
+            hideModeHint();
             renderDialogChips();
+        }
+
+        // Phase 7.2-fix: hint island
+        const modeHintEl = document.getElementById('modeHint');
+        function showModeHint(text) {
+            modeHintEl.textContent = text;
+            modeHintEl.style.display = 'block';
+        }
+        function hideModeHint() {
+            modeHintEl.style.display = 'none';
         }
 
         function showDeleteSubChips() {
@@ -2425,7 +2509,6 @@
         // Desktop: hover shows reply; snap-armed shows both.
         // Touch: light swipe 40..110px (rubber band) = reply; snap past ~120px = delete panel.
         const SWIPE_REPLY_MIN = 40;
-        const SWIPE_SNAP = 120;
         
         let msgDeleteCtx = null; // {bubble, id} while the delete panel is open
         
@@ -2442,7 +2525,7 @@
             const canDelete = !(msg.group_id && msg.sender_id !== currentUser);
             const isMine = msg.sender_id === currentUser;
             
-            let startX = 0, startY = 0, dx = 0, engaged = false, armed = false, pid = null;
+            let startX = 0, startY = 0, dx = 0, engaged = false, pid = null;
             
             // Phase 6.6b: action islands (reply LEFT, delete RIGHT)
             const actionsLeft = document.createElement('div');
@@ -2467,7 +2550,7 @@
                 if (e.button !== undefined && e.button !== 0) return;
                 if (e.target.closest('a, button, img')) return; // keep native clicks intact
                 startX = e.clientX; startY = e.clientY; dx = 0;
-                engaged = false; armed = false; pid = e.pointerId;
+                engaged = false; pid = e.pointerId;
             });
             
             div.addEventListener('pointermove', (e) => {
@@ -2476,24 +2559,21 @@
                 const my = e.clientY - startY;
                 if (!engaged) {
                     if (Math.abs(mx) < 8 && Math.abs(my) < 8) return;
-                    if (Math.abs(my) >= Math.abs(mx) || mx > 0) { pid = null; return; } // scroll or rightward intent
+                    if (Math.abs(my) >= Math.abs(mx) || mx > 0) { pid = null; return; }
                     engaged = true;
                     try { div.setPointerCapture(pid); } catch (_) {}
                     div.classList.add('swiping');
                 }
-                // rubber band: free run to the snap point, then resist hard
+                // Phase 7.2-fix: rubber band capped at SWIPE_REPLY_MIN + 30px overshoot
                 let v = Math.min(0, mx);
-                if (-v > SWIPE_SNAP) v = -(SWIPE_SNAP + (-v - SWIPE_SNAP) * 0.25);
-                v = Math.max(v, -(SWIPE_SNAP + 30));
+                v = Math.max(v, -(SWIPE_REPLY_MIN + 30));
                 dx = v;
-                armed = -dx >= SWIPE_SNAP;
-                div.classList.toggle('snap-armed', armed);
                 div.style.transform = `translateX(${dx}px)`;
                 e.preventDefault();
             });
             
             const resetVisual = () => {
-                div.classList.remove('swiping', 'snap-armed');
+                div.classList.remove('swiping');
                 div.style.transform = '';
             };
             
@@ -2501,21 +2581,18 @@
                 if (pid === null || e.pointerId !== pid) return;
                 const wasEngaged = engaged;
                 pid = null; engaged = false;
-                const wasArmed = armed;
-                armed = false;
                 resetVisual();
                 if (!wasEngaged) return;
                 e.preventDefault();
-                if (wasArmed && canDelete) {
-                    openMsgDelMenu(div, msg);          // snap zone -> delete panel
-                } else if (-dx >= SWIPE_REPLY_MIN) {
-                    armReply(msg);                      // light zone -> reply chip
+                // Phase 7.2-fix: swipe = ONLY reply (40-110px), delete removed from gesture
+                if (-dx >= SWIPE_REPLY_MIN) {
+                    armReply(msg);
                 }
             });
             
             div.addEventListener('pointercancel', () => {
                 if (pid === null) return;
-                pid = null; engaged = false; armed = false;
+                pid = null; engaged = false;
                 resetVisual();
             });
 
@@ -3026,9 +3103,11 @@
                         inputArea.style.display = 'none';
                         chatHeaderActions.style.display = 'none';
                         chatHeaderName.textContent = 'Select a contact';
+                        checkMarquee();
                         document.querySelectorAll('.group-item').forEach(i => i.classList.remove('active'));
                     } else {
                         chatHeaderName.textContent = g.name;
+                        checkMarquee();
                     }
                 } else {
                     showToast(data.detail || data.text || 'Ошибка выполнения команды');
