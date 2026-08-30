@@ -97,6 +97,11 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 13l5 5 5-5"/><path d="M7 6l5 5 5-5"/></svg>
             </button>
             <div class="input-area" id="inputArea" style="display: none;">
+                <!-- Phase 7.4a-fix3: block mode — shown when peer is blocked -->
+                <div class="block-mode-bar" id="blockModeBar" style="display: none;">
+                    <span class="block-mode-text">Собеседник заблокирован</span>
+                    <button type="button" class="block-mode-unblock" id="blockModeUnblockBtn">Разблокировать</button>
+                </div>
                 <!-- Phase 6.2: command chips island above the input -->
                 <div class="cmd-chips" id="cmdChips" style="display: none;"></div>
                 <div class="chips-container" id="chipsContainer" style="display: none;"></div>
@@ -468,6 +473,8 @@
         const addMemberBtn = document.getElementById('addMemberBtn');
         // Phase 6.2: command chips + toasts
         const cmdChips = document.getElementById('cmdChips');
+        const blockModeBar = document.getElementById('blockModeBar');
+        const blockModeUnblockBtn = document.getElementById('blockModeUnblockBtn');
         const toastContainer = document.getElementById('toastContainer');
         // Phase 6.6: reply bar + gestures
         const replyBar = document.getElementById('replyBar');
@@ -520,6 +527,7 @@
         const deleteChatUserName = document.getElementById('deleteChatUserName');
         const cancelDeleteChatBtn = document.getElementById('cancelDeleteChatBtn');
         const confirmDeleteChatBtn = document.getElementById('confirmDeleteChatBtn');
+        const settingsBtn = document.getElementById('settingsBtn');
         
         // Delete account modal
         const deleteAccountModal = document.getElementById('deleteAccountModal');
@@ -527,7 +535,31 @@
         const deleteAccountConfirm = document.getElementById('deleteAccountConfirm');
         const cancelDeleteAccountBtn = document.getElementById('cancelDeleteAccountBtn');
         const confirmDeleteAccountBtn = document.getElementById('confirmDeleteAccountBtn');
-        
+
+        // Phase 7.4a-fix3: theme constants MUST be declared before applyThemeDirect is called
+        const FALLBACK_COLORS = {
+            bg: '#f0f2f5', panel: '#ffffff', header: '#0084ff', text: '#333333',
+            muted: '#666666', accent: '#0084ff', btn_primary: '#0084ff', btn_danger: '#dc3545',
+            bubble_sent: '#0084ff', bubble_received: '#e4e6eb', input_bg: '#ffffff',
+            border: '#dddddd', modal_bg: '#ffffff', hover: '#f5f5f5', active: '#e6f2ff',
+            select_border: '#0084ff', chip_cmd: '#dbe7ff'
+        };
+        const TOKEN_CSS_VARS = {
+            bg: '--bg-color', panel: '--panel-color', header: '--header-color', text: '--text-primary',
+            muted: '--text-secondary', accent: '--accent-color', btn_primary: '--btn-primary-bg',
+            btn_danger: '--btn-danger-bg', bubble_sent: '--bubble-sent-bg', bubble_received: '--bubble-received-bg',
+            input_bg: '--input-bg', border: '--border-color', modal_bg: '--modal-bg', hover: '--hover-bg', active: '--active-bg',
+            select_border: '--select-border', chip_cmd: '--chip-cmd-bg'
+        };
+        const FALLBACK_EFFECTS = { wallpaper_blur: 0, bubble_blur: 0 };
+        const EFFECT_CSS_VARS = {
+            wallpaper_blur: '--wallpaper-blur',
+            bubble_blur: '--bubble-blur'
+        };
+        const FALLBACK_SIZING = { chip_size: 1.0 };
+        const SIZING_CSS_VARS = { chip_size: '--chip-scale' };
+        const SIZING_CLAMP = { chip_size: { min: 0.8, max: 1.3 } };
+
         // Apply theme from user.theme_json on page load (safe parse)
         try {
             if (userThemeJson && typeof userThemeJson === 'string') {
@@ -571,32 +603,6 @@
             return { colors: colors, images: {}, effects: {}, sizing: {} };
         }
 
-        // Fallback values per color token (mirrors THEME_TOKENS defaults / CSS :root)
-        const FALLBACK_COLORS = {
-            bg: '#f0f2f5', panel: '#ffffff', header: '#0084ff', text: '#333333',
-            muted: '#666666', accent: '#0084ff', btn_primary: '#0084ff', btn_danger: '#dc3545',
-            bubble_sent: '#0084ff', bubble_received: '#e4e6eb', input_bg: '#ffffff',
-            border: '#dddddd', modal_bg: '#ffffff', hover: '#f5f5f5', active: '#e6f2ff',
-            select_border: '#0084ff', chip_cmd: '#dbe7ff'
-        };
-        const TOKEN_CSS_VARS = {
-            bg: '--bg-color', panel: '--panel-color', header: '--header-color', text: '--text-primary',
-            muted: '--text-secondary', accent: '--accent-color', btn_primary: '--btn-primary-bg',
-            btn_danger: '--btn-danger-bg', bubble_sent: '--bubble-sent-bg', bubble_received: '--bubble-received-bg',
-            input_bg: '--input-bg', border: '--border-color', modal_bg: '--modal-bg', hover: '--hover-bg', active: '--active-bg',
-            select_border: '--select-border', chip_cmd: '--chip-cmd-bg'
-        };
-
-        // Phase 5.4: blur effect tokens (range 0..20 px, mirrors THEME_TOKENS "effects")
-        const FALLBACK_EFFECTS = { wallpaper_blur: 0, bubble_blur: 0 };
-        const EFFECT_CSS_VARS = {
-            wallpaper_blur: '--wallpaper-blur',
-            bubble_blur: '--bubble-blur'
-        };
-        // Phase 6.6b: sizing tokens (range 0.8..1.3, mirrors THEME_TOKENS "sizing")
-        const FALLBACK_SIZING = { chip_size: 1.0 };
-        const SIZING_CSS_VARS = { chip_size: '--chip-scale' };
-        const SIZING_CLAMP = { chip_size: { min: 0.8, max: 1.3 } };
         function clampEffect(val, key) {
             let n = parseInt(val, 10);
             if (!Number.isFinite(n)) n = FALLBACK_EFFECTS[key] || 0;
@@ -1842,6 +1848,7 @@
                 groupMembersBtn.style.display = 'none';
                 deleteChatBtn.style.display = '';
                 inputArea.style.display = 'flex';
+                renderBlockMode(); // Phase 7.4a-fix3: check block state on dialog open
                 cancelReply();          // Phase 6.6: never carry a reply across chats
                 closeAllCurtains();     // Phase 6.6: nor an open curtain
                 searchInput.value = ''; // Hotfix 7.1a: clear search on chat switch
@@ -2034,14 +2041,29 @@
             const hasBlock = dialogCommandsCache.some(c => c.name === 'block');
             const hasMute = dialogCommandsCache.some(c => c.name === 'mute');
             
-            const mkChip = (label, title, cmd) => {
+            const mkChip = (label, title, cmd, hasArgs) => {
                 const b = document.createElement('button');
                 b.type = 'button';
                 b.className = 'cmd-chip';
                 b.title = title;
                 b.textContent = label;
                 b.dataset.cmd = cmd;
-                b.addEventListener('click', () => runDialogCommand(selectedUserId, cmd));
+                b.dataset.hasArgs = hasArgs ? '1' : '0';
+                b.addEventListener('click', () => {
+                    if (hasArgs) {
+                        // Phase 7.4a-fix3: arg chip → insert prefix into input
+                        messageInput.value = '/' + cmd + ' ';
+                        messageInput.focus();
+                        messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
+                    } else {
+                        // No-arg chip → execute immediately
+                        if (selectedGroupId) {
+                            runGroupCommand('/' + cmd);
+                        } else if (selectedUserId) {
+                            runDialogCommand(selectedUserId, cmd);
+                        }
+                    }
+                });
                 return b;
             };
             
@@ -2097,8 +2119,28 @@
             if (!state) return;
             dialogStateCache = state;
             renderDialogChips();
+            renderBlockMode();
             if (selectedUserId) setContactPinned(selectedUserId, !!state.pinned);
         }
+
+        // Phase 7.4a-fix3: block mode — hide input when peer is blocked
+        function renderBlockMode() {
+            const blocked = dialogStateCache.blocked_by_me && !selectedGroupId;
+            blockModeBar.style.display = blocked ? 'flex' : 'none';
+            // Hide input row elements when blocked
+            const inputRow = document.querySelector('.input-row');
+            if (inputRow) inputRow.style.display = blocked ? 'none' : '';
+            const replyBarEl = document.getElementById('replyBar');
+            if (replyBarEl) replyBarEl.style.display = blocked ? 'none' : replyBarEl.style.display;
+            const editBarEl = document.getElementById('editBar');
+            if (editBarEl) editBarEl.style.display = blocked ? 'none' : editBarEl.style.display;
+        }
+
+        blockModeUnblockBtn.addEventListener('click', async () => {
+            if (selectedUserId) {
+                await runDialogCommand(selectedUserId, 'unblock');
+            }
+        });
 
         // ===== Phase 7.2b: EDIT MODE =====
         function toggleEditMode() {
@@ -2819,7 +2861,7 @@
             requestAnimationFrame(() => {
                 messagesDiv.scrollTop = messagesDiv.scrollHeight;
             });
-            input.blur();
+            messageInput.blur();
         }
 
         // Tab clicks
@@ -3059,6 +3101,7 @@
                 typingIsland.innerHTML = '';
                 return;
             }
+            let namesHtml;
             if (ids.length === 1) {
                 const t = typingNames[ids[0]];
                 namesHtml = `<span class="typing-name-chip">${escapeHtml(t.name)}</span>`;

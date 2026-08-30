@@ -2338,6 +2338,34 @@ header h1 {
     flex-shrink: 0;
 }
 
+/* Phase 7.4a-fix3: block mode bar */
+.block-mode-bar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0.75rem;
+}
+.block-mode-text {
+    font-size: 0.85rem;
+    color: var(--text-secondary, #666);
+}
+.block-mode-unblock {
+    background: none;
+    border: 1px solid var(--accent-color, #0084ff);
+    color: var(--accent-color, #0084ff);
+    padding: 0.35rem 0.85rem;
+    border-radius: 999px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+.block-mode-unblock:hover {
+    background: var(--accent-color, #0084ff);
+    color: #fff;
+}
+
 /* Phase 7.4a-fix2: hide old cmd-chips row and emoji popup globally (replaced by accessory island) */
 .cmd-chips, .chips-container { display: none !important; }
 .emoji-grid { display: none !important; }
