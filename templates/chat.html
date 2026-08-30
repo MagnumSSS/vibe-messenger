@@ -172,11 +172,6 @@
                     <h3>Размеры</h3>
                     <div id="sizingSliders"></div>
                 </div>
-                <!-- Phase 7.3-fix: toggle checkboxes -->
-                <div class="settings-section">
-                    <h3>Настройки</h3>
-                    <div id="toggleOptions"></div>
-                </div>
                 <div class="settings-section">
                     <h3>Пресеты</h3>
                     <!-- Phase 6.3: custom presets - save current state under a name -->
@@ -509,7 +504,6 @@
         const imageSlots = document.getElementById('imageSlots');
         const effectSliders = document.getElementById('effectSliders');
         const sizingSliders = document.getElementById('sizingSliders');
-        const toggleOptions = document.getElementById('toggleOptions');
         const presetButtons = document.getElementById('presetButtons');
         const resetThemeBtn = document.getElementById('resetThemeBtn');
         // Phase 6.3: custom theme presets
@@ -605,9 +599,6 @@
         const FALLBACK_SIZING = { chip_size: 1.0 };
         const SIZING_CSS_VARS = { chip_size: '--chip-scale' };
         const SIZING_CLAMP = { chip_size: { min: 0.8, max: 1.3 } };
-        // Phase 7.3-fix: boolean toggles (typing_show_username etc.)
-        const FALLBACK_TOGGLES = { typing_show_username: false };
-        let currentToggles = { ...FALLBACK_TOGGLES };
         function clampEffect(val, key) {
             let n = parseInt(val, 10);
             if (!Number.isFinite(n)) n = FALLBACK_EFFECTS[key] || 0;
@@ -797,7 +788,6 @@
                     ]);
                 }
                 currentTheme = await fetchJson('/api/theme');
-                currentToggles = Object.assign({}, FALLBACK_TOGGLES, (currentTheme.toggles) || {});
                 renderEditor();
                 loadCustomPresets();
             } catch (e) {
@@ -810,7 +800,6 @@
             renderImageSlots();
             renderEffectSliders();
             renderSizingSliders();
-            renderToggles();
             renderPresetButtons();
             applyEditorContrast();
         }
@@ -1007,31 +996,7 @@
         }
 
         // Phase 7.3-fix: toggle checkboxes from theme manifest
-        const TOGGLE_LABELS = {
-            typing_show_username: 'Показывать @username в typing'
-        };
-        function renderToggles() {
-            toggleOptions.innerHTML = '';
-            const toggleTokens = (themeManifest && themeManifest.toggles) || {};
-            for (const key of Object.keys(toggleTokens)) {
-                const row = document.createElement('div');
-                row.className = 'toggle-option-row';
-                row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0;';
-                const label = document.createElement('label');
-                label.style.cssText = 'cursor:pointer;font-size:0.85rem;user-select:none;';
-                label.textContent = TOGGLE_LABELS[key] || key;
-                const cb = document.createElement('input');
-                cb.type = 'checkbox';
-                cb.checked = !!currentToggles[key];
-                cb.addEventListener('change', () => {
-                    currentToggles[key] = cb.checked;
-                    scheduleThemeSave();
-                });
-                row.appendChild(cb);
-                row.appendChild(label);
-                toggleOptions.appendChild(row);
-            }
-        }
+
 
         // Preset buttons generated from server presets; one click = live + saved
         function renderPresetButtons() {
@@ -3000,17 +2965,13 @@
                 typingIsland.innerHTML = '';
                 return;
             }
-            const useUsername = currentToggles.typing_show_username;
-            let namesHtml = '';
             if (ids.length === 1) {
                 const t = typingNames[ids[0]];
-                const display = useUsername ? '@' + (t.username || t.name) : t.name;
-                namesHtml = `<span class="typing-name-chip">${escapeHtml(display)}</span>`;
+                namesHtml = `<span class="typing-name-chip">${escapeHtml(t.name)}</span>`;
             } else {
                 namesHtml = ids.map(id => {
                     const t = typingNames[id];
-                    const display = useUsername ? '@' + (t.username || t.name) : t.name;
-                    return `<span class="typing-name-chip">${escapeHtml(display)}</span>`;
+                    return `<span class="typing-name-chip">${escapeHtml(t.name)}</span>`;
                 }).join('');
             }
             const verb = ids.length > 1 ? 'печатают' : 'печатает';
