@@ -740,6 +740,18 @@ async def health_check():
     return JSONResponse({"status": "ok", "version": "5.0"})
 
 
+# Phase 7.4b: Service Worker — served from root with Service-Worker-Allowed: /
+from starlette.responses import Response as StarletteResponse
+
+@app.get("/sw.js")
+async def service_worker():
+    sw_path = os.path.join(os.path.dirname(__file__), 'static', 'sw.js')
+    with open(sw_path, 'r') as f:
+        content = f.read()
+    return StarletteResponse(content, media_type='application/javascript',
+                             headers={'Service-Worker-Allowed': '/'})
+
+
 @app.get("/")
 async def index(request: Request):
     user = get_current_user(request)
