@@ -788,7 +788,7 @@
 
         function applyFontScale(scale) {
             currentFontScale = scale;
-            document.documentElement.style.zoom = String(scale);
+            document.documentElement.style.setProperty('--font-scale', String(scale));
             const label = document.getElementById('fontScaleValue');
             if (label) label.textContent = String(scale);
             document.querySelectorAll('.font-scale-btn').forEach(btn => {
@@ -1867,22 +1867,25 @@
         
         // Phase 6.1: load my groups into the sidebar on page load
         loadGroups().then(() => {
-            // Phase micro: parse URL hash to restore last chat
+            // Phase micro: parse URL hash → sessionStorage fallback for chat restore
+            let chatKey = '';
             const hash = location.hash;
             if (hash.startsWith('#c=')) {
-                const rest = hash.slice(3);
-                if (rest.startsWith('user:')) {
-                    const uid = parseInt(rest.slice(5));
-                    if (uid) {
-                        const item = document.querySelector(`.user-item[data-id="${uid}"]`);
-                        if (item) item.click();
-                    }
-                } else if (rest.startsWith('group:')) {
-                    const gid = parseInt(rest.slice(6));
-                    if (gid) {
-                        const item = document.querySelector(`.group-item[data-group-id="${gid}"]`);
-                        if (item) item.click();
-                    }
+                chatKey = hash.slice(3);
+            } else {
+                try { chatKey = sessionStorage.getItem('vb_last_chat') || ''; } catch(e) {}
+            }
+            if (chatKey.startsWith('user:')) {
+                const uid = parseInt(chatKey.slice(5));
+                if (uid) {
+                    const item = document.querySelector(`.user-item[data-id="${uid}"]`);
+                    if (item) item.click();
+                }
+            } else if (chatKey.startsWith('group:')) {
+                const gid = parseInt(chatKey.slice(6));
+                if (gid) {
+                    const item = document.querySelector(`.group-item[data-group-id="${gid}"]`);
+                    if (item) item.click();
                 }
             }
         });
@@ -1906,6 +1909,7 @@
                 selectedUserId = parseInt(item.dataset.id);
                 selectedGroupId = null; // Phase 6.1: leaving group mode
                 location.hash = 'c=user:' + selectedUserId; // Phase micro: hash for chat persistence
+                try { sessionStorage.setItem('vb_last_chat', 'user:' + selectedUserId); } catch(e) {}
                 exitEditMode(); exitDeleteMode(); // Phase 7.2b: reset modes on chat switch
                 if (typeof closeAccessoryIsland === 'function') closeAccessoryIsland();
                 const userName = item.dataset.name;
@@ -2010,6 +2014,7 @@
             selectedUserId = null;
             selectedGroupId = groupId;
             location.hash = 'c=group:' + groupId; // Phase micro: hash for chat persistence
+            try { sessionStorage.setItem('vb_last_chat', 'group:' + groupId); } catch(e) {}
             exitEditMode(); exitDeleteMode(); // Phase 7.2b: reset modes on chat switch
             
             chatHeaderName.textContent = groupName;
