@@ -89,8 +89,6 @@
             <div class="input-area" id="inputArea" style="display: none;">
                 <!-- Phase 6.2: command chips island above the input -->
                 <div class="cmd-chips" id="cmdChips" style="display: none;"></div>
-                <!-- Phase 7.2-fix: mode hint island -->
-                <div class="mode-hint" id="modeHint" style="display: none;"></div>
                 <div class="chips-container" id="chipsContainer" style="display: none;"></div>
                 <!-- Phase 6.6: swipe-to-reply chip - "Ответ: <имя>: <сниппет>" with cancel -->
                 <div class="reply-bar" id="replyBar" style="display: none;">
@@ -345,6 +343,12 @@
 
     <!-- Phase 6.2: command result toasts -->
     <div class="toast-container" id="toastContainer"></div>
+
+    <!-- Micro toast: mode hint at top of screen -->
+    <div class="mode-toast" id="modeToast">
+        <span class="mode-toast-text" id="modeToastText"></span>
+        <button type="button" class="mode-toast-close" id="modeToastClose" aria-label="Закрыть">&times;</button>
+    </div>
 
     <script>
         const currentUser = {{ user.id | tojson }};
@@ -2138,14 +2142,23 @@
         }
 
         // Phase 7.2-fix: hint island
-        const modeHintEl = document.getElementById('modeHint');
+        // Micro toast: mode hint
+        const modeToast = document.getElementById('modeToast');
+        const modeToastText = document.getElementById('modeToastText');
+        let modeToastTimer = null;
         function showModeHint(text) {
-            modeHintEl.textContent = text;
-            modeHintEl.style.display = 'block';
+            // replace current toast (no stacking)
+            clearTimeout(modeToastTimer);
+            modeToastText.textContent = text;
+            modeToast.classList.add('visible');
+            modeToastTimer = setTimeout(hideModeHint, 5000);
         }
         function hideModeHint() {
-            modeHintEl.style.display = 'none';
+            clearTimeout(modeToastTimer);
+            modeToastTimer = null;
+            modeToast.classList.remove('visible');
         }
+        document.getElementById('modeToastClose').addEventListener('click', hideModeHint);
 
         function showDeleteSubChips() {
             let row = cmdChips.querySelector('.delete-sub-chips');

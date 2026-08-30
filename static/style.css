@@ -1883,19 +1883,43 @@ header h1 {
 }
 
 /* Phase 7.2-fix: mode hint island */
-.mode-hint {
-    text-align: center;
-    padding: 6px 14px;
-    font-size: 0.78rem;
-    color: var(--text-secondary, #666666);
+/* Micro toast: mode hint floating at top of screen */
+.mode-toast {
+    position: fixed;
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%) translateY(-60px);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 16px;
+    font-size: 0.82rem;
+    color: var(--text-primary, #333333);
     border-radius: 14px;
     border: 1px solid var(--border-color, #dddddd);
     background-color: var(--panel-color);
-    background-color: color-mix(in srgb, var(--panel-color) 72%, transparent);
-    margin: 4px 0;
-    animation: hintFadeIn 0.2s ease;
+    background-color: color-mix(in srgb, var(--panel-color) 80%, transparent);
+    box-shadow: 0 4px 16px var(--shadow-2, rgba(0,0,0,0.2));
+    opacity: 0;
+    transition: transform 0.25s ease, opacity 0.25s ease;
+    pointer-events: none;
+    white-space: nowrap;
 }
-@keyframes hintFadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+.mode-toast.visible {
+    transform: translateX(-50%) translateY(0);
+    opacity: 1;
+    pointer-events: auto;
+}
+.mode-toast-text { flex: 1; }
+.mode-toast-close {
+    background: none; border: none; cursor: pointer;
+    font-size: 1.1rem; line-height: 1; padding: 0 2px;
+    color: var(--text-secondary, #666666); border-radius: 50%;
+    width: 22px; height: 22px;
+    display: flex; align-items: center; justify-content: center;
+}
+.mode-toast-close:hover { background: var(--hover-bg, #f5f5f5); }
 
 /* Phase 7.2-fix: chat header name marquee */
 .marquee-wrap {
