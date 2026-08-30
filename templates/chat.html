@@ -62,6 +62,7 @@
                             <div class="user-name">{% if u.pinned %}<span class="pin-marker" title="Закреплён"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 17v5"/><path d="M9 3h6l-1 7 3 2v2H7v-2l3-2-1-7z"/></svg></span>{% endif %}{{ u.name }}</div>
                             <div class="user-username">@{{ u.username }}</div>
                         </div>
+                        <span class="unread-badge" id="unread-user-{{ u.id }}"></span>
                         <button type="button" class="curtain-toggle-btn" title="Действия" aria-label="Действия">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 6 9 12 15 18"/></svg>
                         </button>
@@ -75,6 +76,7 @@
             <div class="chat-header" id="chatHeader" style="display: none;">
                 <img class="chat-header-avatar" id="chatHeaderAvatar" src="/static/default-avatar.png" alt="" title="View profile" style="width: 32px; height: 32px; border-radius: 50%; margin-right: 8px; cursor: pointer;">
                 <span id="chatHeaderNameWrap" class="marquee-wrap" title="View profile"><span id="chatHeaderName" class="marquee-inner" style="cursor: pointer;">Select a contact</span></span>
+                <span class="typing-dots" id="typingIndicator" style="display: none;"></span>
                 <div class="chat-header-actions" id="chatHeaderActions" style="display: none;">
                     <button id="groupMembersBtn" class="delete-chat-btn" title="Участники" style="display: none;">👥 Участники</button>
                     <!-- Phase 6.5: glass trash chip, neutral SVG icon -->
@@ -86,6 +88,10 @@
                 </div>
             </div>
             <div class="messages" id="messages"></div>
+            <!-- Phase 7.3: scroll-to-bottom button -->
+            <button type="button" class="scroll-down-btn" id="scrollDownBtn" title="Вниз" aria-label="Вниз">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 13l5 5 5-5"/><path d="M7 6l5 5 5-5"/></svg>
+            </button>
             <div class="input-area" id="inputArea" style="display: none;">
                 <!-- Phase 6.2: command chips island above the input -->
                 <div class="cmd-chips" id="cmdChips" style="display: none;"></div>
@@ -370,7 +376,14 @@
         let deleteScope = 'self'; // 'self' or 'all'
         let deleteSelectedIds = new Set(); // message ids selected for deletion
         let editCtx = null; // {id, origText}
-        
+
+        // Phase 7.3: unread state
+        let unreadState = {}; // { "user:5": 3, "group:2": 7 }
+        let typingTimers = {}; // { userId: setTimeout }
+        let typingIndicator = document.getElementById('typingIndicator');
+        let typingTimeout = null;
+        let lastTypingSent = 0;
+
         // Default theme colors
         const defaultTheme = {
             primary: '#0084ff',
@@ -1672,6 +1685,11 @@
                     }
                     return;
                 }
+                // Phase 7.3: typing indicator
+                if (msg.type === 'typing') {
+                    handleTyping(msg);
+                    return;
+                }
                 // Phase 6.1b: sidebar refresh signal when someone adds me to a group
                 if (msg.type === 'group_added') {
                     loadGroups();
@@ -1681,11 +1699,19 @@
                 if (msg.group_id) {
                     if (msg.group_id === selectedGroupId) {
                         appendMessage(msg);
-                        scrollToBottom();
+                        // Phase 7.3: auto-scroll only if near bottom
+                        if (isNearBottom()) scrollToBottom();
+                    } else {
+                        // Phase 7.3: bump badge for non-open group
+                        bumpUnread('group', msg.group_id);
                     }
                 } else if (msg.sender_id === selectedUserId || msg.recipient_id === selectedUserId) {
                     appendMessage(msg);
-                    scrollToBottom();
+                    // Phase 7.3: auto-scroll only if near bottom
+                    if (isNearBottom()) scrollToBottom();
+                } else if (msg.sender_id !== currentUser) {
+                    // Phase 7.3: bump badge for non-open dialog
+                    bumpUnread('user', msg.sender_id);
                 }
                 // Phase 7.1d: blip + notification for incoming messages (not my own)
                 if (msg.sender_id !== currentUser) {
@@ -1767,6 +1793,8 @@
         
         // Phase 6.1: load my groups into the sidebar on page load
         loadGroups();
+        // Phase 7.3: load unread counts on page load
+        loadUnread();
         
         // Load users and handle selection
         document.querySelectorAll('.user-item').forEach(item => {
@@ -1801,8 +1829,7 @@
                 searchInput.value = ''; // Hotfix 7.1a: clear search on chat switch
                 // Phase 7.2-fix: preserve chip panel state across chat switches
                 exitEditMode(); exitDeleteMode(); // reset modes on chat switch
-                
-                // Phase 6.6: dialog chips (pin/block) replace the old empty state
+                messagesDiv.dataset.lastDateKey = ''; // Phase 7.3: reset date separator state
                 loadDialogChips(selectedUserId);
                 
                 // Load messages
@@ -1811,6 +1838,8 @@
                 messagesDiv.innerHTML = '';
                 (data.messages || data).forEach(appendMessage);
                 scrollToBottom();
+                // Phase 7.3: mark dialog as read
+                markAsRead('user', selectedUserId);
                 // Phase 7.1d: sync mute state from server
                 if (data.muted_by_me !== undefined) {
                     dialogStateCache.muted_by_me = data.muted_by_me;
@@ -1855,10 +1884,13 @@
                             <div class="group-name">${escapeHtml(g.name)}</div>
                             <div class="group-count">${g.member_count} участников</div>
                         </div>
+                        <span class="unread-badge" id="unread-group-${g.id}"></span>
                     `;
                     li.addEventListener('click', () => openGroupChat(g.id, g.name));
                     groupList.appendChild(li);
                 });
+                // Phase 7.3: render badges on group items
+                renderAllBadges();
             } catch (e) {
                 console.error('Failed to load groups:', e);
             }
@@ -1886,6 +1918,7 @@
             searchInput.value = ''; // Hotfix 7.1a: clear search on chat switch
             // Phase 7.2-fix: preserve chip panel state across chat switches
             exitEditMode(); exitDeleteMode(); // reset modes on chat switch
+            messagesDiv.dataset.lastDateKey = ''; // Phase 7.3: reset date separator state
             
             loadCmdChips(groupId);
             await loadGroupMessages(groupId);
@@ -2347,6 +2380,8 @@
                     appendMessage(m);
                 });
                 scrollToBottom();
+                // Phase 7.3: mark group as read
+                markAsRead('group', groupId);
             } catch (e) {
                 console.error('Failed to load group messages:', e);
             }
@@ -2437,6 +2472,19 @@
         }
         
         function appendMessage(msg) {
+            // Phase 7.3: date separator — check if day changed from previous message
+            if (msg.created_at) {
+                const key = getDateKey(msg.created_at);
+                const lastKey = messagesDiv.dataset.lastDateKey || '';
+                if (key !== lastKey) {
+                    const sep = document.createElement('div');
+                    sep.className = 'date-separator';
+                    sep.innerHTML = `<span class="date-sep-label">${formatDateSep(msg.created_at)}</span>`;
+                    messagesDiv.appendChild(sep);
+                    messagesDiv.dataset.lastDateKey = key;
+                }
+            }
+
             const div = document.createElement('div');
             const mine = msg.sender_id === currentUser;
             div.className = `message ${mine ? 'sent' : 'received'}`;
@@ -2797,6 +2845,123 @@
             return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         }
         
+        // ===== Phase 7.3: unread badges =====
+        async function loadUnread() {
+            try {
+                const res = await fetch('/api/unread');
+                if (!res.ok) return;
+                const items = await res.json();
+                unreadState = {};
+                items.forEach(item => { unreadState[item.type + ':' + item.id] = item.count; });
+                renderAllBadges();
+            } catch (e) { console.error('Failed to load unread:', e); }
+        }
+
+        function renderAllBadges() {
+            // user badges
+            document.querySelectorAll('.user-item').forEach(el => {
+                const uid = el.dataset.id;
+                const badge = document.getElementById('unread-user-' + uid);
+                if (!badge) return;
+                const count = unreadState['user:' + uid] || 0;
+                badge.textContent = count;
+                badge.classList.toggle('visible', count > 0);
+            });
+            // group badges
+            document.querySelectorAll('.group-item').forEach(el => {
+                const gid = el.dataset.groupId;
+                const badge = document.getElementById('unread-group-' + gid);
+                if (!badge) return;
+                const count = unreadState['group:' + gid] || 0;
+                badge.textContent = count;
+                badge.classList.toggle('visible', count > 0);
+            });
+        }
+
+        function bumpUnread(type, id) {
+            const key = type + ':' + id;
+            unreadState[key] = (unreadState[key] || 0) + 1;
+            renderAllBadges();
+        }
+
+        function clearUnread(type, id) {
+            const key = type + ':' + id;
+            delete unreadState[key];
+            renderAllBadges();
+        }
+
+        function markAsRead(type, id) {
+            clearUnread(type, id);
+            fetch('/api/read', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ type, id })
+            }).catch(() => {});
+        }
+
+        // ===== Phase 7.3: typing =====
+        function sendTyping() {
+            const now = Date.now();
+            if (now - lastTypingSent < 1500) return; // throttle 1.5s
+            lastTypingSent = now;
+            if (!ws || ws.readyState !== 1) return;
+            const payload = { type: 'typing' };
+            if (selectedGroupId) payload.group_id = selectedGroupId;
+            else if (selectedUserId) payload.peer_id = selectedUserId;
+            ws.send(JSON.stringify(payload));
+        }
+
+        function handleTyping(msg) {
+            const senderId = msg.user_id;
+            const senderName = msg.name || 'User';
+            // Only show if relevant to current chat
+            const isRelevant = msg.group_id
+                ? msg.group_id === selectedGroupId
+                : senderId === selectedUserId;
+            if (!isRelevant) return;
+            // Show typing
+            typingIndicator.textContent = senderName + ' печатает';
+            typingIndicator.style.display = '';
+            // Auto-hide after 3s
+            clearTimeout(typingTimers[senderId]);
+            typingTimers[senderId] = setTimeout(() => {
+                typingIndicator.style.display = 'none';
+            }, 3000);
+        }
+
+        // ===== Phase 7.3: date separator =====
+        function formatDateSep(dateStr) {
+            const d = new Date(dateStr);
+            const now = new Date();
+            const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+            const msgDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+            const diff = Math.round((today - msgDay) / 86400000);
+            if (diff === 0) return 'Сегодня';
+            if (diff === 1) return 'Вчера';
+            return new Intl.DateTimeFormat('ru', { day: 'numeric', month: 'long', year: 'numeric' }).format(d);
+        }
+
+        function getDateKey(dateStr) {
+            return dateStr.slice(0, 10); // YYYY-MM-DD
+        }
+
+        // ===== Phase 7.3: scroll-to-bottom =====
+        const scrollDownBtn = document.getElementById('scrollDownBtn');
+        scrollDownBtn.addEventListener('click', () => {
+            messagesDiv.scrollTo({ top: messagesDiv.scrollHeight, behavior: 'smooth' });
+        });
+
+        function updateScrollDownBtn() {
+            const diff = messagesDiv.scrollHeight - messagesDiv.scrollTop - messagesDiv.clientHeight;
+            scrollDownBtn.classList.toggle('visible', diff > 200);
+        }
+
+        function isNearBottom() {
+            return (messagesDiv.scrollHeight - messagesDiv.scrollTop - messagesDiv.clientHeight) < 80;
+        }
+
+        messagesDiv.addEventListener('scroll', updateScrollDownBtn);
+
         function scrollToBottom() {
             messagesDiv.scrollTop = messagesDiv.scrollHeight;
         }
@@ -2949,6 +3114,8 @@
         messageInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') sendMessage();
         });
+        // Phase 7.3: typing indicator
+        messageInput.addEventListener('input', sendTyping);
         
         // ===== Phase 6.4: @mention autocomplete =====
         // Typing "@prefix" (ending at the caret) opens a Liquid Glass island of

@@ -222,6 +222,85 @@ header h1 {
 .group-item:hover { background: var(--hover-bg, #f5f5f5); }
 .group-item.active { background: var(--active-bg, #e6f2ff); box-shadow: inset 3px 0 0 var(--accent-color); }
 
+/* Phase 7.3: unread badge */
+.unread-badge {
+    display: none;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 5px;
+    border-radius: 10px;
+    background: var(--accent-color, #0084ff);
+    color: var(--btn-primary-text, #ffffff);
+    font-size: 0.7rem;
+    font-weight: 700;
+    line-height: 20px;
+    text-align: center;
+    flex-shrink: 0;
+    margin-left: auto;
+}
+.unread-badge.visible { display: block; }
+
+/* Phase 7.3: typing indicator in header */
+.typing-dots {
+    display: inline-block;
+    font-size: 0.8rem;
+    color: var(--text-secondary, #666666);
+    font-style: italic;
+}
+.typing-dots::after {
+    content: '';
+    animation: typingDots 1.2s steps(4) infinite;
+}
+@keyframes typingDots {
+    0% { content: ''; }
+    25% { content: '.'; }
+    50% { content: '..'; }
+    75% { content: '...'; }
+    100% { content: ''; }
+}
+
+/* Phase 7.3: date separator */
+.date-separator {
+    text-align: center;
+    margin: 12px 0;
+    position: relative;
+}
+.date-separator .date-sep-label {
+    display: inline-block;
+    padding: 4px 14px;
+    font-size: 0.72rem;
+    color: var(--text-secondary, #666666);
+    border-radius: 12px;
+    border: 1px solid var(--border-color, #dddddd);
+    background-color: var(--panel-color);
+    background-color: color-mix(in srgb, var(--panel-color) 72%, transparent);
+}
+
+/* Phase 7.3: scroll-to-bottom button */
+.scroll-down-btn {
+    position: absolute;
+    bottom: 80px;
+    right: 16px;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    border: 1px solid var(--border-color, #dddddd);
+    background-color: var(--panel-color);
+    background-color: color-mix(in srgb, var(--panel-color) 72%, transparent);
+    box-shadow: 0 2px 10px var(--shadow-2, rgba(0,0,0,0.2));
+    cursor: pointer;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 50;
+    transition: opacity 0.2s, transform 0.2s;
+    color: var(--text-secondary, #666666);
+    backdrop-filter: blur(8px);
+}
+.scroll-down-btn.visible { display: flex; }
+.scroll-down-btn:hover { background: var(--hover-bg, #f5f5f5); }
+.scroll-down-btn svg { width: 20px; height: 20px; }
+
 .group-icon {
     width: 40px;
     height: 40px;

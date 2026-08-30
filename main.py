@@ -624,6 +624,18 @@ def ensure_schema():
             )
         """)
 
+        # Phase 7.3: read receipts
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS reads (
+                user_id INTEGER NOT NULL,
+                peer_type TEXT NOT NULL DEFAULT 'user',
+                peer_id INTEGER NOT NULL,
+                last_read_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, peer_type, peer_id),
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
+
         msg_cols = {col[1] for col in conn.execute("PRAGMA table_info(messages)").fetchall()}
         conn.commit()
 
@@ -1221,6 +1233,72 @@ async def group_messages(request: Request, group_id: int):
     return JSONResponse(result)
 
 
+# ===== Phase 7.3: read receipts =====
+@app.post("/api/read")
+async def mark_read(request: Request):
+    """Mark a chat as read up to now."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    body = await request.json()
+    peer_type = body.get("type", "user")
+    peer_id = body.get("id")
+    if not peer_id:
+        raise HTTPException(status_code=400, detail="Missing id")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO reads (user_id, peer_type, peer_id, last_read_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(user_id, peer_type, peer_id) DO UPDATE SET last_read_at = ?",
+            (user["id"], peer_type, peer_id, now, now)
+        )
+        conn.commit()
+    return JSONResponse({"ok": True})
+
+
+@app.get("/api/unread")
+async def get_unread(request: Request):
+    """Get unread counts for all contacts and groups."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    result = []
+    with get_db() as conn:
+        # Dialogs: find all users I've exchanged messages with
+        peers = conn.execute("""
+            SELECT DISTINCT
+                CASE WHEN sender_id = ? THEN recipient_id ELSE sender_id END AS peer_id
+            FROM messages
+            WHERE (sender_id = ? OR recipient_id = ?) AND group_id IS NULL
+        """, (user["id"], user["id"], user["id"])).fetchall()
+        for p in peers:
+            pid = p["peer_id"]
+            row = conn.execute("SELECT last_read_at FROM reads WHERE user_id = ? AND peer_type = 'user' AND peer_id = ?",
+                               (user["id"], pid)).fetchone()
+            last_read = row["last_read_at"] if row else "1970-01-01 00:00:00"
+            count = conn.execute("""
+                SELECT COUNT(*) AS c FROM messages
+                WHERE sender_id = ? AND recipient_id = ? AND group_id IS NULL
+                  AND created_at > ? AND deleted_for_recipient = 0
+            """, (pid, user["id"], last_read)).fetchone()["c"]
+            if count > 0:
+                result.append({"type": "user", "id": pid, "count": count})
+        # Groups: find all groups I'm a member of
+        groups = conn.execute("SELECT group_id FROM group_members WHERE user_id = ?", (user["id"],)).fetchall()
+        for g in groups:
+            gid = g["group_id"]
+            row = conn.execute("SELECT last_read_at FROM reads WHERE user_id = ? AND peer_type = 'group' AND peer_id = ?",
+                               (user["id"], gid)).fetchone()
+            last_read = row["last_read_at"] if row else "1970-01-01 00:00:00"
+            count = conn.execute("""
+                SELECT COUNT(*) AS c FROM messages
+                WHERE group_id = ? AND sender_id != ? AND created_at > ? AND deleted_for_sender = 0 AND deleted_for_recipient = 0
+            """, (gid, user["id"], last_read)).fetchone()["c"]
+            if count > 0:
+                result.append({"type": "group", "id": gid, "count": count})
+    return JSONResponse(result)
+
+
 # ===== Phase 6.2: group commands =====
 
 @app.get("/api/commands")
@@ -1556,7 +1634,45 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         while True:
             data = await websocket.receive_json()
-            # Handle incoming messages if needed
+            msg_type = data.get("type", "")
+            # Phase 7.3: typing indicator — relay to participants
+            if msg_type == "typing":
+                group_id = data.get("group_id")
+                with get_db() as conn:
+                    sender_row = conn.execute("SELECT name FROM users WHERE id = ?", (user_id,)).fetchone()
+                sender_name = sender_row["name"] if sender_row else "User"
+                payload = {"type": "typing", "user_id": user_id, "name": sender_name}
+                if group_id:
+                    payload["group_id"] = group_id
+                    with get_db() as conn:
+                        members = conn.execute("SELECT user_id FROM group_members WHERE group_id = ?", (group_id,)).fetchall()
+                    for m in members:
+                        if m["user_id"] == user_id:
+                            continue
+                        ws_conn = app.state.connections.get(m["user_id"])
+                        if ws_conn:
+                            try: await ws_conn.send_json(payload)
+                            except: pass
+                else:
+                    peer_id = data.get("peer_id")
+                    if peer_id:
+                        ws_conn = app.state.connections.get(peer_id)
+                        if ws_conn:
+                            try: await ws_conn.send_json(payload)
+                            except: pass
+            # Phase 7.3: mark as read via WS
+            elif msg_type == "read":
+                peer_type = data.get("peer_type", "user")
+                peer_id = data.get("peer_id")
+                if peer_id:
+                    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    with get_db() as conn:
+                        conn.execute(
+                            "INSERT INTO reads (user_id, peer_type, peer_id, last_read_at) VALUES (?, ?, ?, ?) "
+                            "ON CONFLICT(user_id, peer_type, peer_id) DO UPDATE SET last_read_at = ?",
+                            (user_id, peer_type, peer_id, now, now)
+                        )
+                        conn.commit()
     except WebSocketDisconnect:
         _pulse_emit("ws", f"DISCONNECT user_id={user_id}")
         if user_id in app.state.connections:
