@@ -1650,9 +1650,10 @@ async def websocket_endpoint(websocket: WebSocket):
             if msg_type == "typing":
                 group_id = data.get("group_id")
                 with get_db() as conn:
-                    sender_row = conn.execute("SELECT name FROM users WHERE id = ?", (user_id,)).fetchone()
+                    sender_row = conn.execute("SELECT name, username FROM users WHERE id = ?", (user_id,)).fetchone()
                 sender_name = sender_row["name"] if sender_row else "User"
-                payload = {"type": "typing", "user_id": user_id, "name": sender_name}
+                sender_username = sender_row["username"] if sender_row else ""
+                payload = {"type": "typing", "user_id": user_id, "name": sender_name, "username": sender_username}
                 if group_id:
                     payload["group_id"] = group_id
                     with get_db() as conn:

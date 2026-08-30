@@ -386,6 +386,14 @@
 
         // Phase 7.3: unread state
         let unreadState = {}; // { "user:5": 3, "group:2": 7 }
+        // Phase 7.3-fix2: clear messages but keep the typing island alive
+        function clearMessages() {
+            const island = typingIsland;
+            messagesDiv.innerHTML = '';
+            if (island) messagesDiv.appendChild(island);
+            messagesDiv.dataset.lastDateKey = '';
+        }
+
         // Phase 7.3: typing state
         let typingTimers = {}; // { userId: setTimeout }
         let typingNames = {}; // { userId: name }
@@ -1570,7 +1578,7 @@
                     if (res.ok) {
                         // if THIS dialog is open it goes empty now and stays empty
                         // after reload (history filters deleted flags); contact remains
-                        if (selectedUserId === target) messagesDiv.innerHTML = '';
+                        if (selectedUserId === target) clearMessages();
                         closeAllCurtains();
                         showToast('Чат удалён');
                     } else {
@@ -1883,7 +1891,7 @@
                 // Load messages
                 const res = await fetch(`/api/messages/${selectedUserId}`);
                 const data = await res.json();
-                messagesDiv.innerHTML = '';
+                clearMessages();
                 (data.messages || data).forEach(appendMessage);
                 scrollToBottom();
                 // Phase 7.3: mark dialog as read
@@ -2425,7 +2433,7 @@
                 const res = await fetch(`/api/groups/${groupId}/messages`);
                 if (!res.ok) return;
                 const msgs = await res.json();
-                messagesDiv.innerHTML = '';
+                clearMessages();
                 msgs.forEach(m => {
                     if (!m.group_id) m.group_id = groupId; // normalize older rows
                     appendMessage(m);
@@ -2531,7 +2539,8 @@
                     const sep = document.createElement('div');
                     sep.className = 'date-separator';
                     sep.innerHTML = `<span class="date-sep-label">${formatDateSep(msg.created_at)}</span>`;
-                    messagesDiv.appendChild(sep);
+                    // Phase 7.3-fix2: insert BEFORE typing island
+                    messagesDiv.insertBefore(sep, typingIsland);
                     messagesDiv.dataset.lastDateKey = key;
                 }
             }
@@ -2598,7 +2607,8 @@
             
             // Phase 6.1b FIX: the div was built but never attached to the DOM
             // (append lost in the 6.1 refactor) - messages of ALL kinds vanished
-            messagesDiv.appendChild(div);
+            // Phase 7.3-fix2: insert BEFORE typing island so it stays at bottom
+            messagesDiv.insertBefore(div, typingIsland);
             
             // Add click handlers for images
             div.querySelectorAll('.attachment-image').forEach(img => {
@@ -2965,13 +2975,14 @@
         function handleTyping(msg) {
             const senderId = msg.user_id;
             const senderName = msg.name || 'User';
+            const senderUsername = msg.username || '';
             // Only show if relevant to current chat
             const isRelevant = msg.group_id
                 ? msg.group_id === selectedGroupId
                 : senderId === selectedUserId;
             if (!isRelevant) return;
             // Track active typer
-            typingNames[senderId] = senderName;
+            typingNames[senderId] = { name: senderName, username: senderUsername };
             renderTypingIsland();
             // Auto-hide after 3s
             clearTimeout(typingTimers[senderId]);
@@ -2989,24 +3000,22 @@
                 typingIsland.innerHTML = '';
                 return;
             }
-            // Build name chips
             const useUsername = currentToggles.typing_show_username;
             let namesHtml = '';
-            ids.forEach(id => {
-                const name = typingNames[id];
-                // In 1-on-1 we could show @username, but we don't have it stored.
-            });
-            // For 1-on-1: single name chip; for group: name chips in row
             if (ids.length === 1) {
-                const name = typingNames[ids[0]];
-                namesHtml = `<span class="typing-name-chip">${escapeHtml(name)}</span>`;
+                const t = typingNames[ids[0]];
+                const display = useUsername ? '@' + (t.username || t.name) : t.name;
+                namesHtml = `<span class="typing-name-chip">${escapeHtml(display)}</span>`;
             } else {
-                namesHtml = ids.map(id => `<span class="typing-name-chip">${escapeHtml(typingNames[id])}</span>`).join('');
+                namesHtml = ids.map(id => {
+                    const t = typingNames[id];
+                    const display = useUsername ? '@' + (t.username || t.name) : t.name;
+                    return `<span class="typing-name-chip">${escapeHtml(display)}</span>`;
+                }).join('');
             }
             const verb = ids.length > 1 ? 'печатают' : 'печатает';
             typingIsland.innerHTML = `${namesHtml}<span class="typing-status">${verb}</span>`;
             typingIsland.classList.add('visible');
-            // Scroll to it if user is near bottom
             if (isNearBottom()) {
                 typingIsland.scrollIntoView({ behavior: 'smooth', block: 'end' });
             }
@@ -3362,7 +3371,7 @@
                     if (!g) {
                         // no longer a member (leave/kick) - close the chat view
                         selectedGroupId = null;
-                        messagesDiv.innerHTML = '';
+                        clearMessages();
                         inputArea.style.display = 'none';
                         chatHeaderActions.style.display = 'none';
                         chatHeaderName.textContent = 'Select a contact';
