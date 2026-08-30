@@ -348,3 +348,5 @@ Private use only.
 - 7.3-fix2 complete
 
 - micro typing-width complete
+
+- micro typing-toggle complete
