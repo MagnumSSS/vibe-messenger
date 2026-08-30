@@ -746,8 +746,10 @@ header h1 {
     z-index: 50;
 }
 .emoji-grid button {
-    background: none; border: none; font-size: 1.4rem;
-    cursor: pointer; border-radius: 6px; padding: 4px;
+    display: grid;
+    place-items: center;
+    background: none; border: none; font-size: 1.45rem;
+    cursor: pointer; border-radius: 6px; padding: 4px 0;
     line-height: 1;
 }
 .emoji-grid button:hover { background: var(--hover-bg, #f0f0f0); }
@@ -943,6 +945,28 @@ header h1 {
     background: var(--disabled-bg, #cccccc); 
     cursor: not-allowed; 
 }
+
+/* Phase 7.4a-fix: send button - compact round with SVG icon */
+.send-btn {
+    width: 42px;
+    height: 42px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: var(--btn-primary-bg);
+    color: var(--btn-primary-text, #ffffff);
+    border: none;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+.send-btn svg {
+    width: 20px;
+    height: 20px;
+}
+.send-btn:hover { filter: brightness(0.9); }
+.send-btn:disabled { background: var(--disabled-bg, #cccccc); cursor: not-allowed; }
 
 .attach-btn { 
     background: var(--input-bg, #ffffff); 
@@ -2265,6 +2289,60 @@ header h1 {
 }
 .chat-back-btn svg { width: 20px; height: 20px; }
 
+/* Phase 7.4a-fix: accessory island (mobile only, hidden on desktop) */
+.accessory-island {
+    display: none;
+}
+.accessory-tabs {
+    display: flex;
+    gap: 0;
+    padding: 0;
+}
+.accessory-tab {
+    flex: 1;
+    background: none;
+    border: none;
+    padding: 0.55rem 0;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-secondary, #666);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: color 0.15s, border-color 0.15s;
+}
+.accessory-tab.active {
+    color: var(--accent-color, #0084ff);
+    border-bottom-color: var(--select-border, var(--accent-color, #0084ff));
+}
+.accessory-body {
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+}
+.accessory-emoji-grid {
+    display: none;
+    grid-template-columns: repeat(8, 1fr);
+    gap: 2px;
+    padding: 6px 4px;
+}
+.accessory-emoji-grid button {
+    display: grid;
+    place-items: center;
+    background: none;
+    border: none;
+    font-size: 1.45rem;
+    line-height: 1;
+    cursor: pointer;
+    border-radius: 6px;
+    padding: 4px 0;
+}
+.accessory-emoji-grid button:hover { background: var(--hover-bg, #f0f0f0); }
+.accessory-chips-scroll {
+    display: none;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    padding: 6px 8px;
+}
+
 /* Phase 5.3: mobile - two-panel layout + responsive islands */
 @media (max-width: 768px) {
     /* 1. Body: no horizontal scroll, 100dvh */
@@ -2385,6 +2463,11 @@ header h1 {
         min-width: 44px;
         min-height: 44px;
     }
+    .send-btn {
+        width: 38px;
+        height: 38px;
+    }
+    .send-btn svg { width: 18px; height: 18px; }
 
     /* 7. Touch targets >= 44px */
     .cmd-chip {
@@ -2486,4 +2569,38 @@ header h1 {
     * { overflow-x: hidden; }
     .messages, .sidebar { overflow-x: hidden; }
     .cmd-chips, .chips-container { overflow-x: auto; }
+
+    /* 18. Accessory island: visible, below input, keyboard-height */
+    .accessory-island {
+        display: none;
+        flex-direction: column;
+        margin: 0 6px;
+        border-radius: 14px 14px 0 0;
+        border: 1px solid var(--border-color, #dddddd);
+        border-bottom: none;
+        background-color: var(--panel-color);
+        background-color: color-mix(in srgb, var(--panel-color) 85%, transparent);
+        max-height: min(40vh, 300px);
+        overflow: hidden;
+    }
+    .accessory-island.open {
+        display: flex;
+    }
+    .accessory-emoji-grid.open,
+    .accessory-chips-scroll.open {
+        display: grid;
+    }
+    .accessory-chips-scroll.open {
+        display: flex;
+    }
+    .accessory-chips-scroll {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+    }
+
+    /* 19. Hide cmd-chips above input on mobile (moved to accessory island) */
+    .cmd-chips, .chips-container { display: none !important; }
+
+    /* 20. Emoji popup hidden on mobile */
+    .emoji-grid { display: none !important; }
 }

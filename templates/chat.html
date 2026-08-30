@@ -133,7 +133,20 @@
                     <button type="button" id="chipToggleBtn" class="chip-toggle" title="Команды" aria-label="Команды">
                         <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" aria-hidden="true"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
                     </button>
-                    <button id="sendBtn">Send</button>
+                    <button id="sendBtn" class="send-btn" title="Отправить" aria-label="Отправить">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+                    </button>
+                </div>
+            </div>
+            <!-- Phase 7.4a-fix: mobile accessory island (emoji + chips panel below input) -->
+            <div class="accessory-island" id="accessoryIsland">
+                <div class="accessory-tabs">
+                    <button type="button" class="accessory-tab" data-tab="emoji">😀 Эмодзи</button>
+                    <button type="button" class="accessory-tab" data-tab="chips">⚡ Чипы</button>
+                </div>
+                <div class="accessory-body" id="accessoryBody">
+                    <div class="accessory-emoji-grid" id="accessoryEmojiGrid"></div>
+                    <div class="accessory-chips-scroll" id="accessoryChipsScroll"></div>
                 </div>
             </div>
 
@@ -470,10 +483,7 @@
         }
         
         // Phase 6.6c: expand ONLY via the toggle icon; ignore clicks when no chips exist
-        chipToggleBtn.addEventListener('click', () => {
-            if (cmdChips.children.length === 0) return;
-            setChipsVisible(!chipsExpanded);
-        });
+        // (click handler moved to accessory island logic above)
         const toastContainer = document.getElementById('toastContainer');
         // Phase 6.6: reply bar + gestures
         const replyBar = document.getElementById('replyBar');
@@ -1834,6 +1844,7 @@
                 selectedUserId = parseInt(item.dataset.id);
                 selectedGroupId = null; // Phase 6.1: leaving group mode
                 exitEditMode(); exitDeleteMode(); // Phase 7.2b: reset modes on chat switch
+                if (typeof closeAccessoryIsland === 'function') closeAccessoryIsland();
                 const userName = item.dataset.name;
                 const userAvatar = item.dataset.avatar;
                 
@@ -2047,6 +2058,7 @@
                 b.className = 'cmd-chip';
                 b.title = title;
                 b.textContent = label;
+                b.dataset.cmd = cmd;
                 b.addEventListener('click', () => runDialogCommand(selectedUserId, cmd));
                 return b;
             };
@@ -2081,6 +2093,7 @@
                 b.className = 'cmd-chip' + (modeEdit ? ' active' : '');
                 b.textContent = '✏ Редакт';
                 b.title = 'Режим редактирования';
+                b.dataset.cmd = '__edit_mode';
                 b.addEventListener('click', () => toggleEditMode());
                 cmdChips.appendChild(b);
             }
@@ -2091,6 +2104,7 @@
                 b.className = 'cmd-chip' + (modeDelete ? ' active' : '');
                 b.textContent = '🗑 Удалить';
                 b.title = 'Режим удаления';
+                b.dataset.cmd = '__delete_mode';
                 b.addEventListener('click', () => toggleDeleteMode());
                 cmdChips.appendChild(b);
             }
@@ -2755,12 +2769,118 @@
             });
         }
         buildEmojiGrid();
+
+        // Phase 7.4a-fix: accessory island logic (mobile) + original behavior (desktop)
+        const accessoryIsland = document.getElementById('accessoryIsland');
+        const accessoryBody = document.getElementById('accessoryBody');
+        const accessoryEmojiGrid = document.getElementById('accessoryEmojiGrid');
+        const accessoryChipsScroll = document.getElementById('accessoryChipsScroll');
+        let accessoryOpen = false;
+        let accessoryTab = null; // 'emoji' | 'chips'
+
+        function isMobile() { return window.innerWidth <= 768; }
+
+        function closeAccessoryIsland() {
+            accessoryIsland.classList.remove('open');
+            accessoryEmojiGrid.classList.remove('open');
+            accessoryChipsScroll.classList.remove('open');
+            accessoryOpen = false;
+            accessoryTab = null;
+            document.querySelectorAll('.accessory-tab').forEach(t => t.classList.remove('active'));
+        }
+
+        function openAccessoryIsland(tab) {
+            if (accessoryOpen && accessoryTab === tab) {
+                closeAccessoryIsland();
+                return;
+            }
+            closeAccessoryIsland();
+            accessoryIsland.classList.add('open');
+            accessoryOpen = true;
+            accessoryTab = tab;
+            // Activate tab button
+            document.querySelectorAll('.accessory-tab').forEach(t => {
+                t.classList.toggle('active', t.dataset.tab === tab);
+            });
+            if (tab === 'emoji') {
+                accessoryEmojiGrid.classList.add('open');
+                // Copy emoji buttons into accessory grid (lazy)
+                if (accessoryEmojiGrid.children.length === 0) {
+                    EMOJIS.forEach(e => {
+                        const b = document.createElement('button');
+                        b.type = 'button'; b.textContent = e;
+                        b.addEventListener('click', () => {
+                            const inp = messageInput;
+                            const pos = inp.selectionStart || inp.value.length;
+                            inp.value = inp.value.slice(0, pos) + e + inp.value.slice(pos);
+                            inp.setSelectionRange(pos + e.length, pos + e.length);
+                            inp.focus();
+                        });
+                        accessoryEmojiGrid.appendChild(b);
+                    });
+                }
+            } else if (tab === 'chips') {
+                accessoryChipsScroll.classList.add('open');
+                // Clone cmd-chips into accessory panel with event delegation
+                accessoryChipsScroll.innerHTML = '';
+                const source = cmdChips;
+                if (source.children.length > 0) {
+                    Array.from(source.children).forEach(ch => {
+                        const clone = ch.cloneNode(true);
+                        // Copy active state
+                        if (ch.classList.contains('active')) clone.classList.add('active');
+                        clone.addEventListener('click', () => {
+                            const cmd = clone.dataset.cmd;
+                            if (cmd === '__edit_mode') { toggleEditMode(); }
+                            else if (cmd === '__delete_mode') { toggleDeleteMode(); }
+                            else { runDialogCommand(selectedUserId, cmd); }
+                            // Sync active state back to source
+                            if (ch.classList.contains('active')) clone.classList.add('active');
+                            else clone.classList.remove('active');
+                        });
+                        accessoryChipsScroll.appendChild(clone);
+                    });
+                } else {
+                    accessoryChipsScroll.innerHTML = '<span style="font-size:0.82rem;color:var(--text-secondary);padding:8px;">Нет команд</span>';
+                }
+            }
+            input.blur();
+        }
+
+        // Tab clicks
+        document.querySelectorAll('.accessory-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                openAccessoryIsland(tab.dataset.tab);
+            });
+        });
+
+        // Emoji button: mobile → accessory island; desktop → original popup
         document.getElementById('emojiBtn').addEventListener('click', (e) => {
             e.stopPropagation();
-            emojiOpen = !emojiOpen;
-            emojiGrid.style.display = emojiOpen ? 'grid' : 'none';
+            if (isMobile()) {
+                openAccessoryIsland('emoji');
+            } else {
+                emojiOpen = !emojiOpen;
+                emojiGrid.style.display = emojiOpen ? 'grid' : 'none';
+            }
         });
+
+        // Chip toggle: mobile → accessory island chips tab; desktop → original toggle
+        chipToggleBtn.addEventListener('click', () => {
+            if (cmdChips.children.length === 0) return;
+            if (isMobile()) {
+                openAccessoryIsland('chips');
+            } else {
+                setChipsVisible(!chipsExpanded);
+            }
+        });
+
+        // Close accessory island on outside click (mobile)
         document.addEventListener('click', (e) => {
+            if (accessoryOpen && !accessoryIsland.contains(e.target) &&
+                e.target.id !== 'emojiBtn' && e.target.id !== 'chipToggleBtn') {
+                closeAccessoryIsland();
+            }
             if (emojiOpen && !emojiGrid.contains(e.target) && e.target.id !== 'emojiBtn') {
                 emojiGrid.style.display = 'none'; emojiOpen = false;
             }
@@ -3406,11 +3526,42 @@
         });
         
         // Phase 7.4a: back button returns to sidebar on mobile
-        chatBackBtn.addEventListener('click', () => {
+        chatBackBtn.addEventListener('click', goBackToSidebar);
+
+        function goBackToSidebar() {
             const main = document.querySelector('.main');
             main.classList.remove('chat-active');
             main.classList.add('sidebar-active');
-        });
+        }
+
+        // Phase 7.4a-fix: swipe-right-to-go-back gesture on mobile chat area
+        (function() {
+            const chatArea = document.querySelector('.chat-area');
+            let sx = 0, sy = 0, swiping = false;
+            chatArea.addEventListener('touchstart', (e) => {
+                if (window.innerWidth > 768) return;
+                const t = e.touches[0];
+                sx = t.clientX; sy = t.clientY; swiping = false;
+            }, { passive: true });
+            chatArea.addEventListener('touchmove', (e) => {
+                if (window.innerWidth > 768 || sx === 0) return;
+                const t = e.touches[0];
+                const dx = t.clientX - sx;
+                const dy = t.clientY - sy;
+                if (!swiping && Math.abs(dy) > Math.abs(dx)) { sx = 0; return; }
+                if (dx > 10) swiping = true;
+            }, { passive: true });
+            chatArea.addEventListener('touchend', (e) => {
+                if (window.innerWidth > 768 || sx === 0) return;
+                const t = e.changedTouches[0];
+                const dx = t.clientX - sx;
+                sx = 0;
+                if (swiping && dx >= 70) {
+                    goBackToSidebar();
+                }
+                swiping = false;
+            }, { passive: true });
+        })();
 
         // Click on chat header avatar or name to open other user's profile modal
         chatHeaderAvatar.addEventListener('click', async () => {
