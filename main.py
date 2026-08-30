@@ -68,6 +68,7 @@ THEME_TOKENS = {
         "modal_bg": {"key": "modal_bg", "css_var": "--modal-bg", "default": "#ffffff", "type": "color"},
         "hover": {"key": "hover", "css_var": "--hover-bg", "default": "#f5f5f5", "type": "color"},
         "active": {"key": "active", "css_var": "--active-bg", "default": "#e6f2ff", "type": "color"},
+        "select_border": {"key": "select_border", "css_var": "--select-border", "default": "#0084ff", "type": "color"},
     },
     "images": {
         "header_img": {"key": "header_img", "css_var": "--header-img", "default": None, "type": "image"},
@@ -477,6 +478,11 @@ def ensure_schema():
         if "reply_to_id" not in msg_columns:
             conn.execute("ALTER TABLE messages ADD COLUMN reply_to_id INTEGER NULL")
             print("Added column messages.reply_to_id")
+
+        # Phase 7.2b: message editing (NULL = never edited)
+        if "edited_at" not in msg_columns:
+            conn.execute("ALTER TABLE messages ADD COLUMN edited_at TIMESTAMP NULL")
+            print("Added column messages.edited_at")
         
         # Phase 6.6: per-user contact pins (pinned contacts float to the top)
         conn.execute("""
@@ -939,7 +945,7 @@ async def api_messages(request: Request, recipient_id: int):
     
     with get_db() as conn:
         messages = conn.execute("""
-            SELECT m.id, m.sender_id, m.recipient_id, m.text, m.created_at,
+            SELECT m.id, m.sender_id, m.recipient_id, m.text, m.created_at, m.edited_at,
                    sender.avatar_uuid as sender_avatar_uuid,
                    m.reply_to_id,
                    r.text AS reply_to_text, ru.name AS reply_to_name
@@ -1184,7 +1190,7 @@ async def group_messages(request: Request, group_id: int):
     
     with get_db() as conn:
         messages = conn.execute("""
-            SELECT m.id, m.sender_id, m.recipient_id, m.group_id, m.text, m.created_at,
+            SELECT m.id, m.sender_id, m.recipient_id, m.group_id, m.text, m.created_at, m.edited_at,
                    u.name AS sender_name, u.username AS sender_username,
                    u.avatar_uuid AS sender_avatar_uuid,
                    m.reply_to_id,
@@ -2701,6 +2707,46 @@ async def export_theme(request: Request):
     )
 
 
+# ========== MESSAGE EDIT ENDPOINT ==========
+@app.post("/api/messages/{message_id}/edit")
+async def edit_message(message_id: int, request: Request, text: str = Form(...)):
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    with get_db() as conn:
+        msg = conn.execute("SELECT id, sender_id, group_id, recipient_id FROM messages WHERE id = ?", (message_id,)).fetchone()
+        if not msg:
+            raise HTTPException(status_code=404, detail="Message not found")
+        if msg["sender_id"] != user["id"]:
+            raise HTTPException(status_code=403, detail="Only author can edit")
+        if not text.strip():
+            raise HTTPException(status_code=400, detail="Empty message")
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute("UPDATE messages SET text = ?, edited_at = ? WHERE id = ?", (text, now, message_id))
+        conn.commit()
+    # broadcast to participants
+    participants = set()
+    if msg["group_id"]:
+        with get_db() as conn:
+            rows = conn.execute("SELECT user_id FROM group_members WHERE group_id = ?", (msg["group_id"],)).fetchall()
+            participants = {r["user_id"] for r in rows}
+    else:
+        participants = {msg["sender_id"], msg["recipient_id"]}
+    for uid in participants:
+        ws_conn = app.state.connections.get(uid)
+        if ws_conn:
+            try:
+                await ws_conn.send_json({
+                    "type": "message_edited", "message_id": message_id,
+                    "text": text, "edited_at": now,
+                    "group_id": msg["group_id"], "sender_id": msg["sender_id"],
+                    "recipient_id": msg["recipient_id"]
+                })
+            except Exception:
+                pass
+    return JSONResponse({"ok": True, "edited_at": now})
+
+
 # ========== MESSAGE DELETE ENDPOINT ==========
 @app.post("/api/delete-message")
 async def delete_message_endpoint(request: Request, message_id: int = Form(...), mode: str = Form("self")):
@@ -2714,8 +2760,22 @@ async def delete_message_endpoint(request: Request, message_id: int = Form(...),
         if not msg:
             raise HTTPException(status_code=404, detail="Message not found")
         
-        if msg["sender_id"] != user["id"] and msg["recipient_id"] != user["id"]:
-            raise HTTPException(status_code=403, detail="Not authorized to delete this message")
+        # Phase 7.2b: group messages — check membership instead of recipient_id
+        if msg["group_id"]:
+            membership = conn.execute(
+                "SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?",
+                (msg["group_id"], user["id"])
+            ).fetchone()
+            is_sender = msg["sender_id"] == user["id"]
+            is_admin = bool(user["is_admin"])
+            if not membership:
+                raise HTTPException(status_code=403, detail="Not a group member")
+            # non-admin can only delete own messages
+            if not is_sender and not is_admin:
+                raise HTTPException(status_code=403, detail="Only own messages or admin")
+        else:
+            if msg["sender_id"] != user["id"] and msg["recipient_id"] != user["id"]:
+                raise HTTPException(status_code=403, detail="Not authorized to delete this message")
         
         if mode == "all":
             if not user["is_admin"]:

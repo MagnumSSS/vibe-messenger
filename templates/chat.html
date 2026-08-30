@@ -96,6 +96,19 @@
                     <span class="reply-bar-text" id="replyBarText"></span>
                     <button type="button" class="reply-bar-cancel" id="cancelReplyBtn" title="Отменить ответ" aria-label="Отменить ответ">&times;</button>
                 </div>
+                <!-- Phase 7.2b: edit bar - pre-filled text + save/cancel -->
+                <div class="reply-bar edit-bar" id="editBar" style="display: none;">
+                    <svg class="reply-bar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                    <span class="reply-bar-text" id="editBarText">Редактирование</span>
+                    <button type="button" class="reply-bar-cancel" id="cancelEditBtn" title="Отменить" aria-label="Отменить">&times;</button>
+                </div>
+                <!-- Phase 7.2b: delete multi-select confirm island -->
+                <div class="reply-bar delete-confirm-bar" id="deleteConfirmBar" style="display: none;">
+                    <svg class="reply-bar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+                    <span class="reply-bar-text" id="deleteConfirmText">Удалить 0</span>
+                    <button type="button" class="delete-confirm-go" id="deleteConfirmGo" title="Удалить">Удалить</button>
+                    <button type="button" class="reply-bar-cancel" id="cancelDeleteSelectBtn" title="Отмена" aria-label="Отмена">&times;</button>
+                </div>
                 <!-- Phase 7.2: emoji grid -->
                 <div class="emoji-grid" id="emojiGrid" style="display: none;"></div>
                 <div class="input-row">
@@ -344,6 +357,13 @@
         const MAX_FILE_SIZE = {{ max_upload_bytes | tojson }};
         let searchResults = [];
         let currentSearchIndex = -1;
+
+        // Phase 7.2b: edit/delete mode state
+        let modeEdit = false;   // edit mode active
+        let modeDelete = false;  // delete mode active
+        let deleteScope = 'self'; // 'self' or 'all'
+        let deleteSelectedIds = new Set(); // message ids selected for deletion
+        let editCtx = null; // {id, origText}
         
         // Default theme colors
         const defaultTheme = {
@@ -512,14 +532,14 @@
             muted: '#666666', accent: '#0084ff', btn_primary: '#0084ff', btn_danger: '#dc3545',
             bubble_sent: '#0084ff', bubble_received: '#e4e6eb', input_bg: '#ffffff',
             border: '#dddddd', modal_bg: '#ffffff', hover: '#f5f5f5', active: '#e6f2ff',
-            chip_cmd: '#dbe7ff'
+            select_border: '#0084ff', chip_cmd: '#dbe7ff'
         };
         const TOKEN_CSS_VARS = {
             bg: '--bg-color', panel: '--panel-color', header: '--header-color', text: '--text-primary',
             muted: '--text-secondary', accent: '--accent-color', btn_primary: '--btn-primary-bg',
             btn_danger: '--btn-danger-bg', bubble_sent: '--bubble-sent-bg', bubble_received: '--bubble-received-bg',
             input_bg: '--input-bg', border: '--border-color', modal_bg: '--modal-bg', hover: '--hover-bg', active: '--active-bg',
-            chip_cmd: '--chip-cmd-bg'
+            select_border: '--select-border', chip_cmd: '--chip-cmd-bg'
         };
 
         // Phase 5.4: blur effect tokens (range 0..20 px, mirrors THEME_TOKENS "effects")
@@ -698,7 +718,7 @@
             bubble_sent: 'Пузырь отправленные', bubble_received: 'Пузырь полученные',
             input_bg: 'Поля ввода', border: 'Границы', modal_bg: 'Модалки',
             hover: 'Hover контакта', active: 'Выбранный контакт',
-            chip_cmd: 'Фон командных чипов',
+            select_border: 'Рамка выделения', chip_cmd: 'Фон командных чипов',
             header_img: 'Картинка шапки', wallpaper: 'Обои чата', bubble_img: 'Картинка пузырей',
             wallpaper_blur: 'Размытие обоев', bubble_blur: 'Размытие пузырей',
             chip_size: 'Размер чипов'
@@ -1512,6 +1532,9 @@
                 closeChatDelConfirm();
                 closeAllCurtains();
                 cancelReply();
+                // Phase 7.2b: Escape exits edit/delete modes
+                if (modeEdit) exitEditMode();
+                if (modeDelete) exitDeleteMode();
             });
         });
 
@@ -1599,6 +1622,17 @@
             ws.onopen = () => console.log('WS connected');
             ws.onmessage = (event) => {
                 const msg = JSON.parse(event.data);
+                // Phase 7.2b: message edited via WS
+                if (msg.type === 'message_edited') {
+                    const bubble = document.querySelector(`[data-msg-id="${msg.message_id}"]`);
+                    if (bubble) {
+                        const time = bubble.querySelector('.message-time');
+                        if (time && !time.querySelector('.message-edited')) {
+                            time.insertAdjacentHTML('beforeend', '<span class="message-edited"> (изм.)</span>');
+                        }
+                    }
+                    return;
+                }
                 // Phase 6.1b: sidebar refresh signal when someone adds me to a group
                 if (msg.type === 'group_added') {
                     loadGroups();
@@ -1709,6 +1743,7 @@
                 
                 selectedUserId = parseInt(item.dataset.id);
                 selectedGroupId = null; // Phase 6.1: leaving group mode
+                exitEditMode(); exitDeleteMode(); // Phase 7.2b: reset modes on chat switch
                 const userName = item.dataset.name;
                 const userAvatar = item.dataset.avatar;
                 
@@ -1796,6 +1831,7 @@
             
             selectedUserId = null;
             selectedGroupId = groupId;
+            exitEditMode(); exitDeleteMode(); // Phase 7.2b: reset modes on chat switch
             
             chatHeaderName.textContent = groupName;
             chatHeaderAvatar.style.display = 'none'; // no peer avatar in group mode
@@ -1843,6 +1879,26 @@
                     });
                     cmdChips.appendChild(b);
                 });
+                // Phase 7.2b: edit mode chip for groups
+                {
+                    const b = document.createElement('button');
+                    b.type = 'button';
+                    b.className = 'cmd-chip' + (modeEdit ? ' active' : '');
+                    b.textContent = '✏ Редакт';
+                    b.title = 'Режим редактирования';
+                    b.addEventListener('click', () => toggleEditMode());
+                    cmdChips.appendChild(b);
+                }
+                // Phase 7.2b: delete mode chip for groups
+                {
+                    const b = document.createElement('button');
+                    b.type = 'button';
+                    b.className = 'cmd-chip' + (modeDelete ? ' active' : '');
+                    b.textContent = '🗑 Удалить';
+                    b.title = 'Режим удаления';
+                    b.addEventListener('click', () => toggleDeleteMode());
+                    cmdChips.appendChild(b);
+                }
                 // Phase 6.6c: row stays hidden on load - only the toggle icon expands it
             } catch (e) {
                 console.error('Failed to load commands:', e);
@@ -1910,6 +1966,26 @@
                     dialogStateCache.muted_by_me ? 'unmute' : 'mute'
                 ));
             }
+            // Phase 7.2b: edit mode chip
+            {
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.className = 'cmd-chip' + (modeEdit ? ' active' : '');
+                b.textContent = '✏ Редакт';
+                b.title = 'Режим редактирования';
+                b.addEventListener('click', () => toggleEditMode());
+                cmdChips.appendChild(b);
+            }
+            // Phase 7.2b: delete mode chip
+            {
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.className = 'cmd-chip' + (modeDelete ? ' active' : '');
+                b.textContent = '🗑 Удалить';
+                b.title = 'Режим удаления';
+                b.addEventListener('click', () => toggleDeleteMode());
+                cmdChips.appendChild(b);
+            }
             // Phase 6.6c: row stays hidden - only the toggle icon expands it
         }
         
@@ -1919,6 +1995,147 @@
             renderDialogChips();
             if (selectedUserId) setContactPinned(selectedUserId, !!state.pinned);
         }
+
+        // ===== Phase 7.2b: EDIT MODE =====
+        function toggleEditMode() {
+            exitDeleteMode();
+            modeEdit = !modeEdit;
+            if (!modeEdit) { cancelEdit(); }
+            renderDialogChips();
+        }
+
+        function exitEditMode() {
+            modeEdit = false;
+            editCtx = null;
+            editBar.style.display = 'none';
+            renderDialogChips();
+        }
+
+        function cancelEdit() {
+            editCtx = null;
+            editBar.style.display = 'none';
+            messageInput.value = '';
+            messageInput.placeholder = 'Type a message...';
+        }
+
+        function startEdit(msg) {
+            editCtx = { id: msg.id, origText: msg.text || '' };
+            messageInput.value = msg.text || '';
+            editBar.style.display = 'flex';
+            messageInput.focus();
+            messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
+        }
+
+        async function submitEdit() {
+            if (!editCtx) return;
+            const text = messageInput.value.trim();
+            if (!text) { cancelEdit(); return; }
+            try {
+                const fd = new FormData(); fd.append('text', text);
+                const res = await fetch(`/api/messages/${editCtx.id}/edit`, { method: 'POST', body: fd });
+                if (res.ok) { cancelEdit(); exitEditMode(); } else { const e = await res.json(); alert(e.detail || 'Edit failed'); }
+            } catch (e) { alert('Edit failed'); }
+        }
+
+        document.getElementById('cancelEditBtn').addEventListener('click', () => { cancelEdit(); exitEditMode(); });
+
+        // ===== Phase 7.2b: DELETE MODE =====
+        function toggleDeleteMode() {
+            exitEditMode();
+            modeDelete = !modeDelete;
+            if (!modeDelete) { exitDeleteMode(); }
+            else {
+                deleteScope = 'self';
+                deleteSelectedIds.clear();
+                updateDeleteConfirmBar();
+                showDeleteSubChips();
+            }
+            renderDialogChips();
+        }
+
+        function exitDeleteMode() {
+            modeDelete = false;
+            deleteScope = 'self';
+            deleteSelectedIds.clear();
+            document.getElementById('deleteConfirmBar').style.display = 'none';
+            hideDeleteSubChips();
+            document.querySelectorAll('.message.selected-for-delete').forEach(el => el.classList.remove('selected-for-delete'));
+            renderDialogChips();
+        }
+
+        function showDeleteSubChips() {
+            let row = cmdChips.querySelector('.delete-sub-chips');
+            if (row) row.remove();
+            row = document.createElement('div');
+            row.className = 'delete-sub-chips';
+            row.style.cssText = 'display:flex;gap:4px;width:100%;';
+
+            const mkSub = (label, scope) => {
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.className = 'cmd-chip' + (deleteScope === scope ? ' active' : '');
+                b.textContent = label;
+                b.addEventListener('click', () => {
+                    deleteScope = scope;
+                    showDeleteSubChips();
+                });
+                return b;
+            };
+
+            row.appendChild(mkSub('У себя', 'self'));
+            if (currentIsAdmin) {
+                row.appendChild(mkSub('У всех', 'all'));
+            }
+            cmdChips.appendChild(row);
+        }
+
+        function hideDeleteSubChips() {
+            const row = cmdChips.querySelector('.delete-sub-chips');
+            if (row) row.remove();
+        }
+
+        function toggleDeleteSelect(msgId, bubbleEl) {
+            if (deleteSelectedIds.has(msgId)) {
+                deleteSelectedIds.delete(msgId);
+                bubbleEl.classList.remove('selected-for-delete');
+            } else {
+                deleteSelectedIds.add(msgId);
+                bubbleEl.classList.add('selected-for-delete');
+            }
+            updateDeleteConfirmBar();
+        }
+
+        function updateDeleteConfirmBar() {
+            const bar = document.getElementById('deleteConfirmBar');
+            const txt = document.getElementById('deleteConfirmText');
+            const n = deleteSelectedIds.size;
+            txt.textContent = `Удалить ${n}`;
+            bar.style.display = n > 0 ? 'flex' : 'none';
+        }
+
+        async function performDeleteSelected() {
+            if (deleteSelectedIds.size === 0) return;
+            const ids = [...deleteSelectedIds];
+            let ok = 0, fail = 0;
+            for (const id of ids) {
+                try {
+                    const fd = new FormData();
+                    fd.append('message_id', id);
+                    fd.append('mode', deleteScope);
+                    const res = await fetch('/api/delete-message', { method: 'POST', body: fd });
+                    if (res.ok) {
+                        ok++;
+                        const bubble = document.querySelector(`[data-msg-id="${id}"]`);
+                        if (bubble) bubble.remove();
+                    } else { fail++; }
+                } catch (e) { fail++; }
+            }
+            showToast(`Удалено: ${ok}${fail ? ', ошибок: ' + fail : ''}`);
+            exitDeleteMode();
+        }
+
+        document.getElementById('cancelDeleteSelectBtn').addEventListener('click', exitDeleteMode);
+        document.getElementById('deleteConfirmGo').addEventListener('click', performDeleteSelected);
         
         async function runDialogCommand(uid, rawCmd) {
             const cmd = String(rawCmd || '').trim().replace(/^\//, '');
@@ -2169,7 +2386,8 @@
                 </div>`;
             }
             
-            const timeHtml = `<div class="message-time">${formatTime(msg.created_at)}</div>`;
+            const editedHtml = msg.edited_at ? '<span class="message-edited"> (изм.)</span>' : '';
+            const timeHtml = `<div class="message-time">${formatTime(msg.created_at)}${editedHtml}</div>`;
             
             // Phase 6.1: in groups other people's bubbles show sender name above the text;
             // messages WITHOUT a reply keep the legacy structure byte-for-byte (regression safety)
@@ -2299,6 +2517,22 @@
                 if (pid === null) return;
                 pid = null; engaged = false; armed = false;
                 resetVisual();
+            });
+
+            // Phase 7.2b: mode click handler (edit/delete)
+            div.addEventListener('click', (e) => {
+                if (e.target.closest('a, button, img, .bubble-actions')) return;
+                if (modeEdit) {
+                    e.stopPropagation();
+                    if (isMine) { startEdit(msg); }
+                    else { showToast('Только свои сообщения можно редактировать'); }
+                    return;
+                }
+                if (modeDelete) {
+                    e.stopPropagation();
+                    toggleDeleteSelect(msg.id, div);
+                    return;
+                }
             });
         }
         
@@ -2482,7 +2716,13 @@
             const text = messageInput.value.trim();
             closeMentionMenu(); // Phase 6.4: never leak the open @menu into the next message
             if (!text && attachedFiles.length === 0) return;
-            
+
+            // Phase 7.2b: edit mode — submit edit instead of new message
+            if (editCtx) {
+                await submitEdit();
+                return;
+            }
+
             // Phase 6.1: need either a dialog or a group selected
             if (!selectedUserId && !selectedGroupId) return;
             
