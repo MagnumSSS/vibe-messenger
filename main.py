@@ -83,6 +83,10 @@ THEME_TOKENS = {
     # Phase 6.6b: sizing tokens - scale multiplier for command chips & toggle icon
     "sizing": {
         "chip_size": {"key": "chip_size", "css_var": "--chip-scale", "default": 1.0, "type": "range", "min": 0.8, "max": 1.3, "unit": "", "step": 0.05},
+    },
+    # Phase 7.3-fix: boolean toggles
+    "toggles": {
+        "typing_show_username": {"key": "typing_show_username", "default": False, "type": "toggle"},
     }
 }
 
@@ -129,7 +133,8 @@ THEME_PRESETS = {
         },
         "images": {},
         "effects": {"wallpaper_blur": 0, "bubble_blur": 0},
-        "sizing": {"chip_size": 1.0}
+        "sizing": {"chip_size": 1.0},
+        "toggles": {"typing_show_username": false}
     },
     "dark": {
         "colors": {
@@ -184,7 +189,8 @@ def merge_theme_with_defaults(theme_json_str):
             "colors": {**THEME_PRESETS["default"]["colors"], **theme.get("colors", {})},
             "images": {**THEME_PRESETS["default"]["images"], **theme.get("images", {})},
             "effects": {**THEME_PRESETS["default"].get("effects", {}), **theme.get("effects", {})},
-            "sizing": {**THEME_PRESETS["default"].get("sizing", {}), **theme.get("sizing", {})}
+            "sizing": {**THEME_PRESETS["default"].get("sizing", {}), **theme.get("sizing", {})},
+            "toggles": {**THEME_PRESETS["default"].get("toggles", {}), **theme.get("toggles", {})}
         }
         return result
     except Exception as e:
@@ -225,6 +231,7 @@ def sanitize_theme_config(raw):
     raw_colors = raw.get("colors") if isinstance(raw.get("colors"), dict) else {}
     raw_effects = raw.get("effects") if isinstance(raw.get("effects"), dict) else {}
     raw_sizing = raw.get("sizing") if isinstance(raw.get("sizing"), dict) else {}
+    raw_toggles = raw.get("toggles") if isinstance(raw.get("toggles"), dict) else {}
 
     colors = {}
     for key, spec in THEME_TOKENS["colors"].items():
@@ -249,7 +256,11 @@ def sanitize_theme_config(raw):
             v = float(spec["default"])
         sizing[key] = max(float(spec.get("min", 0.5)), min(float(spec.get("max", 2)), v))
 
-    return {"colors": colors, "images": {}, "effects": effects, "sizing": sizing}
+    toggles = {}
+    for key, spec in THEME_TOKENS.get("toggles", {}).items():
+        toggles[key] = bool(raw_toggles.get(key, spec.get("default", False)))
+
+    return {"colors": colors, "images": {}, "effects": effects, "sizing": sizing, "toggles": toggles}
 
 
 def resolve_preset_name(explicit, parsed, fallback):

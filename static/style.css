@@ -259,6 +259,39 @@ header h1 {
     100% { content: ''; }
 }
 
+/* Phase 7.3-fix: typing island at end of messages */
+.typing-island {
+    display: none;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    margin: 4px 0;
+    border-radius: 14px;
+    border: 1px solid var(--border-color, #dddddd);
+    background-color: var(--panel-color);
+    background-color: color-mix(in srgb, var(--panel-color) 72%, transparent);
+    box-shadow: 0 1px 4px var(--shadow-1, rgba(0,0,0,0.08));
+    font-size: 0.78rem;
+    color: var(--text-secondary, #666666);
+    flex-wrap: wrap;
+    animation: hintFadeIn 0.2s ease;
+}
+.typing-island.visible { display: flex; }
+.typing-name-chip {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: var(--bubble-received-bg, #e4e6eb);
+    color: var(--text-primary, #333333);
+    font-size: 0.75rem;
+    font-weight: 500;
+    white-space: nowrap;
+}
+.typing-status {
+    font-style: italic;
+    color: var(--text-secondary, #666666);
+}
+
 /* Phase 7.3: date separator */
 .date-separator {
     text-align: center;
@@ -1356,20 +1389,32 @@ header h1 {
 
 /* ===== Phase 6.4: UI polish ===== */
 
-/* Chip rows NEVER wrap: single line, horizontal scroll, scrollbar hidden */
+/* Chip rows: single line, horizontal scroll, thin scrollbar */
 .cmd-chips,
 .chips-container {
     flex-wrap: nowrap;
     overflow-x: auto;
     overscroll-behavior-x: contain;
-    scrollbar-width: none;
     min-width: 0;
+    padding-bottom: 4px;
 }
-
+/* Phase 7.3-fix: thin scrollbar visible */
 .cmd-chips::-webkit-scrollbar,
 .chips-container::-webkit-scrollbar {
-    display: none;
-    height: 0;
+    height: 4px;
+}
+.cmd-chips::-webkit-scrollbar-thumb,
+.chips-container::-webkit-scrollbar-thumb {
+    background: var(--border-color, #dddddd);
+    border-radius: 2px;
+}
+.cmd-chips::-webkit-scrollbar-track,
+.chips-container::-webkit-scrollbar-track {
+    background: transparent;
+}
+.cmd-chips {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-color, #dddddd) transparent;
 }
 
 /* chips keep their size while the row scrolls */
