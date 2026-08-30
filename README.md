@@ -356,3 +356,7 @@ Private use only.
 - 7.4a-fix complete
 
 - 7.4a-fix2 complete
+- 7.4a-fix3 complete
+- 7.4a-fix4 complete
+- phase 7.4b complete
+- micro statusbar complete
