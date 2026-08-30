@@ -140,6 +140,13 @@ header h1 {
     font-size: 0.75rem;
     font-weight: 600;
 }
+/* Phase 7.4a-fix2: admin badge is clickable → /admin */
+.admin-badge {
+    text-decoration: none;
+    cursor: pointer;
+    transition: filter 0.15s;
+}
+.admin-badge:hover { filter: brightness(0.9); }
 
 .logout-btn, .settings-btn, .delete-chat-btn, .profile-btn { 
     background: var(--header-btn-bg, rgba(0,0,0,0.35)); 
@@ -860,48 +867,6 @@ header h1 {
 }
 
 .chip-remove { cursor: pointer; font-weight: bold; }
-
-/* Phase 6.6b: chip toggle icon - round island at input, toggles cmd-chips row.
-   Size follows --chip-scale. */
-.chip-toggle {
-    width: calc(36px * var(--chip-scale, 1));
-    height: calc(36px * var(--chip-scale, 1));
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border: 1px solid var(--border-color, #dddddd);
-    background-color: var(--panel-color);
-    background-color: color-mix(in srgb, var(--panel-color) 72%, transparent);
-    box-shadow: 0 2px 6px var(--shadow-1, rgba(0,0,0,0.15));
-    color: var(--chip-toggle-text, var(--text-secondary, #666666));
-    cursor: pointer;
-    flex-shrink: 0;
-    transition: background 0.15s, color 0.15s;
-}
-
-@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-    .chip-toggle {
-        -webkit-backdrop-filter: blur(12px) saturate(1.4);
-        backdrop-filter: blur(12px) saturate(1.4);
-    }
-}
-
-.chip-toggle svg {
-    width: calc(16px * var(--chip-scale, 1));
-    height: calc(16px * var(--chip-scale, 1));
-    display: block;
-}
-
-.chip-toggle:hover {
-    background: var(--active-bg, #e6f2ff);
-    color: var(--accent-color, #0084ff);
-}
-
-.chip-toggle.active {
-    background: var(--accent-color, #0084ff);
-    color: var(--btn-primary-text, #ffffff);
-}
 
 .input-row { 
     display: flex; 
@@ -2289,14 +2254,27 @@ header h1 {
 }
 .chat-back-btn svg { width: 20px; height: 20px; }
 
-/* Phase 7.4a-fix: accessory island (mobile only, hidden on desktop) */
+/* Phase 7.4a-fix2: accessory island — unified panel on ALL screens */
 .accessory-island {
     display: none;
+    flex-direction: column;
+    margin: 0 12px;
+    border-radius: 14px 14px 0 0;
+    border: 1px solid var(--border-color, #dddddd);
+    border-bottom: none;
+    background-color: var(--panel-color);
+    background-color: color-mix(in srgb, var(--panel-color) 85%, transparent);
+    max-height: min(40vh, 320px);
+    overflow: hidden;
+}
+.accessory-island.open {
+    display: flex;
 }
 .accessory-tabs {
     display: flex;
     gap: 0;
     padding: 0;
+    flex-shrink: 0;
 }
 .accessory-tab {
     flex: 1;
@@ -2317,12 +2295,17 @@ header h1 {
 .accessory-body {
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
+    flex: 1;
+    min-height: 0;
 }
 .accessory-emoji-grid {
     display: none;
     grid-template-columns: repeat(8, 1fr);
     gap: 2px;
     padding: 6px 4px;
+}
+.accessory-emoji-grid.open {
+    display: grid;
 }
 .accessory-emoji-grid button {
     display: grid;
@@ -2340,8 +2323,24 @@ header h1 {
     display: none;
     flex-wrap: wrap;
     gap: 0.4rem;
-    padding: 6px 8px;
+    padding: 8px;
+    overflow-y: auto;
 }
+.accessory-chips-scroll.open {
+    display: flex;
+}
+.accessory-chips-scroll .cmd-chip {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: unset;
+    min-height: 44px;
+    padding: 0.4rem 0.85rem;
+    flex-shrink: 0;
+}
+
+/* Phase 7.4a-fix2: hide old cmd-chips row and emoji popup globally (replaced by accessory island) */
+.cmd-chips, .chips-container { display: none !important; }
+.emoji-grid { display: none !important; }
 
 /* Phase 5.3: mobile - two-panel layout + responsive islands */
 @media (max-width: 768px) {
@@ -2568,39 +2567,10 @@ header h1 {
     /* 17. No horizontal scroll anywhere */
     * { overflow-x: hidden; }
     .messages, .sidebar { overflow-x: hidden; }
-    .cmd-chips, .chips-container { overflow-x: auto; }
 
-    /* 18. Accessory island: visible, below input, keyboard-height */
+    /* 18. Accessory island: compact on mobile */
     .accessory-island {
-        display: none;
-        flex-direction: column;
         margin: 0 6px;
-        border-radius: 14px 14px 0 0;
-        border: 1px solid var(--border-color, #dddddd);
-        border-bottom: none;
-        background-color: var(--panel-color);
-        background-color: color-mix(in srgb, var(--panel-color) 85%, transparent);
         max-height: min(40vh, 300px);
-        overflow: hidden;
     }
-    .accessory-island.open {
-        display: flex;
-    }
-    .accessory-emoji-grid.open,
-    .accessory-chips-scroll.open {
-        display: grid;
-    }
-    .accessory-chips-scroll.open {
-        display: flex;
-    }
-    .accessory-chips-scroll {
-        flex-wrap: nowrap;
-        overflow-x: auto;
-    }
-
-    /* 19. Hide cmd-chips above input on mobile (moved to accessory island) */
-    .cmd-chips, .chips-container { display: none !important; }
-
-    /* 20. Emoji popup hidden on mobile */
-    .emoji-grid { display: none !important; }
 }

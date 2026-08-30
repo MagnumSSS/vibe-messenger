@@ -12,8 +12,7 @@
         <!-- Phase 6.4: profile/theme/logout are glass ICON chips (labels live in title tooltips) -->
         <div class="header-actions">
             {% if user.is_admin %}
-            <span class="badge">admin</span>
-            <a href="/admin" class="logout-btn">Админ-панель</a>
+            <a href="/admin" class="badge admin-badge" title="Админ-панель" aria-label="Админ-панель">admin</a>
             {% endif %}
             <button id="profileBtn" class="profile-btn icon-chip" title="Профиль" aria-label="Профиль">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -129,10 +128,6 @@
                     <button type="button" id="emojiBtn" class="attach-btn" title="Эмодзи">😀</button>
                     <input type="file" id="fileInput" multiple style="display: none;" accept="image/*,*/*">
                     <input type="text" id="messageInput" placeholder="Type a message..." autocomplete="off">
-                    <!-- Phase 6.6c: chip toggle icon - round island, toggles cmd-chips row -->
-                    <button type="button" id="chipToggleBtn" class="chip-toggle" title="Команды" aria-label="Команды">
-                        <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" aria-hidden="true"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
-                    </button>
                     <button id="sendBtn" class="send-btn" title="Отправить" aria-label="Отправить">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
                     </button>
@@ -473,17 +468,6 @@
         const addMemberBtn = document.getElementById('addMemberBtn');
         // Phase 6.2: command chips + toasts
         const cmdChips = document.getElementById('cmdChips');
-        const chipToggleBtn = document.getElementById('chipToggleBtn');
-        let chipsExpanded = false;
-        
-        function setChipsVisible(show) {
-            chipsExpanded = show;
-            cmdChips.style.display = show ? 'flex' : 'none';
-            chipToggleBtn.classList.toggle('active', show);
-        }
-        
-        // Phase 6.6c: expand ONLY via the toggle icon; ignore clicks when no chips exist
-        // (click handler moved to accessory island logic above)
         const toastContainer = document.getElementById('toastContainer');
         // Phase 6.6: reply bar + gestures
         const replyBar = document.getElementById('replyBar');
@@ -2021,7 +2005,6 @@
                 // Phase 6.6c: row stays hidden on load - only the toggle icon expands it
             } catch (e) {
                 console.error('Failed to load commands:', e);
-                setChipsVisible(false);
             }
         }
         
@@ -2036,13 +2019,12 @@
                     fetch('/api/commands'), // group_id<=0 -> dialog scope
                     fetch(`/api/dialog/${uid}/state`)
                 ]);
-                if (!cmdsRes.ok || !stateRes.ok) { setChipsVisible(false); return; }
+                if (!cmdsRes.ok || !stateRes.ok) { return; }
                 dialogCommandsCache = await cmdsRes.json();
                 dialogStateCache = await stateRes.json();
                 renderDialogChips();
             } catch (e) {
                 console.error('Failed to load dialog commands:', e);
-                setChipsVisible(false);
             }
         }
         
@@ -2748,35 +2730,17 @@
         
         cancelReplyBtn.addEventListener('click', cancelReply);
         
-        // Phase 7.2: emoji grid
+        // Phase 7.2: emoji list (used by accessory island)
         const EMOJIS = ['😀','😂','😍','🥰','😊','😎','🤔','😢','😭','😡','👍','👎','❤️','🔥','✨','🎉','😢','🤣','😘','🥳','😈','💀','👻','🤡','🙌','💪','🙏','👏','🤝','💔','💯','🎶','🫡','🤗','😴','🤯','🥳','😈','🥺','🫠'];
-        const emojiGrid = document.getElementById('emojiGrid');
-        let emojiOpen = false;
-        function buildEmojiGrid() {
-            emojiGrid.innerHTML = '';
-            EMOJIS.forEach(e => {
-                const b = document.createElement('button');
-                b.type = 'button'; b.textContent = e;
-                b.addEventListener('click', () => {
-                    const inp = messageInput;
-                    const pos = inp.selectionStart || inp.value.length;
-                    inp.value = inp.value.slice(0, pos) + e + inp.value.slice(pos);
-                    inp.setSelectionRange(pos + e.length, pos + e.length);
-                    inp.focus();
-                    emojiGrid.style.display = 'none'; emojiOpen = false;
-                });
-                emojiGrid.appendChild(b);
-            });
-        }
-        buildEmojiGrid();
 
-        // Phase 7.4a-fix: accessory island logic (mobile) + original behavior (desktop)
+        // Phase 7.4a-fix2: accessory island logic (unified on ALL screens)
         const accessoryIsland = document.getElementById('accessoryIsland');
         const accessoryBody = document.getElementById('accessoryBody');
         const accessoryEmojiGrid = document.getElementById('accessoryEmojiGrid');
         const accessoryChipsScroll = document.getElementById('accessoryChipsScroll');
         let accessoryOpen = false;
         let accessoryTab = null; // 'emoji' | 'chips'
+        let savedScrollTop = null; // for auto-scroll restore
 
         function isMobile() { return window.innerWidth <= 768; }
 
@@ -2787,6 +2751,11 @@
             accessoryOpen = false;
             accessoryTab = null;
             document.querySelectorAll('.accessory-tab').forEach(t => t.classList.remove('active'));
+            // Phase 7.4a-fix2: restore scroll position
+            if (savedScrollTop !== null) {
+                messagesDiv.scrollTop = savedScrollTop;
+                savedScrollTop = null;
+            }
         }
 
         function openAccessoryIsland(tab) {
@@ -2794,6 +2763,8 @@
                 closeAccessoryIsland();
                 return;
             }
+            // Phase 7.4a-fix2: save scroll and auto-scroll to bottom
+            savedScrollTop = messagesDiv.scrollTop;
             closeAccessoryIsland();
             accessoryIsland.classList.add('open');
             accessoryOpen = true;
@@ -2844,6 +2815,10 @@
                     accessoryChipsScroll.innerHTML = '<span style="font-size:0.82rem;color:var(--text-secondary);padding:8px;">Нет команд</span>';
                 }
             }
+            // Phase 7.4a-fix2: scroll so last messages are visible above panel
+            requestAnimationFrame(() => {
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            });
             input.blur();
         }
 
@@ -2854,35 +2829,26 @@
             });
         });
 
-        // Emoji button: mobile → accessory island; desktop → original popup
+        // Emoji button: always opens accessory island emoji tab
         document.getElementById('emojiBtn').addEventListener('click', (e) => {
             e.stopPropagation();
-            if (isMobile()) {
-                openAccessoryIsland('emoji');
-            } else {
-                emojiOpen = !emojiOpen;
-                emojiGrid.style.display = emojiOpen ? 'grid' : 'none';
-            }
+            openAccessoryIsland('emoji');
         });
 
-        // Chip toggle: mobile → accessory island chips tab; desktop → original toggle
-        chipToggleBtn.addEventListener('click', () => {
-            if (cmdChips.children.length === 0) return;
-            if (isMobile()) {
+        // Chip toggle removed from HTML; chips accessible via accessory island only
+        // (kept for any remaining references — no-op)
+        if (typeof chipToggleBtn !== 'undefined' && chipToggleBtn) {
+            chipToggleBtn.addEventListener('click', () => {
+                if (cmdChips.children.length === 0) return;
                 openAccessoryIsland('chips');
-            } else {
-                setChipsVisible(!chipsExpanded);
-            }
-        });
+            });
+        }
 
         // Close accessory island on outside click (mobile)
         document.addEventListener('click', (e) => {
             if (accessoryOpen && !accessoryIsland.contains(e.target) &&
                 e.target.id !== 'emojiBtn' && e.target.id !== 'chipToggleBtn') {
                 closeAccessoryIsland();
-            }
-            if (emojiOpen && !emojiGrid.contains(e.target) && e.target.id !== 'emojiBtn') {
-                emojiGrid.style.display = 'none'; emojiOpen = false;
             }
         });
         
