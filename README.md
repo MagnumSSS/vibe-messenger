@@ -360,3 +360,5 @@ Private use only.
 - 7.4a-fix4 complete
 - phase 7.4b complete
 - micro statusbar complete
+- micro a11y complete
+- micro a11y2 complete
