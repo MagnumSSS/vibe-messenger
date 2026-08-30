@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>Chat - VibeBunker</title>
     <link rel="stylesheet" href="/static/style.css?v=6.6b">
 </head>
@@ -34,7 +34,7 @@
         </div>
     </header>
     
-    <div class="main">
+    <div class="main sidebar-active">
         <div class="sidebar contacts-panel">
             <h2>Contacts</h2>
             <div style="padding: 1rem; border-bottom: 1px solid var(--border-color, #eeeeee);">
@@ -74,6 +74,9 @@
         
         <div class="chat-area">
             <div class="chat-header" id="chatHeader" style="display: none;">
+                <button type="button" class="chat-back-btn" id="chatBackBtn" aria-label="Назад">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+                </button>
                 <img class="chat-header-avatar" id="chatHeaderAvatar" src="/static/default-avatar.png" alt="" title="View profile" style="width: 32px; height: 32px; border-radius: 50%; margin-right: 8px; cursor: pointer;">
                 <span id="chatHeaderNameWrap" class="marquee-wrap" title="View profile"><span id="chatHeaderName" class="marquee-inner" style="cursor: pointer;">Select a contact</span></span>
                 <div class="chat-header-actions" id="chatHeaderActions" style="display: none;">
@@ -412,6 +415,7 @@
         const chatHeaderNameWrap = document.getElementById('chatHeaderNameWrap');
         const chatHeaderAvatar = document.getElementById('chatHeaderAvatar');
         const chatHeaderActions = document.getElementById('chatHeaderActions');
+        const chatBackBtn = document.getElementById('chatBackBtn');
 
         // Phase 7.2-fix: marquee for long names
         function checkMarquee() {
@@ -1824,6 +1828,8 @@
                 document.querySelectorAll('.group-item').forEach(i => i.classList.remove('active'));
                 item.classList.add('active');
                 closeAllCurtains();
+                // Phase 7.4a: switch to chat panel on mobile
+                document.querySelector('.main').classList.add('chat-active');
                 
                 selectedUserId = parseInt(item.dataset.id);
                 selectedGroupId = null; // Phase 6.1: leaving group mode
@@ -1922,6 +1928,8 @@
             document.querySelectorAll('.group-item').forEach(i => i.classList.remove('active'));
             const li = document.querySelector(`.group-item[data-group-id="${groupId}"]`);
             if (li) li.classList.add('active');
+            // Phase 7.4a: switch to chat panel on mobile
+            document.querySelector('.main').classList.add('chat-active');
             
             selectedUserId = null;
             selectedGroupId = groupId;
@@ -3397,6 +3405,13 @@
             }
         });
         
+        // Phase 7.4a: back button returns to sidebar on mobile
+        chatBackBtn.addEventListener('click', () => {
+            const main = document.querySelector('.main');
+            main.classList.remove('chat-active');
+            main.classList.add('sidebar-active');
+        });
+
         // Click on chat header avatar or name to open other user's profile modal
         chatHeaderAvatar.addEventListener('click', async () => {
             if (selectedUserId) {

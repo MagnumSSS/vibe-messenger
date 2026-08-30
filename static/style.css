@@ -2248,12 +2248,242 @@ header h1 {
     background: var(--scrollbar-thumb-hover, #a1a1a1);
 }
 
-/* Phase 5.3: mobile - same islands, tighter gaps */
+/* Phase 7.4a: back button - hidden on desktop, shown on mobile */
+.chat-back-btn {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    border: none;
+    background: var(--header-btn-bg, rgba(0,0,0,0.35));
+    color: var(--header-chip-text, #ffffff);
+    cursor: pointer;
+    flex-shrink: 0;
+    margin-right: 6px;
+}
+.chat-back-btn svg { width: 20px; height: 20px; }
+
+/* Phase 5.3: mobile - two-panel layout + responsive islands */
 @media (max-width: 768px) {
-    body { padding: 6px; gap: 6px; }
-    .main { flex-direction: column; gap: 6px; }
-    header { border-radius: 16px; padding: 0.6rem 0.75rem; }
-    .sidebar { width: 100%; height: 40%; border-radius: 16px; }
-    .chat-area { height: 60%; border-radius: 16px; }
-    .input-area { margin: 0 8px 8px; border-radius: 16px; }
+    /* 1. Body: no horizontal scroll, 100dvh */
+    body {
+        height: 100dvh;
+        padding: 0;
+        gap: 0;
+        overflow: hidden;
+    }
+
+    /* App header stays on top, compact, safe-area top padding */
+    header {
+        border-radius: 0;
+        padding: 0.5rem 0.75rem;
+        padding-top: calc(0.5rem + env(safe-area-inset-top, 0px));
+        flex-shrink: 0;
+        z-index: 10;
+    }
+    header h1 { font-size: 1rem; padding: 0.2rem 0.6rem; }
+
+    /* 2. Main container: relative parent for absolute children */
+    .main {
+        position: relative;
+        flex: 1;
+        min-height: 0;
+        gap: 0;
+    }
+
+    /* Sidebar: full area, absolute overlay */
+    .sidebar {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        border-radius: 0;
+        z-index: 1;
+        transition: transform 0.22s ease, opacity 0.22s ease;
+        display: flex;
+        flex-direction: column;
+    }
+    .sidebar h2 { font-size: 0.9rem; padding: 0.75rem 1rem; }
+
+    /* Chat area: full area, absolute overlay */
+    .chat-area {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        border-radius: 0;
+        z-index: 2;
+        transform: translateX(100%);
+        opacity: 0;
+        pointer-events: none;
+        transition: transform 0.22s ease, opacity 0.22s ease;
+    }
+
+    /* Panel switching via class on .main */
+    .main.sidebar-active .sidebar {
+        transform: translateX(0);
+        opacity: 1;
+        pointer-events: auto;
+    }
+    .main.sidebar-active .chat-area {
+        transform: translateX(100%);
+        opacity: 0;
+        pointer-events: none;
+    }
+    .main.chat-active .sidebar {
+        transform: translateX(-30%);
+        opacity: 0;
+        pointer-events: none;
+    }
+    .main.chat-active .chat-area {
+        transform: translateX(0);
+        opacity: 1;
+        pointer-events: auto;
+    }
+
+    /* 3. Back button visible */
+    .chat-back-btn { display: flex; }
+
+    /* Compact chat header */
+    .chat-header {
+        padding: 0.6rem 0.75rem;
+        border-radius: 0;
+        border-bottom: 1px solid var(--border-color);
+    }
+    .chat-header-avatar { width: 28px !important; height: 28px !important; }
+    .marquee-wrap { max-width: 100px; }
+
+    /* 4. Messages area */
+    .messages {
+        padding: 0.75rem;
+        border-radius: 0;
+    }
+
+    /* 5. Bubbles: max-width 78%, compact */
+    .message { max-width: 78%; }
+
+    /* 6. Input area: safe-area padding, font-size >= 16px */
+    .input-area {
+        margin: 0 6px 6px;
+        padding: 0.4rem 0.55rem;
+        border-radius: 18px;
+        padding-bottom: calc(0.4rem + env(safe-area-inset-bottom, 0px));
+    }
+    .input-area input {
+        font-size: 16px;
+        height: 42px;
+    }
+    .input-area button {
+        height: 42px;
+        font-size: 16px;
+    }
+    .attach-btn {
+        width: 42px;
+        height: 42px;
+        min-width: 44px;
+        min-height: 44px;
+    }
+
+    /* 7. Touch targets >= 44px */
+    .cmd-chip {
+        padding: calc(0.4rem * var(--chip-scale, 1)) calc(0.85rem * var(--chip-scale, 1));
+        min-height: 36px;
+    }
+    .curtain-toggle-btn {
+        width: 36px;
+        height: 36px;
+        min-width: 44px;
+        min-height: 44px;
+    }
+
+    /* 8. Typing island stays centered */
+    .typing-island { margin: 4px auto; }
+
+    /* 9. Theme drawer: full-screen sheet */
+    .theme-drawer {
+        position: fixed;
+        inset: 0;
+        width: 100% !important;
+        height: 100%;
+        border-radius: 0;
+        z-index: 1100;
+        transform: translateY(100%);
+        transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+    }
+    .theme-drawer.open {
+        display: flex;
+        transform: translateY(0);
+    }
+
+    /* 10. Modals: full-screen sheets with slide-up */
+    .modal {
+        align-items: stretch;
+        justify-content: stretch;
+    }
+    .modal.active {
+        display: flex;
+    }
+    .profile-modal-content,
+    .settings-modal-content,
+    .delete-modal-content,
+    .delete-account-modal-content {
+        width: 100%;
+        max-width: 100%;
+        max-height: 100%;
+        height: 100%;
+        border-radius: 20px 20px 0 0;
+        box-shadow: 0 -4px 24px var(--shadow-2, rgba(0,0,0,0.25));
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        animation: sheetSlideUp 0.3s cubic-bezier(0.32, 0.72, 0, 1);
+    }
+    /* Image modal: different treatment */
+    .modal .modal-content {
+        max-width: 100%;
+        max-height: 100%;
+        border-radius: 0;
+    }
+    @keyframes sheetSlideUp {
+        from { transform: translateY(100%); }
+        to { transform: translateY(0); }
+    }
+
+    /* 11. Scroll-down button: compact */
+    .scroll-down-btn {
+        bottom: 80px;
+        right: 12px;
+    }
+
+    /* 12. Search input: font-size 16px */
+    .search-input { font-size: 16px; }
+
+    /* 13. Mode toast: compact */
+    .mode-toast { font-size: 0.78rem; padding: 6px 12px; }
+
+    /* 14. Bubble actions: always visible on touch (no hover) */
+    .bubble-action-island {
+        width: 32px;
+        height: 32px;
+    }
+    .bubble-action-island svg { width: 16px; height: 16px; }
+
+    /* 15. Profile drawer buttons: touch-friendly */
+    .profile-drawer .slot-btn,
+    .profile-drawer .btn_danger {
+        padding: 0.75rem 1rem;
+        font-size: 16px;
+    }
+
+    /* 16. Input form groups: font-size 16px */
+    .profile-drawer .profile-form-group input,
+    .profile-drawer .profile-form-group textarea {
+        font-size: 16px;
+    }
+
+    /* 17. No horizontal scroll anywhere */
+    * { overflow-x: hidden; }
+    .messages, .sidebar { overflow-x: hidden; }
+    .cmd-chips, .chips-container { overflow-x: auto; }
 }
