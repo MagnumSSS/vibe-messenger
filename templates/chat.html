@@ -307,6 +307,18 @@
                         <span class="glass-toggle-track"><span class="glass-toggle-thumb"></span></span>
                     </button>
                 </div>
+
+                <div class="settings-section">
+                    <h3>Шрифт</h3>
+                    <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+                        <button type="button" class="cmd-chip font-scale-btn" data-scale="0.9">A−</button>
+                        <button type="button" class="cmd-chip font-scale-btn" data-scale="1.0">A</button>
+                        <button type="button" class="cmd-chip font-scale-btn" data-scale="1.1">A+</button>
+                        <button type="button" class="cmd-chip font-scale-btn" data-scale="1.25">A++</button>
+                        <button type="button" class="cmd-chip font-scale-btn" data-scale="1.4">A+++</button>
+                        <span id="fontScaleValue" style="font-size: 0.8rem; color: var(--text-secondary, #666); margin-left: 0.25rem;">1.0</span>
+                    </div>
+                </div>
             </div>
         </aside>
     </div>
@@ -762,10 +774,41 @@
                     } else {
                         emailCodeGroup.style.display = 'none';
                     }
+                    // Phase micro: apply font scale from profile
+                    initFontScale(data.font_scale);
                 }
             } catch (e) {
                 console.error('Failed to load profile:', e);
             }
+        }
+
+        // ===== Phase micro: font scale (a11y) =====
+        const FONT_STEPS = [0.9, 1.0, 1.1, 1.25, 1.4];
+        let currentFontScale = 1.0;
+
+        function applyFontScale(scale) {
+            currentFontScale = scale;
+            document.documentElement.style.zoom = String(scale);
+            const label = document.getElementById('fontScaleValue');
+            if (label) label.textContent = String(scale);
+            document.querySelectorAll('.font-scale-btn').forEach(btn => {
+                btn.classList.toggle('active', parseFloat(btn.dataset.scale) === scale);
+            });
+        }
+
+        function initFontScale(scale) {
+            applyFontScale(scale || 1.0);
+            document.querySelectorAll('.font-scale-btn').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    const s = parseFloat(btn.dataset.scale);
+                    applyFontScale(s);
+                    try {
+                        const fd = new FormData();
+                        fd.append('scale', String(s));
+                        await fetch('/api/profile/font', { method: 'POST', body: fd });
+                    } catch (e) { console.error('Font scale save failed:', e); }
+                });
+            });
         }
         
         // ---- Data-driven theme editor (Phase 5.2e) ----
@@ -1823,7 +1866,26 @@
         renderUserAvatars();
         
         // Phase 6.1: load my groups into the sidebar on page load
-        loadGroups();
+        loadGroups().then(() => {
+            // Phase micro: parse URL hash to restore last chat
+            const hash = location.hash;
+            if (hash.startsWith('#c=')) {
+                const rest = hash.slice(3);
+                if (rest.startsWith('user:')) {
+                    const uid = parseInt(rest.slice(5));
+                    if (uid) {
+                        const item = document.querySelector(`.user-item[data-id="${uid}"]`);
+                        if (item) item.click();
+                    }
+                } else if (rest.startsWith('group:')) {
+                    const gid = parseInt(rest.slice(6));
+                    if (gid) {
+                        const item = document.querySelector(`.group-item[data-group-id="${gid}"]`);
+                        if (item) item.click();
+                    }
+                }
+            }
+        });
         // Phase 7.3: load unread counts on page load
         loadUnread();
         
@@ -1843,6 +1905,7 @@
                 
                 selectedUserId = parseInt(item.dataset.id);
                 selectedGroupId = null; // Phase 6.1: leaving group mode
+                location.hash = 'c=user:' + selectedUserId; // Phase micro: hash for chat persistence
                 exitEditMode(); exitDeleteMode(); // Phase 7.2b: reset modes on chat switch
                 if (typeof closeAccessoryIsland === 'function') closeAccessoryIsland();
                 const userName = item.dataset.name;
@@ -1946,6 +2009,7 @@
             
             selectedUserId = null;
             selectedGroupId = groupId;
+            location.hash = 'c=group:' + groupId; // Phase micro: hash for chat persistence
             exitEditMode(); exitDeleteMode(); // Phase 7.2b: reset modes on chat switch
             
             chatHeaderName.textContent = groupName;

@@ -437,6 +437,7 @@ def ensure_schema():
             ("avatar_uuid", "TEXT NULL"),            # Phase 4: profile avatar
             ("bio", "TEXT NULL"),                    # Phase 4: profile bio
             ("theme_json", "TEXT NULL"),             # Phase 4: RGB themes
+            ("font_scale", "REAL DEFAULT 1.0"),      # Phase 7 micro: a11y font scale
         ]
         for col_name, col_type in user_column_additions:
             if col_name not in user_columns:
@@ -2474,7 +2475,7 @@ async def get_profile(request: Request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
     with get_db() as conn:
-        row = conn.execute("SELECT id, name, username, email, avatar_uuid, bio FROM users WHERE id = ?", (user["id"],)).fetchone()
+        row = conn.execute("SELECT id, name, username, email, avatar_uuid, bio, font_scale FROM users WHERE id = ?", (user["id"],)).fetchone()
     
     return JSONResponse(dict(row))
 
@@ -2505,6 +2506,20 @@ async def update_profile_put(request: Request, name: str = Form(...), bio: str =
         conn.commit()
     
     return JSONResponse({"success": True})
+
+
+@app.post("/api/profile/font")
+async def update_font_scale(request: Request, scale: float = Form(...)):
+    """Update font scale (0.9–1.4) for accessibility"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if scale not in (0.9, 1.0, 1.1, 1.25, 1.4):
+        raise HTTPException(status_code=400, detail="Invalid font scale")
+    with get_db() as conn:
+        conn.execute("UPDATE users SET font_scale = ? WHERE id = ?", (scale, user["id"]))
+        conn.commit()
+    return JSONResponse({"success": True, "font_scale": scale})
 
 
 # ========== Phase 7.1a: username / email / password changes ==========
