@@ -134,7 +134,7 @@ THEME_PRESETS = {
         "images": {},
         "effects": {"wallpaper_blur": 0, "bubble_blur": 0},
         "sizing": {"chip_size": 1.0},
-        "toggles": {"typing_show_username": false}
+        "toggles": {"typing_show_username": False}
     },
     "dark": {
         "colors": {
