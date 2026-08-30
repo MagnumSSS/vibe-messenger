@@ -1882,6 +1882,7 @@
         
         // ===== Phase 6.1: groups UI =====
         let groupsCache = []; // Phase 6.2: last known list for post-command syncing
+        let commandsCache = []; // Phase 7.4a-fix4: group commands registry for handleChipClick
         
         function showToast(text) {
             const t = document.createElement('div');
@@ -1958,6 +1959,38 @@
             await loadGroupMessages(groupId);
         }
         
+        // ===== Phase 7.4a-fix4: UNIFIED CHIP CLICK HANDLER =====
+        // Single entry for all chip clicks: accessory island, legacy row, any renderer.
+        // - cmd WITH args (args_hint not empty): insert "/" + cmd + " " into messageInput, focus. User completes + Send.
+        // - cmd WITHOUT args: execute immediately. Group → POST /api/groups/{gid}/command;
+        //   dialog → POST /api/dialog/{uid}/command (uid never null).
+        // Special chips (__edit_mode, __delete_mode) handled inline before this.
+        function handleChipClick(cmd, scope) {
+            if (!cmd || cmd.startsWith('__')) return;
+            // Lookup arg hint from command registry
+            let hasArgs = false;
+            if (scope === 'group') {
+                const spec = (typeof commandsCache !== 'undefined' ? commandsCache : []).find(c => c.name === cmd);
+                hasArgs = !!(spec && spec.args_hint);
+            } else {
+                const spec = dialogCommandsCache.find(c => c.name === cmd);
+                hasArgs = !!(spec && spec.args_hint);
+            }
+            if (hasArgs) {
+                messageInput.value = '/' + cmd + ' ';
+                messageInput.focus();
+                messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
+            } else {
+                if (scope === 'group' && selectedGroupId) {
+                    runGroupCommand('/' + cmd);
+                } else if (scope === 'dialog' && selectedUserId) {
+                    runDialogCommand(selectedUserId, cmd);
+                } else {
+                    showToast('Нет активного чата для команды');
+                }
+            }
+        }
+
         // ===== Phase 6.2: command chips =====
         const CMD_CHIP_LABELS = {
             add: 'Добавить', kick: 'Исключить', promote: 'Повысить',
@@ -1970,23 +2003,16 @@
                 const res = await fetch(`/api/commands?group_id=${groupId}`);
                 if (!res.ok) { cmdChips.style.display = 'none'; return; }
                 const cmds = await res.json();
+                commandsCache = cmds;
                 cmds.forEach(c => {
                     const b = document.createElement('button');
                     b.type = 'button';
                     b.className = 'cmd-chip';
                     b.title = c.description || ('/' + c.name);
                     b.textContent = (CMD_CHIP_LABELS[c.name] || '/' + c.name) + (c.args_hint ? ' ' + c.args_hint : '');
-                    b.addEventListener('click', () => {
-                        if (!c.args_hint) {
-                            // no-argument commands run immediately
-                            messageInput.value = '/' + c.name;
-                            sendMessage();
-                        } else {
-                            // insert the prefix ("/add @") - user completes the argument
-                            messageInput.value = '/' + c.name + (c.args_hint.startsWith('@') ? ' @' : ' ');
-                            messageInput.focus();
-                        }
-                    });
+                    b.dataset.cmd = c.name;
+                    b.dataset.scope = 'group';
+                    b.addEventListener('click', () => handleChipClick(c.name, 'group'));
                     cmdChips.appendChild(b);
                 });
                 // Phase 7.2b: edit mode chip for groups
@@ -2041,29 +2067,15 @@
             const hasBlock = dialogCommandsCache.some(c => c.name === 'block');
             const hasMute = dialogCommandsCache.some(c => c.name === 'mute');
             
-            const mkChip = (label, title, cmd, hasArgs) => {
+            const mkChip = (label, title, cmd) => {
                 const b = document.createElement('button');
                 b.type = 'button';
                 b.className = 'cmd-chip';
                 b.title = title;
                 b.textContent = label;
                 b.dataset.cmd = cmd;
-                b.dataset.hasArgs = hasArgs ? '1' : '0';
-                b.addEventListener('click', () => {
-                    if (hasArgs) {
-                        // Phase 7.4a-fix3: arg chip → insert prefix into input
-                        messageInput.value = '/' + cmd + ' ';
-                        messageInput.focus();
-                        messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
-                    } else {
-                        // No-arg chip → execute immediately
-                        if (selectedGroupId) {
-                            runGroupCommand('/' + cmd);
-                        } else if (selectedUserId) {
-                            runDialogCommand(selectedUserId, cmd);
-                        }
-                    }
-                });
+                b.dataset.scope = 'dialog';
+                b.addEventListener('click', () => handleChipClick(cmd, 'dialog'));
                 return b;
             };
             
@@ -2123,7 +2135,7 @@
             if (selectedUserId) setContactPinned(selectedUserId, !!state.pinned);
         }
 
-        // Phase 7.4a-fix3: block mode — hide input when peer is blocked
+        // Phase 7.4a-fix4: block mode — hide input, force-close accessory panel
         function renderBlockMode() {
             const blocked = dialogStateCache.blocked_by_me && !selectedGroupId;
             blockModeBar.style.display = blocked ? 'flex' : 'none';
@@ -2134,6 +2146,11 @@
             if (replyBarEl) replyBarEl.style.display = blocked ? 'none' : replyBarEl.style.display;
             const editBarEl = document.getElementById('editBar');
             if (editBarEl) editBarEl.style.display = blocked ? 'none' : editBarEl.style.display;
+            // Phase 7.4a-fix4: force-close accessory panel when entering block mode
+            if (blocked && accessoryOpen) closeAccessoryIsland();
+            // Phase 7.4a-fix4: hide emoji button while block bar visible
+            const emojiBtnEl = document.getElementById('emojiBtn');
+            if (emojiBtnEl) emojiBtnEl.style.display = blocked ? 'none' : '';
         }
 
         blockModeUnblockBtn.addEventListener('click', async () => {
@@ -2844,9 +2861,10 @@
                         if (ch.classList.contains('active')) clone.classList.add('active');
                         clone.addEventListener('click', () => {
                             const cmd = clone.dataset.cmd;
+                            const scope = clone.dataset.scope || 'dialog';
                             if (cmd === '__edit_mode') { toggleEditMode(); }
                             else if (cmd === '__delete_mode') { toggleDeleteMode(); }
-                            else { runDialogCommand(selectedUserId, cmd); }
+                            else { handleChipClick(cmd, scope); }
                             // Sync active state back to source
                             if (ch.classList.contains('active')) clone.classList.add('active');
                             else clone.classList.remove('active');
@@ -2878,18 +2896,11 @@
         });
 
         // Chip toggle removed from HTML; chips accessible via accessory island only
-        // (kept for any remaining references — no-op)
-        if (typeof chipToggleBtn !== 'undefined' && chipToggleBtn) {
-            chipToggleBtn.addEventListener('click', () => {
-                if (cmdChips.children.length === 0) return;
-                openAccessoryIsland('chips');
-            });
-        }
 
         // Close accessory island on outside click (mobile)
         document.addEventListener('click', (e) => {
             if (accessoryOpen && !accessoryIsland.contains(e.target) &&
-                e.target.id !== 'emojiBtn' && e.target.id !== 'chipToggleBtn') {
+                e.target.id !== 'emojiBtn') {
                 closeAccessoryIsland();
             }
         });
