@@ -1064,6 +1064,46 @@ header h1 {
     cursor: pointer;
 }
 
+/* Phase 7.6a: profile banner */
+.profile-banner-area {
+    position: relative;
+    width: 100%;
+    height: 130px;
+    border-radius: 12px;
+    overflow: hidden;
+    background: var(--hover-bg, #f0f0f0);
+}
+.profile-banner-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+.profile-banner-placeholder {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.8rem;
+    color: var(--text-secondary, #999);
+}
+.profile-banner-btn {
+    position: absolute;
+    bottom: 8px;
+    right: 8px;
+    background: rgba(0,0,0,0.5);
+    color: #fff;
+    border: none;
+    border-radius: 50%;
+    width: 32px;
+    height: 32px;
+    font-size: 0.9rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
 .profile-form-group {
     margin-bottom: 1rem;
 }

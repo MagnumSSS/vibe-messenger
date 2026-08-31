@@ -223,8 +223,14 @@
                 <button class="theme-drawer-close" id="profileDrawerClose" title="Закрыть">&times;</button>
             </div>
             <div class="theme-drawer-body">
-                <div class="settings-section" style="text-align: center;">
-                    <img class="profile-avatar-preview" id="profileAvatarPreview" src="/static/default-avatar.png" alt="" style="width: 100px; height: 100px; border-radius: 50%; margin-bottom: 0.5rem;">
+                <div class="profile-banner-area" id="profileBannerArea">
+                    <img class="profile-banner-img" id="profileBannerPreview" src="" alt="" style="display:none;">
+                    <div class="profile-banner-placeholder" id="profileBannerPlaceholder">Нет баннера</div>
+                    <input type="file" id="bannerInput" accept="image/*" style="display: none;">
+                    <button id="changeBannerBtn" class="profile-banner-btn" title="Сменить баннер">📷</button>
+                </div>
+                <div class="settings-section" style="text-align: center; margin-top: -40px; position: relative; z-index: 1;">
+                    <img class="profile-avatar-preview" id="profileAvatarPreview" src="/static/default-avatar.png" alt="" style="width: 100px; height: 100px; border-radius: 50%; border: 3px solid var(--modal-bg, #fff);">
                     <input type="file" id="avatarInput" accept="image/*" style="display: none;">
                     <button id="changeAvatarBtn" class="slot-btn">Сменить аватарку</button>
                 </div>
@@ -334,13 +340,18 @@
     
     <!-- Other User Profile Modal -->
     <div class="modal" id="otherProfileModal">
-        <div class="profile-modal-content">
-            <h2>Профиль пользователя</h2>
-            <img class="profile-avatar-preview" id="otherProfileAvatar" src="/static/default-avatar.png" alt="" style="width: 120px; height: 120px; border-radius: 50%; margin-bottom: 1rem;">
-            <h3 id="otherProfileName" style="margin: 0.5rem 0;"></h3>
-            <p id="otherProfileUsername" style="color: #666; margin: 0.5rem 0;"></p>
-            <p id="otherProfileBio" style="color: #444; margin-top: 1rem; font-style: italic;"></p>
-            <button class="glass-chip" id="closeOtherProfileBtn">Закрыть</button>
+        <div class="profile-modal-content" id="otherProfileContent">
+            <div class="profile-banner-area" id="otherProfileBannerArea">
+                <img class="profile-banner-img" id="otherProfileBanner" src="" alt="" style="display:none;">
+                <div class="profile-banner-placeholder" id="otherProfileBannerPlaceholder"></div>
+            </div>
+            <div style="text-align: center; margin-top: -50px; position: relative; z-index: 1;">
+                <img class="profile-avatar-preview" id="otherProfileAvatar" src="/static/default-avatar.png" alt="" style="width: 120px; height: 120px; border-radius: 50%; border: 3px solid var(--modal-bg, #fff);">
+                <h3 id="otherProfileName" style="margin: 0.5rem 0;"></h3>
+                <p id="otherProfileUsername" style="color: var(--text-secondary, #666); margin: 0.25rem 0;"></p>
+                <p id="otherProfileBio" style="color: var(--text-secondary, #444); margin-top: 0.75rem; font-style: italic;"></p>
+            </div>
+            <button class="glass-chip" id="closeOtherProfileBtn" style="width: 100%; margin-top: 1rem;">Закрыть</button>
         </div>
     </div>
     
@@ -678,6 +689,33 @@
         function imgKeyToCss(key) {
             return key === 'wallpaper' ? 'wallpaper-img' : (key === 'header_img' ? 'header-img' : 'bubble-img');
         }
+
+        // Phase 7.6a: apply theme CSS vars to a specific element (not document root)
+        function applyThemeToElement(theme, el) {
+            if (!theme || !el) return;
+            const t = normalizeTheme(theme);
+            const s = el.style;
+            for (const key of Object.keys(FALLBACK_COLORS)) {
+                const val = t.colors[key] || FALLBACK_COLORS[key];
+                const cssVar = TOKEN_CSS_VARS[key];
+                if (cssVar) s.setProperty(cssVar, val);
+            }
+            s.setProperty('--primary-color', t.colors.accent || FALLBACK_COLORS.accent);
+            s.setProperty('--btn-primary-bg', t.colors.btn_primary || FALLBACK_COLORS.btn_primary);
+            s.setProperty('--message-sent-bg', t.colors.bubble_sent || FALLBACK_COLORS.bubble_sent);
+            s.setProperty('--message-received-bg', t.colors.bubble_received || FALLBACK_COLORS.bubble_received);
+            const bg = t.colors.bg || FALLBACK_COLORS.bg;
+            s.setProperty('--border-color', deriveBorderColor(bg));
+            s.setProperty('--header-text', contrastText(t.colors.header || FALLBACK_COLORS.header));
+            s.setProperty('--text-primary', t.colors.text || FALLBACK_COLORS.text);
+            s.setProperty('--text-secondary', t.colors.muted || FALLBACK_COLORS.muted);
+            s.setProperty('--hover-bg', t.colors.hover || FALLBACK_COLORS.hover);
+            s.setProperty('--active-bg', t.colors.active || FALLBACK_COLORS.active);
+            s.setProperty('--modal-bg', t.colors.modal_bg || FALLBACK_COLORS.modal_bg);
+            s.setProperty('--input-bg', t.colors.input_bg || FALLBACK_COLORS.input_bg);
+            s.setProperty('--bubble-sent-bg', t.colors.bubble_sent || FALLBACK_COLORS.bubble_sent);
+            s.setProperty('--bubble-received-bg', t.colors.bubble_received || FALLBACK_COLORS.bubble_received);
+        }
         
         // YIQ-based contrast: returns dark or light text color for a given hex background
         function contrastText(hex) {
@@ -762,6 +800,12 @@
                         profileAvatarPreview.src = '/api/avatar/' + data.avatar_uuid;
                     } else {
                         profileAvatarPreview.src = '/static/default-avatar.png';
+                    }
+                    // Phase 7.6a: show banner
+                    if (data.banner_uuid) {
+                        profileBannerPreview.src = '/api/banner/' + data.banner_uuid;
+                        profileBannerPreview.style.display = '';
+                        profileBannerPlaceholder.style.display = 'none';
                     }
                     // Phase 7.1a: populate username/email fields
                     const el = (id) => document.getElementById(id);
@@ -1330,6 +1374,30 @@
                 }
             });
             
+            // Phase 7.6a: banner upload
+            const changeBannerBtn = document.getElementById('changeBannerBtn');
+            const bannerInput = document.getElementById('bannerInput');
+            const profileBannerPreview = document.getElementById('profileBannerPreview');
+            const profileBannerPlaceholder = document.getElementById('profileBannerPlaceholder');
+
+            changeBannerBtn.addEventListener('click', () => bannerInput.click());
+
+            bannerInput.addEventListener('change', async (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const formData = new FormData();
+                formData.append('banner', file);
+                try {
+                    const res = await fetch('/api/profile/banner', { method: 'POST', body: formData });
+                    if (res.ok) {
+                        const data = await res.json();
+                        profileBannerPreview.src = '/api/banner/' + data.banner_uuid;
+                        profileBannerPreview.style.display = '';
+                        profileBannerPlaceholder.style.display = 'none';
+                    }
+                } catch (err) { console.error('Banner upload error:', err); }
+            });
+
             // Save profile
             saveProfileBtn.addEventListener('click', async () => {
                 const name = profileName.value.trim();
@@ -1865,6 +1933,11 @@
         // Render avatars on page load
         renderUserAvatars();
         
+        // Phase 7.6a: apply font_scale on first load (without opening profile)
+        fetch('/api/profile').then(r => r.ok ? r.json() : null).then(data => {
+            if (data && data.font_scale) applyFontScale(data.font_scale);
+        }).catch(() => {});
+
         // Phase 6.1: load my groups into the sidebar on page load
         loadGroups().then(() => {
             // Phase micro: parse URL hash → sessionStorage fallback for chat restore
@@ -3593,6 +3666,10 @@
         });
         
         // Open other user profile modal
+        const otherProfileBanner = document.getElementById('otherProfileBanner');
+        const otherProfileBannerPlaceholder = document.getElementById('otherProfileBannerPlaceholder');
+        const otherProfileContent = document.getElementById('otherProfileContent');
+
         async function openOtherUserProfile(userId) {
             try {
                 const res = await fetch(`/api/user/${userId}/profile`);
@@ -3607,6 +3684,25 @@
                 otherProfileUsername.textContent = '@' + data.username;
                 otherProfileBio.textContent = data.bio || 'Нет информации';
                 
+                // Phase 7.6a: banner
+                if (data.banner_uuid) {
+                    otherProfileBanner.src = '/api/banner/' + data.banner_uuid;
+                    otherProfileBanner.style.display = '';
+                    otherProfileBannerPlaceholder.style.display = 'none';
+                } else {
+                    otherProfileBanner.style.display = 'none';
+                    otherProfileBannerPlaceholder.style.display = '';
+                }
+
+                // Phase 7.6a: apply target user's theme to modal ("чужой мир")
+                otherProfileContent.removeAttribute('style');
+                if (data.theme_json) {
+                    try {
+                        const themeObj = JSON.parse(data.theme_json);
+                        applyThemeToElement(themeObj, otherProfileContent);
+                    } catch(e) {}
+                }
+
                 otherProfileModal.classList.add('active');
             } catch (err) {
                 console.error('Error loading profile:', err);
@@ -3616,11 +3712,13 @@
         // Close other profile modal
         closeOtherProfileBtn.addEventListener('click', () => {
             otherProfileModal.classList.remove('active');
+            otherProfileContent.removeAttribute('style'); // Phase 7.6a: clear foreign theme
         });
         
         otherProfileModal.addEventListener('click', (e) => {
             if (e.target === otherProfileModal) {
                 otherProfileModal.classList.remove('active');
+                otherProfileContent.removeAttribute('style'); // Phase 7.6a: clear foreign theme
             }
         });
         

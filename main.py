@@ -438,6 +438,7 @@ def ensure_schema():
             ("bio", "TEXT NULL"),                    # Phase 4: profile bio
             ("theme_json", "TEXT NULL"),             # Phase 4: RGB themes
             ("font_scale", "REAL DEFAULT 1.0"),      # Phase 7 micro: a11y font scale
+            ("banner_uuid", "TEXT NULL"),            # Phase 7.6a: profile banner
         ]
         for col_name, col_type in user_column_additions:
             if col_name not in user_columns:
@@ -954,7 +955,7 @@ async def api_user_profile(request: Request, user_id: int):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
     with get_db() as conn:
-        row = conn.execute("SELECT id, name, username, avatar_uuid, bio FROM users WHERE id = ?", (user_id,)).fetchone()
+        row = conn.execute("SELECT id, name, username, avatar_uuid, bio, banner_uuid, theme_json FROM users WHERE id = ?", (user_id,)).fetchone()
     
     if not row:
         raise HTTPException(status_code=404, detail="User not found")
@@ -2475,7 +2476,7 @@ async def get_profile(request: Request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
     with get_db() as conn:
-        row = conn.execute("SELECT id, name, username, email, avatar_uuid, bio, font_scale FROM users WHERE id = ?", (user["id"],)).fetchone()
+        row = conn.execute("SELECT id, name, username, email, avatar_uuid, bio, font_scale, banner_uuid FROM users WHERE id = ?", (user["id"],)).fetchone()
     
     return JSONResponse(dict(row))
 
@@ -2667,6 +2668,39 @@ async def get_avatar(avatar_uuid: str):
         stream_file(file_path),
         media_type="image/jpeg"
     )
+
+
+@app.post("/api/profile/banner")
+async def upload_banner(request: Request, banner: UploadFile = File(...)):
+    """Upload banner for current user"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if not banner.filename:
+        raise HTTPException(status_code=400, detail="No file provided")
+    mime_type = banner.content_type or mimetypes.guess_type(banner.filename)[0]
+    if not mime_type or not mime_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Only image files are allowed")
+    ext = Path(banner.filename).suffix.lower()
+    uuid_name = f"{uuid.uuid4().hex}{ext}"
+    file_path = os.path.join(UPLOADS_DIR, "banners", uuid_name)
+    os.makedirs(os.path.join(UPLOADS_DIR, "banners"), exist_ok=True)
+    file_data = await banner.read()
+    async with aiofiles.open(file_path, 'wb') as f:
+        await f.write(file_data)
+    with get_db() as conn:
+        conn.execute("UPDATE users SET banner_uuid = ? WHERE id = ?", (uuid_name, user["id"]))
+        conn.commit()
+    return JSONResponse({"banner_uuid": uuid_name})
+
+
+@app.get("/api/banner/{banner_uuid}")
+async def get_banner(banner_uuid: str):
+    """Serve user banner"""
+    file_path = os.path.join(UPLOADS_DIR, "banners", banner_uuid)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Banner not found")
+    return StreamingResponse(stream_file(file_path), media_type="image/jpeg")
 
 
 @app.post("/api/delete-account")
