@@ -1092,16 +1092,24 @@ header h1 {
     bottom: 8px;
     right: 8px;
     background: rgba(0,0,0,0.5);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
     color: #fff;
-    border: none;
-    border-radius: 50%;
-    width: 32px;
-    height: 32px;
-    font-size: 0.9rem;
+    border: 1px solid rgba(255,255,255,0.2);
+    border-radius: 999px;
+    padding: 0.4rem 0.85rem;
+    font-size: 0.82rem;
+    font-weight: 600;
     cursor: pointer;
     display: flex;
     align-items: center;
-    justify-content: center;
+    gap: 0.4rem;
+    min-height: 44px;
+    min-width: 44px;
+    transition: background 0.15s;
+}
+.profile-banner-btn:hover {
+    background: rgba(0,0,0,0.7);
 }
 
 .profile-form-group {
