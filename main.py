@@ -40,7 +40,9 @@ FIRST_USER_ADMIN = os.environ.get("FIRST_USER_ADMIN", "1") == "1"
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", "10485760"))  # 10MB default
 THEME_IMAGE_MAX_BYTES = int(os.environ.get("THEME_IMAGE_MAX_BYTES", str(5 * 1024 * 1024)))  # ~5MB for theme image slots (separate from MAX_UPLOAD_BYTES)
 PORT = int(os.environ.get("PORT", "8000"))
-DATA_DIR = os.environ.get("DATA_DIR", "./data")
+# Phase R1: DATA_DIR is the single source of truth for all persistent state.
+# DB and uploads are derived from it, tests may point it at a temp dir.
+DATA_DIR = os.environ.get("DATA_DIR", "data")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_PATH = os.path.join(DATA_DIR, "messenger.db")
