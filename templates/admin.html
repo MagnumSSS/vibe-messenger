@@ -56,6 +56,14 @@
         .toast { position: fixed; left: 50%; bottom: 2rem; transform: translateX(-50%); background: #333; color: #fff; padding: 0.75rem 1.25rem; border-radius: 6px; font-size: 0.9rem; opacity: 0; pointer-events: none; transition: opacity 0.2s ease; z-index: 2000; }
         .toast.show { opacity: 1; }
         
+        /* Phase R4: карточки метрик пульса */
+        .pulse-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
+        .pulse-metrics .metric { background: #f8f9fa; border: 1px solid var(--border-color, #eeeeee); border-radius: 8px; padding: 0.6rem 0.75rem; }
+        .pulse-metrics .metric .label { font-size: 0.75rem; color: #666; }
+        .pulse-metrics .metric .value { font-size: 1.05rem; font-weight: 600; color: #333; margin-top: 0.15rem; }
+        .pulse-metrics .metric .value.bad { color: #dc3545; }
+        .pulse-metrics .metric .value.good { color: #28a745; }
+        
         @media (max-width: 768px) {
             .container { padding: 0.5rem; }
             table { font-size: 0.85rem; }
@@ -120,15 +128,21 @@
             </div>
         </div>
         
-        <!-- Phase 7.1c: Pulse -->
+        <!-- Phase 7.1c / R4: Pulse -->
         <div class="section">
             <h2>Пульс <span id="pulseStatus" style="font-size: 0.75rem; color: #28a745; font-weight: normal;">● live</span></h2>
+            <div id="pulseMetrics" class="pulse-metrics"></div>
             <div style="max-height: 300px; overflow-y: auto;" id="pulseWrap">
                 <table>
                     <thead><tr><th>Время</th><th>Тип</th><th>Детали</th></tr></thead>
                     <tbody id="pulseTable"></tbody>
                 </table>
             </div>
+            <p style="margin-top: 0.5rem; font-size: 0.8rem; color: #666;">
+                Логи: <code>data/logs/app.log</code> и <code>data/logs/error.log</code> (ротация 5 МБ × 5).
+                Проверить error.log: кнопка «Подорвать» (только админ, ответ 500).
+                <button class="action-btn btn-block" id="debugBoomBtn" style="margin-left: 0.5rem;">Подорвать</button>
+            </p>
         </div>
         
         <!-- Users Table -->
@@ -444,11 +458,71 @@
             }
         }
 
-        // Phase 7.1c: pulse
+        // Phase R4: человеческие единицы для метрик
+        function humanBytes(bytes) {
+            if (bytes === null || bytes === undefined) return '—';
+            const mb = bytes / (1024 * 1024);
+            return mb >= 1024 ? (mb / 1024).toFixed(1) + ' ГБ' : mb.toFixed(1) + ' МБ';
+        }
+        function humanDuration(seconds) {
+            if (seconds === null || seconds === undefined) return '—';
+            const m = Math.floor(seconds / 60), h = Math.floor(m / 60), d = Math.floor(h / 24);
+            if (d > 0) return d + ' д ' + (h % 24) + ' ч';
+            if (h > 0) return h + ' ч ' + (m % 60) + ' мин';
+            if (m > 0) return m + ' мин';
+            return Math.round(seconds) + ' с';
+        }
+        function humanTime(iso) {
+            if (!iso) return 'нет данных';
+            const d = new Date(iso);
+            return isNaN(d.getTime()) ? iso : d.toLocaleString();
+        }
+
+        // Phase R4: карточки метрик
+        function renderMetrics(m) {
+            if (!m) return;
+            const integrityOk = m.last_integrity && m.last_integrity.ok;
+            const integrityText = m.last_integrity && m.last_integrity.detail
+                ? (integrityOk ? 'ok' : String(m.last_integrity.detail).slice(0, 40))
+                : '—';
+            const cards = [
+                ['Свободно на диске', humanBytes(m.disk_free_bytes), ''],
+                ['Размер БД', humanBytes(m.db_size_bytes), ''],
+                ['Uptime', humanDuration(m.uptime_seconds), ''],
+                ['WS-соединений', String(m.ws_connections ?? '—'), ''],
+                ['Ошибок за час', String(m.errors_last_hour ?? '—'),
+                    (m.errors_last_hour || 0) > 0 ? 'bad' : 'good'],
+                ['Целостность БД', integrityText, integrityOk ? 'good' : 'bad'],
+                ['Последний бэкап', humanTime(m.last_backup_at), m.last_backup_at ? '' : 'bad'],
+            ];
+            document.getElementById('pulseMetrics').innerHTML = cards.map(
+                ([label, value, cls]) => `<div class="metric">
+                    <div class="label">${label}</div>
+                    <div class="value ${cls}">${value}</div>
+                </div>`
+            ).join('');
+        }
+
+        // Phase R4: намеренный бум — проверяем, что error.log ловит traceback
+        document.getElementById('debugBoomBtn').addEventListener('click', async () => {
+            try {
+                const res = await fetch('/api/admin/debug-boom', { method: 'POST' });
+                showToast(res.status === 500
+                    ? 'Бум: 500 ушёл клиенту, traceback — в error.log'
+                    : 'Неожиданный ответ: ' + res.status);
+                loadPulse();
+            } catch (err) {
+                showToast('Запрос не дошёл: ' + err);
+            }
+        });
+
+        // Phase 7.1c / R4: pulse + метрики
         async function loadPulse() {
             try {
                 const res = await fetch('/api/admin/pulse');
-                const rows = await res.json();
+                const data = await res.json();
+                renderMetrics(data.metrics);
+                const rows = data.events || [];
                 const tbody = document.getElementById('pulseTable');
                 tbody.innerHTML = rows.slice().reverse().map(r => `<tr>
                     <td style="white-space:nowrap">${r.ts}</td>

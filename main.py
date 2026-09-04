@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import sqlite3
 import hashlib
 import secrets
@@ -10,6 +11,8 @@ import mimetypes
 import time
 import asyncio
 import logging
+import shutil
+from logging.handlers import RotatingFileHandler
 from collections import deque
 from datetime import datetime, timezone, timedelta
 from contextlib import contextmanager
@@ -36,6 +39,8 @@ if SECRET_KEY is None:
     print("All sessions will persist across restarts, but this is INSECURE for production.", file=sys.stderr)
     print("Please set the SECRET_KEY environment variable in production.", file=sys.stderr)
     print("=" * 80, file=sys.stderr)
+# Phase R4: сам ключ в логи не пишем никогда — только факт его отсутствия
+SECRET_KEY_FROM_ENV = os.environ.get("SECRET_KEY") is not None
 FIRST_USER_ADMIN = os.environ.get("FIRST_USER_ADMIN", "1") == "1"
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", "10485760"))  # 10MB default
 THEME_IMAGE_MAX_BYTES = int(os.environ.get("THEME_IMAGE_MAX_BYTES", str(5 * 1024 * 1024)))  # ~5MB for theme image slots (separate from MAX_UPLOAD_BYTES)
@@ -50,6 +55,77 @@ UPLOADS_DIR = os.path.join(DATA_DIR, "uploads")
 THEME_IMAGES_DIR = os.path.join(DATA_DIR, "theme_images")
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 os.makedirs(THEME_IMAGES_DIR, exist_ok=True)
+
+
+# ========== Phase R4: логи ==========
+# Всё пишется в data/logs (data/ целиком в .gitignore), формат:
+#   время | level | модуль | сообщение
+# Секреты (cookie, SECRET_KEY, пароли) в логи не попадают — см. УСТАВ, п. 12.
+LOG_DIR = os.path.join(DATA_DIR, "logs")
+LOG_FORMAT = "%(asctime)s | %(levelname)s | %(module)s | %(message)s"
+LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
+LOG_MAX_BYTES = 5 * 1024 * 1024   # 5 МБ на файл
+LOG_BACKUP_COUNT = 5              # app.log.1 … app.log.5
+APP_LOG_PATH = os.path.join(LOG_DIR, "app.log")
+ERROR_LOG_PATH = os.path.join(LOG_DIR, "error.log")
+
+
+def setup_logging(level=logging.INFO) -> None:
+    """
+    Настроить логи один раз на процесс:
+      data/logs/app.log   — INFO и выше, ротация 5 МБ × 5
+      data/logs/error.log — только ERROR и выше, своя ротация
+      stdout              — дубль app.log, чтобы dev-режим остался видимым
+    """
+    os.makedirs(LOG_DIR, exist_ok=True)
+    formatter = logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT)
+
+    root = logging.getLogger("messenger")
+    root.setLevel(level)
+    for handler in list(root.handlers):     # повторный вызов не плодит хендлеры
+        root.removeHandler(handler)
+        try:
+            handler.close()
+        except Exception:
+            pass
+
+    app_handler = RotatingFileHandler(
+        APP_LOG_PATH, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT, encoding="utf-8"
+    )
+    app_handler.setLevel(logging.INFO)
+    app_handler.setFormatter(formatter)
+    root.addHandler(app_handler)
+
+    error_handler = RotatingFileHandler(
+        ERROR_LOG_PATH, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT, encoding="utf-8"
+    )
+    error_handler.setLevel(logging.ERROR)
+    error_handler.setFormatter(formatter)
+    root.addHandler(error_handler)
+
+    console = logging.StreamHandler(stream=sys.stdout)
+    console.setLevel(logging.INFO)
+    console.setFormatter(formatter)
+    root.addHandler(console)
+
+    root.propagate = False
+
+
+setup_logging()
+
+app_logger = logging.getLogger("messenger.app")
+error_logger = logging.getLogger("messenger.error")
+admin_logger = logging.getLogger("messenger.admin")
+
+if not SECRET_KEY_FROM_ENV:
+    app_logger.warning("SECRET_KEY не задан — используется небезопасный ключ разработки")
+
+# uptime считается от момента импорта приложения
+START_TIME = time.monotonic()
+# результат стартовой проверки целостности (для /api/admin/pulse)
+LAST_INTEGRITY: dict = {"ok": None, "detail": None, "ts": None}
+# метки времени необработанных ошибок — по ним считается errors_last_hour
+_error_timestamps: deque = deque()
 
 # ========== THEME TOKENS MANIFEST (Phase 5.2) ==========
 # Data-driven theme engine: each token has key, css_var, default, type
@@ -190,7 +266,7 @@ def merge_theme_with_defaults(theme_json_str):
         }
         return result
     except Exception as e:
-        print(f"Theme merge error: {e}")
+        app_logger.warning("тема: не удалось разобрать theme_json: %s", e)
         return THEME_PRESETS["default"]
 
 
@@ -370,10 +446,10 @@ async def security_headers_middleware(request: Request, call_next):
 
 # ========== Phase 7.1c: PULSE ring-buffer ==========
 _pulse_buffer: deque = deque(maxlen=500)
-_pulse_logger = logging.getLogger("pulse")
-_login_logger = logging.getLogger("pulse.login")
-_upload_logger = logging.getLogger("pulse.upload")
-_ws_logger = logging.getLogger("pulse.ws")
+_pulse_logger = logging.getLogger("messenger.pulse")
+_login_logger = logging.getLogger("messenger.pulse.login")
+_upload_logger = logging.getLogger("messenger.pulse.upload")
+_ws_logger = logging.getLogger("messenger.pulse.ws")
 
 
 def _pulse_emit(kind: str, detail: str):
@@ -395,9 +471,79 @@ async def pulse_middleware(request: Request, call_next):
 
 @app.get("/api/admin/pulse")
 async def get_pulse(request: Request):
+    """События (ring buffer) + метрики состояния (фаза R4)."""
     user = get_current_user(request)
     require_admin(user)
-    return JSONResponse(list(_pulse_buffer))
+    return JSONResponse({"events": list(_pulse_buffer), "metrics": pulse_metrics()})
+
+
+def pulse_metrics() -> dict:
+    """Метрики для админки: диск, БД, uptime, WS, ошибки за час, целостность, бэкап."""
+    now = time.time()
+    while _error_timestamps and _error_timestamps[0] < now - 3600:
+        _error_timestamps.popleft()
+
+    try:
+        disk_free = shutil.disk_usage(DATA_DIR).free
+    except OSError:
+        disk_free = 0
+    try:
+        db_size = os.path.getsize(DB_PATH)
+    except OSError:
+        db_size = 0
+
+    return {
+        "disk_free_bytes": disk_free,
+        "db_size_bytes": db_size,
+        "uptime_seconds": round(time.monotonic() - START_TIME, 1),
+        "ws_connections": len(app.state.connections),
+        "errors_last_hour": len(_error_timestamps),
+        "last_integrity": dict(LAST_INTEGRITY),
+        "last_backup_at": last_backup_at(),
+    }
+
+
+def last_backup_at():
+    """mtime самой свежей копии в BACKUP_DIR; None, если каталога нет или он пуст."""
+    backup_dir = os.environ.get("BACKUP_DIR", "/var/lib/messenger/backups")
+    try:
+        files = [os.path.join(backup_dir, name) for name in os.listdir(backup_dir)]
+        files = [path for path in files if os.path.isfile(path)]
+    except OSError:
+        return None
+    if not files:
+        return None
+    try:
+        return datetime.fromtimestamp(max(os.path.getmtime(p) for p in files)).isoformat(timespec="seconds")
+    except OSError:
+        return None
+
+
+@app.middleware("http")
+async def error_logging_middleware(request: Request, call_next):
+    """
+    Phase R4: необработанное исключение → error.log с traceback, клиенту 500.
+    В лог уходят только метод, путь и хост — без cookie, заголовков и тела.
+    """
+    try:
+        return await call_next(request)
+    except Exception:
+        _error_timestamps.append(time.time())
+        client = request.client.host if request.client else "?"
+        error_logger.exception("необработанное исключение: %s %s (client=%s)",
+                               request.method, request.url.path, client)
+        return JSONResponse({"detail": "Internal Server Error"}, status_code=500)
+
+
+@app.api_route("/api/admin/debug-boom", methods=["GET", "POST"])
+async def debug_boom(request: Request):
+    """
+    Phase R4: намеренный сбой для проверки error.log (только админ).
+    Клиент обязан получить 500, а traceback — лечь в data/logs/error.log.
+    """
+    user = get_current_user(request)
+    require_admin(user)
+    raise RuntimeError("DEBUG BOOM: намеренное исключение для проверки логов")
 
 
 templates = Jinja2Templates(directory="templates")
@@ -462,7 +608,7 @@ def ensure_schema():
         for col_name, col_type in user_column_additions:
             if col_name not in user_columns:
                 conn.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}")
-                print(f"Added column users.{col_name}")
+                app_logger.info(f"схема: добавлена колонка users.{col_name}")
         
         # Create messages table if not exists
         conn.execute("""
@@ -489,22 +635,22 @@ def ensure_schema():
         for col_name, col_type in msg_column_additions:
             if col_name not in msg_columns:
                 conn.execute(f"ALTER TABLE messages ADD COLUMN {col_name} {col_type}")
-                print(f"Added column messages.{col_name}")
+                app_logger.info(f"схема: добавлена колонка messages.{col_name}")
         
         # Phase 6.1: group support - NULL group_id = 1-on-1 dialog, set = group message
         if "group_id" not in msg_columns:
             conn.execute("ALTER TABLE messages ADD COLUMN group_id INTEGER NULL")
-            print("Added column messages.group_id")
+            app_logger.info("схема: добавлена колонка messages.group_id")
         
         # Phase 6.6: reply support (NULL = standalone message)
         if "reply_to_id" not in msg_columns:
             conn.execute("ALTER TABLE messages ADD COLUMN reply_to_id INTEGER NULL")
-            print("Added column messages.reply_to_id")
+            app_logger.info("схема: добавлена колонка messages.reply_to_id")
 
         # Phase 7.2b: message editing (NULL = never edited)
         if "edited_at" not in msg_columns:
             conn.execute("ALTER TABLE messages ADD COLUMN edited_at TIMESTAMP NULL")
-            print("Added column messages.edited_at")
+            app_logger.info("схема: добавлена колонка messages.edited_at")
         
         # Phase 6.6: per-user contact pins (pinned contacts float to the top)
         conn.execute("""
@@ -607,7 +753,7 @@ def ensure_schema():
         # Phase 7.1a: email column for registration
         if "email" not in user_columns:
             conn.execute("ALTER TABLE users ADD COLUMN email TEXT NULL")
-            print("Added column users.email")
+            app_logger.info("схема: добавлена колонка users.email")
 
         # Phase 7.1b: admin settings table (upload limits, etc.)
         conn.execute("""
@@ -716,7 +862,7 @@ def _migrate_messages_recipient_fk(conn) -> bool:
         conn.execute("PRAGMA foreign_keys = ON")
         raise
     conn.execute("PRAGMA foreign_keys = ON")
-    print("Migrated table messages: recipient_id больше не FK (группы используют 0)")
+    app_logger.info("миграция messages: recipient_id больше не FK (группы используют 0)")
     return True
 
 
@@ -767,12 +913,18 @@ def init_db() -> None:
     уборка брошенных .part.
     """
     global _KEEPALIVE_CONN
+    app_logger.info("старт приложения: DATA_DIR=%s, PORT=%s", DATA_DIR, PORT)
     ensure_schema()
     with get_db() as conn:
         mode = conn.execute("PRAGMA journal_mode = WAL").fetchone()[0]
-        print(f"[startup] journal_mode = {mode}")
+        app_logger.info("journal_mode = %s", mode)
         ok, detail = db_integrity_check(conn)
-        print(f"[startup] integrity_check {detail}")
+        app_logger.info("integrity_check %s", detail)
+        if not ok:
+            error_logger.error("integrity_check провален: %s", detail)
+        LAST_INTEGRITY.update(
+            ok=ok, detail=detail, ts=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        )
         _pulse_emit("integrity", f"{'ok' if ok else 'FAIL'}: {detail}")
 
     # Держим одно служебное соединение: пока оно открыто, SQLite не удаляет
@@ -783,7 +935,7 @@ def init_db() -> None:
 
     removed = cleanup_stale_parts(UPLOADS_DIR) + cleanup_stale_parts(THEME_IMAGES_DIR)
     if removed:
-        print(f"[startup] удалено брошенных .part: {removed}")
+        app_logger.info("чистка: удалено брошенных .part: %s", removed)
         _pulse_emit("cleanup", f"part removed={removed}")
 
 
@@ -1032,6 +1184,8 @@ async def login(request: Request, username: str = Form(...), password: str = For
     if not user or not verify_password(password, user["password_hash"]):
         count = _record_failure(ip)
         _pulse_emit("login", f"FAIL ip={ip} email={username.strip().lower()} attempts={count}")
+        # в лог — только счётчик и хост: ни email, ни пароль, ни cookie
+        _login_logger.warning("логин неудачный: ip=%s, попыток подряд=%s", ip, count)
         if count >= _RATE_LIMIT_MAX:
             return JSONResponse(
                 status_code=429,
@@ -1042,6 +1196,7 @@ async def login(request: Request, username: str = Form(...), password: str = For
     
     _clear_failures(ip)
     _pulse_emit("login", f"OK ip={ip} user={user['username']} id={user['id']}")
+    _login_logger.info("логин: ip=%s, user_id=%s", ip, user["id"])
     request.session["user_id"] = user["id"]
     return RedirectResponse(url="/chat", status_code=303)
 
@@ -1789,6 +1944,7 @@ async def websocket_endpoint(websocket: WebSocket):
     # Store connection
     app.state.connections[user_id] = websocket
     _pulse_emit("ws", f"CONNECT user_id={user_id}")
+    _ws_logger.info("WS подключён: user_id=%s", user_id)
     
     try:
         while True:
@@ -1835,10 +1991,12 @@ async def websocket_endpoint(websocket: WebSocket):
                         conn.commit()
     except WebSocketDisconnect:
         _pulse_emit("ws", f"DISCONNECT user_id={user_id}")
+        _ws_logger.info("WS отключён: user_id=%s", user_id)
         if user_id in app.state.connections:
             del app.state.connections[user_id]
-    except Exception:
+    except Exception as exc:
         _pulse_emit("ws", f"DISCONNECT user_id={user_id} (error)")
+        _ws_logger.warning("WS отключён с ошибкой: user_id=%s: %s", user_id, exc)
         if user_id in app.state.connections:
             del app.state.connections[user_id]
 
@@ -2191,6 +2349,10 @@ async def send_message(
                 )
                 attachment_ids.append(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
                 _pulse_emit("upload", f"file={file.filename} size={total_bytes} mime={mime_type}")
+                _upload_logger.info(
+                    "вложение сохранено: message_id=%s file=%s size=%s mime=%s",
+                    message_id, file.filename, total_bytes, mime_type
+                )
         
         conn.commit()
         
@@ -2330,6 +2492,10 @@ def log_admin_action(actor_id, action, target_id=None, detail=None):
             (actor_id, action, target_id, detail)
         )
         conn.commit()
+    admin_logger.info(
+        "админ-действие: actor_id=%s action=%s target_id=%s detail=%s",
+        actor_id, action, target_id, detail
+    )
 
 
 def is_banned(user):

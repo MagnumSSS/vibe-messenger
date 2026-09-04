@@ -142,6 +142,13 @@ restart_app() {
     start_app
 }
 
+# события обновления пишем в общий data/logs/app.log (без секретов в тексте)
+log_event() {
+    if [ -f scripts/log_event.py ]; then
+        DATA_DIR="$DATA_DIR" "$PY" scripts/log_event.py "$1" "$2" >/dev/null 2>&1 || true
+    fi
+}
+
 run_selftest() {
     # selftest поднимает свой инстанс на 8099 во временном DATA_DIR:
     # рабочий сервер он не трогает
@@ -184,8 +191,10 @@ log "ветка: $UPDATE_BRANCH, HEAD: $PREV_HASH, режим: $SERVICE_MODE"
 log "PRE-CHECK: selftest до обновления"
 if run_selftest | tee /tmp/update_selftest_pre.log | tail -3; then
     log "PRE-CHECK зелёный — обновляться можно"
+    log_event "update" "PRE-CHECK selftest: OK, обновляемся с $PREV_HASH"
 else
     warn "PRE-CHECK красный: на сломанном состоянии обновление запрещено"
+    log_event "update" "PRE-CHECK selftest: FAIL, обновление запрещено (HEAD=$PREV_HASH)"
     echo "UPDATE ABORTED: pre-check failed"
     exit 2
 fi
@@ -199,6 +208,7 @@ if ! DATA_DIR="$DATA_DIR" BACKUP_DIR="$BACKUP_DIR" RETAIN_COUNT="$RETAIN_COUNT" 
         "$PY" scripts/backup.py > "$BACKUP_OUT" 2>&1; then
     cat "$BACKUP_OUT"
     warn "бэкап не снялся — обновление отменено"
+    log_event "update" "бэкап не снялся, обновление отменено"
     echo "UPDATE ABORTED: backup failed"
     rm -f "$BACKUP_OUT"
     exit 3
@@ -229,6 +239,7 @@ if ! git reset --hard "origin/$UPDATE_BRANCH" 2>&1; then
 fi
 NEW_HASH="$(git rev-parse HEAD)"
 log "код обновлён: $PREV_HASH → $NEW_HASH"
+log_event "update" "код обновлён: $PREV_HASH → $NEW_HASH"
 
 # --------------------------------------------------------------------------- #
 # 4. RESTART
@@ -261,6 +272,7 @@ if [ "$POST_OK" = "0" ]; then
     echo "$NEW_HASH" > "$LAST_GOOD"
     log "last_good_hash → $LAST_GOOD ($NEW_HASH)"
     log "предыдущий HEAD (для ручного отката): $PREV_HASH"
+    log_event "update" "UPDATE OK: $PREV_HASH → $NEW_HASH"
     echo "UPDATE OK: $PREV_HASH → $NEW_HASH"
     exit 0
 fi
@@ -286,5 +298,6 @@ if restart_app; then
 else
     warn "после отката сервис не поднялся — нужен ручной разбор"
 fi
+log_event "update" "ROLLBACK DONE: HEAD=$(git rev-parse HEAD), БД из $BACKUP_FILE"
 echo "ROLLBACK DONE: HEAD=$(git rev-parse HEAD), БД из $BACKUP_FILE"
 exit 1

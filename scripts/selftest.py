@@ -613,6 +613,72 @@ async def run_scenarios(report: Report, data_dir: str) -> None:
         assert again.get("deleted") == 0, f"повторная чистка снова что-то удалила: {again}"
     await report.step("o", "cleanup-orphans удаляет сирот, счёт верный", scenario_o)
 
+    # ---------------- p) пульс отдаёт метрики ----------------
+    def scenario_p():
+        pulse = alice.json("/api/admin/pulse", method="GET")
+        metrics = pulse.get("metrics")
+        assert isinstance(metrics, dict), f"в ответе пульса нет metrics: {pulse}"
+        assert isinstance(pulse.get("events"), list), f"в ответе пульса нет events: {pulse}"
+
+        for key in ("disk_free_bytes", "db_size_bytes", "uptime_seconds",
+                    "ws_connections", "errors_last_hour", "last_integrity", "last_backup_at"):
+            assert key in metrics, f"в metrics нет поля {key}: {metrics}"
+
+        uptime = metrics["uptime_seconds"]
+        assert isinstance(uptime, (int, float)) and uptime > 0, f"uptime_seconds: {uptime!r}"
+        ws = metrics["ws_connections"]
+        assert isinstance(ws, int) and ws >= 2, f"ws_connections: {ws!r} (ожидали >= 2 — A и B online)"
+        disk_free = metrics["disk_free_bytes"]
+        assert isinstance(disk_free, int) and disk_free > 0, f"disk_free_bytes: {disk_free!r}"
+        db_size = metrics["db_size_bytes"]
+        assert isinstance(db_size, int) and db_size > 0, f"db_size_bytes: {db_size!r}"
+        errors = metrics["errors_last_hour"]
+        assert isinstance(errors, int) and errors >= 0, f"errors_last_hour: {errors!r}"
+
+        integrity = metrics["last_integrity"]
+        assert isinstance(integrity, dict) and integrity.get("ok") is True, f"last_integrity: {integrity!r}"
+        assert integrity.get("ts"), f"last_integrity без времени: {integrity!r}"
+        # last_backup_at допустимо None (каталога бэкапов может не быть)
+        assert metrics["last_backup_at"] is None or isinstance(metrics["last_backup_at"], str), \
+            f"last_backup_at: {metrics['last_backup_at']!r}"
+    await report.step("p", "пульс отдаёт метрики (диск/БД/uptime/WS/ошибки)", scenario_p)
+
+    # ---------------- q) логи: app.log с стартом, error.log ловит бум ----------------
+    def scenario_q():
+        data_dir = need("data_dir", "нет DATA_DIR")
+        logs_dir = Path(data_dir) / "logs"
+        app_log, err_log = logs_dir / "app.log", logs_dir / "error.log"
+
+        assert app_log.is_file(), f"нет файла {app_log} (логи не настроены)"
+        app_text = app_log.read_text(encoding="utf-8", errors="replace")
+        assert "старт приложения" in app_text, "в app.log нет строки старта"
+        assert "journal_mode = wal" in app_text, "в app.log нет строки journal_mode"
+        assert "integrity_check ok" in app_text, "в app.log нет строки integrity_check"
+        assert app_text.count(" | INFO | ") > 0, "формат лога не «время | level | модуль | сообщение»"
+
+        # намеренный бум: клиенту 500, traceback — в error.log
+        status, raw = alice.request("/api/admin/debug-boom", method="POST")
+        assert status == 500, f"debug-boom: HTTP {status}: {raw[:160]!r}"
+
+        # посторонним нельзя подрывать
+        status_b, _ = bob.request("/api/admin/debug-boom", method="POST")
+        assert status_b == 403, f"debug-boom от не-админа: HTTP {status_b} (ожидали 403)"
+
+        deadline = time.monotonic() + 5.0
+        err_text = ""
+        while time.monotonic() < deadline:
+            if err_log.is_file():
+                err_text = err_log.read_text(encoding="utf-8", errors="replace")
+                if "DEBUG BOOM" in err_text:
+                    break
+            time.sleep(0.1)
+        assert "DEBUG BOOM" in err_text, f"в error.log нет строки намеренного сбоя: {err_text[-400:]!r}"
+        assert "Traceback" in err_text, "в error.log нет traceback"
+        # метрика ошибок за час отреагировала
+        assert alice.json("/api/admin/pulse", method="GET")["metrics"]["errors_last_hour"] >= 1, \
+            "errors_last_hour не учитывает перехваченное исключение"
+    await report.step("q", "логи: app.log со стартом, error.log ловит намеренный сбой", scenario_q)
+
     # ---------------- закрытие WS ----------------
     for ws in (state.get("ws_a"), state.get("ws_b")):
         if ws is not None:

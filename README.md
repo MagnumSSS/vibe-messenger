@@ -42,6 +42,10 @@ A lightweight private web messenger for small groups, designed for Raspberry Pi 
 11. Фаза принимается **ТОЛЬКО** с зелёным `scripts/selftest.py`; последние 20 строк его вывода вкладываются в отчёт о фазе.
     Все соединения с SQLite создаются только через `get_conn()`; вложения пишутся в `*.part` и появляются через `os.replace`;
     `data/` целиком в `.gitignore`, поэтому `-wal`, `-shm` и `*.part` в git не попадают.
+12. События приложения идут через `logging`, а не `print`: `data/logs/app.log` (INFO, ротация 5 МБ × 5) и
+    `data/logs/error.log` (только ERROR+, своя ротация), формат `время | level | модуль | сообщение`.
+    В логи не попадают cookie, `SECRET_KEY` и пароли — проверяется grep'ом по лог-вызовам:
+    `grep -nE "(app_logger|error_logger|admin_logger|_login_logger|_ws_logger|_upload_logger)\.(info|warning|error|exception)" main.py | grep -iE "cookie|secret|password|token"`.
 
 ```bash
 python scripts/selftest.py   # exit 0 только если все сценарии OK
@@ -422,3 +426,5 @@ Private use only.
 - phase R2 complete
 
 - phase R3 complete
+
+- phase R4 complete
