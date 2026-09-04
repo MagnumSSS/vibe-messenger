@@ -2689,16 +2689,20 @@ header h1 {
 }
 
 .message.system-announcement .message-body {
-    background: var(--chip-bg, rgba(128, 128, 128, 0.16));
+    /* 7.8-fix [5]: фон объявления — токен темы broadcast_bg, текст по YIQ
+       (--broadcast-text считает applyContrast). Раньше был --chip-bg: он не из
+       манифеста, в тёмной теме оставался светлым и текст сливался. */
+    background: var(--broadcast-bg, var(--chip-bg, rgba(128, 128, 128, 0.16)));
+    color: var(--broadcast-text, var(--text-primary));
     border: 1px solid var(--border-color, rgba(128, 128, 128, 0.25));
     border-radius: 16px;
     padding: 0.7rem 1rem;
-    color: var(--text-primary);
     font-size: 0.92rem;
     /* Phase 7.8: переносы даёт renderMarkdown (<br>) — pre-wrap удваивал бы строки */
     white-space: normal;
     word-break: break-word;
-    text-align: left;
+    /* текст по центру — как принято в 7.6d-fix (п.4): само объявление и так
+       отцентровано в ленте, выравнивание внутри не трогаем */
 }
 
 .message.system-announcement .message-time {
@@ -2847,6 +2851,75 @@ header h1 {
     cursor: pointer;
 }
 
+/* =====================================================================
+   7.8-fix [2]: desktop — шапка чата это остров ПО ЦЕНТРУ
+   (мобила ниже не меняется: там остров во всю ширину, ава прижата к стрелке)
+   ===================================================================== */
+@media (min-width: 769px) {
+    .chat-header {
+        width: max-content;
+        max-width: calc(100% - 32px);
+        margin: 8px auto 0;      /* остров по центру чата */
+        padding: 0.45rem 1.2rem; /* padding симметричный */
+        gap: 0.75rem;
+        justify-content: center;
+        position: relative;      /* якорь для баннера-подложки и кнопок действий */
+        overflow: hidden;
+    }
+
+    /* вложенный контейнер прозрачный: стекло и рамку держит сам остров */
+    .chat-peer-island {
+        position: static;
+        overflow: visible;
+        padding: 0;
+        gap: 0.6rem;
+        border: none;
+        border-radius: 0;
+        background: none;
+        -webkit-backdrop-filter: none;
+        backdrop-filter: none;
+    }
+
+    /* баннер собеседника ложится под стекло ВСЕГО острова */
+    .chat-peer-banner {
+        inset: 0;
+        width: 100%;
+        height: 100%;
+    }
+
+    /* балансир справа = ширине авы: концы острова равноудалены от ника */
+    .chat-peer-island::after {
+        content: '';
+        flex: 0 0 32px;
+        width: 32px;
+        height: 1px;
+    }
+
+    .chat-peer-island.with-banner {
+        background: none;
+    }
+
+    /* ник по центру острова */
+    .chat-header .marquee-wrap {
+        flex: 1 1 auto;
+        min-width: 0;
+        text-align: center;
+    }
+
+    .chat-header .marquee-inner {
+        justify-content: center;
+    }
+
+    /* кнопки действий (трэш, участники) — в правом «балансирном» отсеке */
+    .chat-header-actions {
+        position: absolute;
+        right: 0.7rem;
+        top: 50%;
+        transform: translateY(-50%);
+        margin-left: 0;
+    }
+}
+
 /* [3] баннер собеседника — под стеклом, текст остаётся читаемым */
 .chat-peer-banner {
     position: absolute;
@@ -2882,11 +2955,9 @@ header h1 {
     flex-shrink: 0;
 }
 
-/* Верхняя шапка приложения — тот же остров, цвет из токена header_color */
-header {
-    background-color: var(--header-island-color, var(--panel-color, #ffffff));
-    background-color: color-mix(in srgb, var(--header-island-color, var(--panel-color, #ffffff)) 84%, transparent);
-}
+/* 7.8-fix [4]: верхняя шапка приложения НЕ зависит от токена header_color —
+   тот красится только на элементе #chatHeader. Здесь свой токен (--header-color)
+   плюс общий материал острова (--panel-color) — смешения нет. */
 
 /* ---- [5] Кнопка удаления чата: прижата к правому краю, по ширине иконки ---- */
 .curtain-actions {

@@ -203,6 +203,8 @@ THEME_TOKENS = {
         "presence_online": {"key": "presence_online", "css_var": "--presence-online", "default": "#2ecc71", "type": "color"},
         "presence_offline": {"key": "presence_offline", "css_var": "--presence-offline", "default": "#9aa0a6", "type": "color"},
         "presence_text": {"key": "presence_text", "css_var": "--presence-text", "default": "#666666", "type": "color"},
+        # Phase 7.8-fix: фон объявлений канала (текст считается YIQ-автоконтрастом)
+        "broadcast_bg": {"key": "broadcast_bg", "css_var": "--broadcast-bg", "default": "#e4e6eb", "type": "color"},
     },
     "images": {
         "header_img": {"key": "header_img", "css_var": "--header-img", "default": None, "type": "image"},
@@ -272,7 +274,8 @@ THEME_PRESETS = {
             "name_color": "#0084ff",
             "presence_online": "#2ecc71",
             "presence_offline": "#9aa0a6",
-            "presence_text": "#666666"
+            "presence_text": "#666666",
+            "broadcast_bg": "#e4e6eb"
         },
         "images": {},
         "effects": {"wallpaper_blur": 0, "bubble_blur": 0},
@@ -302,7 +305,8 @@ THEME_PRESETS = {
             "name_color": "#eaeaea",
             "presence_online": "#2ecc71",
             "presence_offline": "#8b8f94",
-            "presence_text": "#a0a0a0"
+            "presence_text": "#a0a0a0",
+            "broadcast_bg": "#2d3436"
         },
         "images": {},
         "effects": {"wallpaper_blur": 0, "bubble_blur": 0},

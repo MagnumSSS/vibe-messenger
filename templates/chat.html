@@ -510,6 +510,10 @@
         const userThemeJson = {{ user.theme_json | tojson }} || '{}';
         let selectedUserId = null;
         let selectedGroupId = null; // Phase 6.1: active group chat (null = 1-on-1 mode)
+        // 7.8-fix [3]: объявлено рядом с остальным состоянием — renderHeader()
+        // вызывается на bootstrap, который по файлу выполняется гораздо раньше
+        let peerBannerUuid = '';   // баннер собеседника для шапки (пусто у канала — свой)
+        const bannerByUser = {};   // 7.8-fix [3]: кэш баннеров — шапка на месте без мигания
         let ws = null;
         let attachedFiles = [];
         const MAX_FILE_SIZE = {{ max_upload_bytes | tojson }};
@@ -685,7 +689,7 @@
             border: '#dddddd', modal_bg: '#ffffff', hover: '#f5f5f5', active: '#e6f2ff',
             select_border: '#0084ff', chip_cmd: '#dbe7ff',
             // Phase 7.8
-            header_color: '#ffffff', name_color: '#0084ff',
+            header_color: '#ffffff', name_color: '#0084ff', broadcast_bg: '#e4e6eb',
             presence_online: '#2ecc71', presence_offline: '#9aa0a6', presence_text: '#666666'
         };
         // Phase 7.8: тумблеры темы (бинарные настройки, не цвета)
@@ -697,7 +701,10 @@
             input_bg: '--input-bg', border: '--border-color', modal_bg: '--modal-bg', hover: '--hover-bg', active: '--active-bg',
             select_border: '--select-border', chip_cmd: '--chip-cmd-bg',
             // Phase 7.8
-            header_color: '--header-island-color', name_color: '--name-color',
+            // header_color здесь НАМЕРЕННО отсутствует: 7.8-fix [4] — это цвет
+            // острова шапки чата, он ставится переменной на ЭЛЕМЕНТ #chatHeader
+            // (см. applyThemeDirect), а не на root, чтобы не красить верхнюю панель
+            name_color: '--name-color', broadcast_bg: '--broadcast-bg',
             presence_online: '--presence-online', presence_offline: '--presence-offline',
             presence_text: '--presence-text'
         };
@@ -798,8 +805,13 @@
             const islandBg = t.colors.header_color || FALLBACK_COLORS.header_color;
             s.setProperty('--border-color', deriveBorderColor(bg));
             s.setProperty('--header-text', contrastText(t.colors.header || FALLBACK_COLORS.header));
-            s.setProperty('--header-island-color', islandBg);
-            s.setProperty('--header-island-text', contrastText(islandBg));
+            // 7.8-fix [4]: header_color — ТОЛЬКО на элементе шапки чата.
+            // Ни root, ни body: верхняя панель мессенджера красится своим токеном
+            // (--header-color / --panel-color) и от этой настройки не зависит.
+            if (chatHeader) {
+                chatHeader.style.setProperty('--header-island-color', islandBg);
+                chatHeader.style.setProperty('--header-island-text', contrastText(islandBg));
+            }
             s.setProperty('--presence-online', t.colors.presence_online || FALLBACK_COLORS.presence_online);
             s.setProperty('--presence-offline', t.colors.presence_offline || FALLBACK_COLORS.presence_offline);
             s.setProperty('--presence-text', t.colors.presence_text || FALLBACK_COLORS.presence_text);
@@ -910,6 +922,11 @@
             s.setProperty('--input-text', contrastText(inputBg));
             // Phase 6.2: command chip label auto-contrasts with the chip_cmd token
             s.setProperty('--chip-cmd-text', contrastText(chipCmdBg));
+            // 7.8-fix [5]: объявления канала — фон из токена темы, текст по YIQ.
+            // Раньше фон брался из --chip-bg, которого нет в манифесте: в тёмной
+            // теме он оставался светлым и текст сливался.
+            const broadcastBg = readVar('--broadcast-bg', '#e4e6eb');
+            s.setProperty('--broadcast-text', contrastText(broadcastBg));
             // Phase 6.6c: toggle icon color auto-contrasts with the panel (island) background
             const panelBg = readVar('--panel-color', '#ffffff');
             s.setProperty('--chip-toggle-text', contrastText(panelBg));
@@ -1055,7 +1072,8 @@
             wallpaper_blur: 'Размытие обоев', bubble_blur: 'Размытие пузырей',
             chip_size: 'Размер чипов',
             // Phase 7.8
-            header_color: 'Остров шапки', name_color: 'Ник собеседника',
+            header_color: 'Остров шапки чата', name_color: 'Ник собеседника',
+            broadcast_bg: 'Объявления канала',
             presence_online: 'Онлайн (граница авы)', presence_offline: 'Оффлайн (граница авы)',
             presence_text: 'Островок «был в сети»'
         };
@@ -2080,12 +2098,9 @@
             typingTimers = {}; typingNames = {}; renderTypingIsland();
 
             chatHeader.style.display = '';
-            peerBannerUuid = '';
-            renderPeerBanner();
             renderPresenceIsland();
-            chatHeaderName.textContent = channelState.name || 'ВайбБункер';
-            checkMarquee();
-            chatHeaderAvatar.src = getAvatarUrl(channelState.avatar_uuid);
+            // 7.8-fix [1]: аватар канала рендерится безусловно (нет uuid -> default)
+            renderHeader(channelState.name || 'ВайбБункер', channelState.avatar_uuid, '');
             chatHeaderAvatar.style.display = '';
             // Phase 7.6d-fix: канал не удаляют, участников и команд у него нет
             chatHeaderActions.style.display = 'none';
@@ -2392,14 +2407,34 @@
         }
         
         // Helper function to set avatar on user list items
+        // 7.8-fix [1]: аватар в контактах рендерится БЕЗУСЛОВНО — нет uuid,
+        // значит default-avatar.png. Никаких «подождём баннер/профиль».
         function renderUserAvatars() {
             document.querySelectorAll('.user-item').forEach(item => {
-                const avatarUuid = item.dataset.avatar;
                 const img = item.querySelector('.user-avatar');
-                if (img && avatarUuid) {
-                    img.src = getAvatarUrl(avatarUuid);
-                }
+                if (!img) return;
+                img.src = getAvatarUrl(item.dataset.avatar);
             });
+        }
+
+        // 7.8-fix [1][3]: одна точка сборки шапки чата — аватар, ник, баннер.
+        // Вызывается и при клике по контакту, и на bootstrap (hash/sessionStorage):
+        // после перезагрузки шапка на месте сразу, не дожидаясь загрузки диалога.
+        function renderHeader(name, avatarUuid, bannerUuid) {
+            // 7.8-fix [3]: шапка видима сразу — не ждём открытия диалога
+            if (chatHeader) chatHeader.style.display = '';
+            if (chatHeaderAvatar) {
+                // аватар всегда: uuid -> /api/avatar/<uuid>, иначе default-avatar.png
+                chatHeaderAvatar.src = getAvatarUrl(avatarUuid);
+                chatHeaderAvatar.style.display = '';
+            }
+            if (chatHeaderName) chatHeaderName.textContent = name || '';
+            checkMarquee();
+            // баннер: явный uuid, иначе из кэша собеседника (без мигания при переключении)
+            peerBannerUuid = (bannerUuid !== undefined)
+                ? (bannerUuid || '')
+                : (bannerByUser[selectedUserId] || '');
+            renderPeerBanner();
         }
         
         // Render avatars on page load
@@ -2424,16 +2459,37 @@
                 const uid = parseInt(chatKey.slice(5));
                 if (uid) {
                     const item = document.querySelector(`.user-item[data-id="${uid}"]`);
+                    // 7.8-fix [3]: шапка рендерится СРАЗУ из данных строки —
+                    // не ждём ни профиля, ни загрузки диалога, ни переключения чата
+                    if (item) {
+                        selectedUserId = uid;
+                        renderHeader(item.dataset.name, item.dataset.avatar);
+                    } else {
+                        // строки уже нет (удалён контакт?) — берём имя из профиля
+                        fetch(`/api/user/${uid}/profile`).then(r => r.ok ? r.json() : null)
+                            .then(data => {
+                                if (!data) return;
+                                selectedUserId = uid;
+                                bannerByUser[uid] = data.banner_uuid || '';
+                                renderHeader(data.name || '', data.avatar_uuid, data.banner_uuid);
+                            }).catch(() => {});
+                    }
                     if (item) item.click();
                 }
             } else if (chatKey.startsWith('group:')) {
                 const gid = parseInt(chatKey.slice(6));
                 if (gid) {
                     const item = document.querySelector(`.group-item[data-group-id="${gid}"]`);
+                    // 7.8-fix [3]: в группе тоже имя и аватар по умолчанию — сразу
+                    if (item) renderHeader(item.dataset.groupName, '', '');
                     if (item) item.click();
                 }
             } else if (chatKey === 'channel') {
-                if (channelItem) channelItem.click();   // Phase 7.6d-fix: канал
+                if (channelItem) {
+                    selectedChannel = true;
+                    renderHeader(channelState.name || 'ВайбБункер', channelState.avatar_uuid, '');
+                    channelItem.click();   // Phase 7.6d-fix: канал
+                }
             }
         });
         // Phase 7.3: load unread counts on page load
@@ -2462,12 +2518,9 @@
                 try { sessionStorage.setItem('vb_last_chat', 'user:' + selectedUserId); } catch(e) {}
                 exitEditMode(); exitDeleteMode(); // Phase 7.2b: reset modes on chat switch
                 if (typeof closeAccessoryIsland === 'function') closeAccessoryIsland();
-                const userName = item.dataset.name;
-                const userAvatar = item.dataset.avatar;
-                
-                chatHeaderName.textContent = userName;
-                checkMarquee();
-                chatHeaderAvatar.src = getAvatarUrl(userAvatar);
+                // 7.8-fix [1]: шапка собирается одной функцией — аватар всегда,
+                // баннер подхватится из presenceMap/профиля ниже (refreshPeerMeta)
+                renderHeader(item.dataset.name, item.dataset.avatar, peerBannerUuid);
                 // restore dialog-mode header controls
                 chatHeaderAvatar.style.display = '';
                 // Phase 6.5: 1-on-1 shows the "Удалить чат" trash chip (members btn stays group-only)
@@ -2575,9 +2628,9 @@
             try { sessionStorage.setItem('vb_last_chat', 'group:' + groupId); } catch(e) {}
             exitEditMode(); exitDeleteMode(); // Phase 7.2b: reset modes on chat switch
             
-            chatHeaderName.textContent = groupName;
-            checkMarquee();
-            chatHeaderAvatar.style.display = 'none'; // no peer avatar in group mode
+            // 7.8-fix [1]: в группе тоже рендерим аватар (нет uuid -> default-avatar.png)
+            renderHeader(groupName, '', '');
+            chatHeaderAvatar.style.display = '';
             chatHeaderActions.style.display = 'flex';
             deleteChatBtn.style.display = 'none';    // dialog deletion is 1-on-1 only for now
             groupMembersBtn.style.display = '';
@@ -3922,14 +3975,15 @@
                 if (!res.ok) return;
                 const data = await res.json();
                 presenceMap[uid] = { online: !!data.online, last_seen: data.last_seen || null };
-                peerBannerUuid = data.banner_uuid || '';
+                bannerByUser[uid] = data.banner_uuid || '';
+                peerBannerUuid = bannerByUser[uid];
                 renderPresenceRings();
                 renderPresenceIsland();
                 renderPeerBanner();
             } catch (e) { console.error('Failed to load peer meta:', e); }
         }
 
-        let peerBannerUuid = '';   // баннер собеседника для шапки (пусто у канала — свой)
+
 
         function renderPeerBanner() {
             if (!chatHeaderBanner) return;

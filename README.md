@@ -62,6 +62,16 @@ A lightweight private web messenger for small groups, designed for Raspberry Pi 
 | Кнопки закрытия | единый `.island-close` (круглый островок 34px с SVG-крестом) в редакторе тем, профиле, чужом профиле, создании группы, участниках, удалении аккаунта, модалке картинки и в админ-модалках (`#warnCloseBtn`, `#banCloseBtn`) |
 | Канал | объявления по центру (`.system-announcement`), md-рендер с переносами строк; `\n → <br>` теперь **только вне** ` ```блоков``` ` (внутри `<pre>` работают настоящие переводы строк) |
 
+### 7.8-fix: аватары, desktop-остров, reload, скоуп токена, объявления в теме
+
+| # | Что сделано | Где |
+|---|---|---|
+| [1] | Аватар собеседника рендерится **безусловно**: в контактах (`renderUserAvatars()` — без `if (avatarUuid)`) и в шапке (`renderHeader()`); нет uuid → `/static/default-avatar.png`. Никакой зависимости от баннера/профиля | `renderHeader()`, `renderUserAvatars()`, `getAvatarUrl()` |
+| [2] | Desktop (`min-width: 769px`): шапка чата — остров **по центру** (`width: max-content; margin: 8px auto`), padding симметричный (`0.45rem 1.2rem`), ник по центру, ава слева внутри острова, справа балансир `::after` шириной в аву (32px) — концы острова равноудалены от ника. Кнопки действий — в правом отсеке. Мобила (`max-width: 768px`) не изменилась | `@media (min-width: 769px)` в `static/style.css` |
+| [3] | Reload: в bootstrap-пути (`hash #c=…` / `sessionStorage`) **сразу** вызывается `renderHeader(имя, аватар[, баннер])` — шапка на месте до загрузки диалога; баннер берётся из кэша `bannerByUser`, при отсутствии строки контакта — из `/api/user/{id}/profile` | bootstrap-блок в `templates/chat.html` |
+| [4] | Токен `header_color` ставится переменной **на элемент** `#chatHeader` (`style.setProperty('--header-island-color')`), а не на root/body; он исключён из `TOKEN_CSS_VARS`, поэтому цикл по токенам его не трогает. Верхняя панель мессенджера использует только `--header-color` / `--panel-color` | `applyThemeDirect()` + `header` в `static/style.css` |
+| [5] | Объявления канала: фон из токена `broadcast_bg` (`--broadcast-bg`, манифест + оба пресета; тёмная `#2d3436`), текст — YIQ-автоконтраст `--broadcast-text` из `applyContrast()`. Центрирование и md-рендер сохранены | `THEME_TOKENS`, `THEME_PRESETS`, `applyContrast()`, `.message.system-announcement` |
+
 ### Важно: инвалидация кэша браузера (7.8-fix)
 
 PWA-сервис-воркер (`static/sw.js`) отдаёт `/static/style.css?v=…` **cache-first**, а HTML —
@@ -685,4 +695,5 @@ Private use only.
 
 - 7.6d-fix complete
 - phase 7.8 complete
+- 7.8-fix complete
 - 7.8-fix complete
