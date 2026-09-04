@@ -27,6 +27,23 @@ A lightweight private web messenger for small groups, designed for Raspberry Pi 
 - Python 3.8+
 - Dependencies in `requirements.txt`
 
+## Режим сессионной cookie и встраивание
+
+По умолчанию cookie сессии — `SameSite=Lax` без `Secure`, а ответы содержат `X-Frame-Options: DENY`
+(приложение открывается напрямую, не во фрейме). Если сервис открывают внутри iframe на другом
+домене (например, предпросмотр в браузере), браузер такую cookie не отправит — после логина
+`/chat` будет снова кидать на `/`. Для этого случая есть env-переключатели:
+
+```bash
+SESSION_SAME_SITE=none SESSION_SECURE=1 FRAME_OPTIONS=none python -m uvicorn main:app --host 0.0.0.0 --port 8000
+```
+
+- `SESSION_SAME_SITE` — `lax` (default) | `strict` | `none`;
+- `SESSION_SECURE=1` — добавляет флаг `Secure` (обязателен для `SameSite=None`, нужен HTTPS);
+- `FRAME_OPTIONS` — `deny` (default) | `sameorigin` | `none` (заголовок не отправляется).
+
+Режим виден в логе при старте: `сессия: cookie same_site=... secure=...; X-Frame-Options=...`.
+
 ## УСТАВ (правила приёмки фаз)
 
 1. Каждая фаза живёт в своей ветке; `main` не трогаем до явного решения о мерже.

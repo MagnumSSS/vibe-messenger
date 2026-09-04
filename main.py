@@ -400,7 +400,32 @@ def calculate_yiq_contrast(hex_color):
 
 
 app = FastAPI()
-app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY)
+
+# Формат сессионной cookie настраивается из env, чтобы приложение работало
+# и напрямую, и внутри кросс-сайтового iframe (предпросмотр в браузере):
+#   SESSION_SAME_SITE=lax|strict|none   (default lax)
+#   SESSION_SECURE=1                    (default 0) — ставит флаг Secure
+# Для iframe на другом домене нужно none + secure=1: иначе браузер cookie
+# просто не отправляет, и после логина /chat снова кидает на /.
+SESSION_SAME_SITE = os.environ.get("SESSION_SAME_SITE", "lax").lower()
+if SESSION_SAME_SITE not in ("lax", "strict", "none"):
+    SESSION_SAME_SITE = "lax"
+SESSION_SECURE = os.environ.get("SESSION_SECURE", "0") == "1"
+# X-Frame-Options: deny (по умолчанию) | sameorigin | none — для предпросмотра нужно none
+FRAME_OPTIONS = os.environ.get("FRAME_OPTIONS", "deny").lower()
+if FRAME_OPTIONS not in ("deny", "sameorigin", "none"):
+    FRAME_OPTIONS = "deny"
+
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=SECRET_KEY,
+    same_site=SESSION_SAME_SITE,
+    https_only=SESSION_SECURE,
+)
+app_logger.info(
+    "сессия: cookie same_site=%s secure=%s; X-Frame-Options=%s",
+    SESSION_SAME_SITE, SESSION_SECURE, FRAME_OPTIONS
+)
 
 
 # ========== Phase 7.1b: rate-limiting & security headers ==========
@@ -434,7 +459,11 @@ def _clear_failures(ip: str):
 async def security_headers_middleware(request: Request, call_next):
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
+    if FRAME_OPTIONS == "deny":
+        response.headers["X-Frame-Options"] = "DENY"
+    elif FRAME_OPTIONS == "sameorigin":
+        response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    # FRAME_OPTIONS=none — заголовок не шлём (нужно для предпросмотра в iframe)
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data: blob:; font-src 'self'"
     # Phase micro banner3: no-cache for all /api/* responses

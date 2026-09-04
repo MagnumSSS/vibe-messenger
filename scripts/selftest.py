@@ -230,6 +230,11 @@ def start_server(data_dir: str) -> subprocess.Popen:
         SECRET_KEY=SECRET_KEY,
         MAX_UPLOAD_BYTES=str(MAX_UPLOAD_BYTES),
         PYTHONUNBUFFERED="1",
+        # тестовый инстанс всегда по HTTP и без iframe: фиксируем cookie-режим,
+        # чтобы прогон не зависел от env разработчика
+        SESSION_SAME_SITE="lax",
+        SESSION_SECURE="0",
+        FRAME_OPTIONS="deny",
     )
     proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "main:app",
