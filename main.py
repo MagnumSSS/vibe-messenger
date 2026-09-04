@@ -720,6 +720,10 @@ async def security_headers_middleware(request: Request, call_next):
     if request.url.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
         response.headers["Pragma"] = "no-cache"
+    # Phase 7.8: HTML-страницы не кэшируем — разметка несёт инлайн-JS чата,
+    # и её устаревшая копия выглядит как «нового функционала нет»
+    elif not request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
     return response
 
 

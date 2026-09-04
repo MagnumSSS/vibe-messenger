@@ -62,6 +62,19 @@ A lightweight private web messenger for small groups, designed for Raspberry Pi 
 | Кнопки закрытия | единый `.island-close` (круглый островок 34px с SVG-крестом) в редакторе тем, профиле, чужом профиле, создании группы, участниках, удалении аккаунта, модалке картинки и в админ-модалках (`#warnCloseBtn`, `#banCloseBtn`) |
 | Канал | объявления по центру (`.system-announcement`), md-рендер с переносами строк; `\n → <br>` теперь **только вне** ` ```блоков``` ` (внутри `<pre>` работают настоящие переводы строк) |
 
+### Важно: инвалидация кэша браузера (7.8-fix)
+
+PWA-сервис-воркер (`static/sw.js`) отдаёт `/static/style.css?v=…` **cache-first**, а HTML —
+network-first. Пока версия в ссылке и имя кэша не меняются, браузер продолжает показывать
+**старый CSS**, и любой новый стиль выглядит как «не сделано». Правило на все фазы:
+
+1. `static/sw.js` → `const CACHE = 'vb-<фаза>'` (новое имя чистит старые кэши на `activate`);
+2. `templates/chat.html` → `href="/static/style.css?v=<фаза>"`;
+3. статику с `?v=` отдаём **stale-while-revalidate** (фоновая подкачка обновит кэш, даже если
+   версию забыли поднять);
+4. HTML-страницы уходят с `Cache-Control: no-cache, must-revalidate` — разметка несёт инлайн-JS
+   чата, её устаревшая копия равна «нового функционала нет».
+
 Серверные точки входа: `PRESENCE_HEARTBEAT_SECONDS`, `touch_last_seen()`, `push_presence()`,
 `presence_heartbeat()`, `ensure_presence_heartbeat()`, токены `header_color` / `name_color` /
 `presence_online` / `presence_offline` / `presence_text` и секция `toggles` манифеста
@@ -672,3 +685,4 @@ Private use only.
 
 - 7.6d-fix complete
 - phase 7.8 complete
+- 7.8-fix complete
