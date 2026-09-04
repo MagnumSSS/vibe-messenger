@@ -2679,7 +2679,8 @@ header h1 {
     }
 }
 
-/* ===== Phase 7.6d: системный канал «start» ===== */
+/* ===== Phase 7.6d-fix: канал объявлений «ВайбБункер» ===== */
+/* Канал — не пользователь: объявления идут по центру, без аватара и без цитаты. */
 .message.system-announcement {
     align-self: center;
     margin: 0.6rem auto;
@@ -2713,6 +2714,11 @@ header h1 {
     opacity: 0.75;
 }
 
+/* строка канала: без «занавеса» и без стрелки действий — канал не удаляют */
+.user-item-system {
+    cursor: pointer;
+}
+
 .channel-notice {
     display: flex;
     align-items: center;
@@ -2725,13 +2731,61 @@ header h1 {
     color: var(--text-secondary, #666);
     font-size: 0.9rem;
     text-align: center;
+    flex-wrap: wrap;
 }
 
 .channel-notice-icon {
     font-size: 1.05rem;
 }
 
-/* режим оформления канала: скрываем разделы, которые к каналу не относятся */
-.profile-channel-mode .settings-section {
+/* плашка creator в пустом канале + кнопка «Вставить шаблон» */
+.channel-notice-creator {
+    justify-content: flex-start;
+    text-align: left;
+}
+
+.channel-notice-creator .cmd-chip {
+    margin-left: auto;
+    cursor: pointer;
+}
+
+/* оформление канала: в ящике профиля остаются только поля канала */
+.profile-channel-mode .settings-section:not(.channel-editable) {
     display: none;
+}
+
+/* ===== Phase 7.6d-fix: markdown-подмножество в пузырях ===== */
+.message-text {
+    display: block;
+    overflow-wrap: anywhere;
+}
+
+.md-code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.9em;
+    padding: 0.05em 0.35em;
+    border-radius: 6px;
+    background: rgba(128, 128, 128, 0.22);
+}
+
+.md-code-block {
+    margin: 0.35rem 0;
+    padding: 0.5rem 0.65rem;
+    border-radius: 10px;
+    background: rgba(128, 128, 128, 0.22);
+    overflow-x: auto;
+    text-align: left;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.md-code-block code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.88em;
+}
+
+.message a {
+    color: inherit;
+    text-decoration: underline;
+    text-underline-offset: 2px;
 }

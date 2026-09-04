@@ -83,20 +83,32 @@
                 <ul class="group-list" id="groupList"></ul>
             </div>
             <ul class="user-list" id="userList">
+                <!-- Phase 7.6d-fix: канал объявлений — НЕ пользователь, всегда верхняя строка -->
+                <li class="user-item user-item-system" id="channelItem" data-id="0" data-channel="1"
+                    data-name="{{ channel.name }}" data-username="channel"
+                    data-avatar="{{ channel.avatar_uuid or '' }}" data-pinned="0"
+                    title="{{ channel.bio or channel.subtitle }}">
+                    <div class="curtain-slide">
+                        <img class="user-avatar" src="{% if channel.avatar_uuid %}/api/avatar/{{ channel.avatar_uuid }}{% else %}/static/default-avatar.png{% endif %}" alt="" data-avatar="{{ channel.avatar_uuid or '' }}">
+                        <div class="user-info">
+                            <div class="user-name"><span class="channel-marker" title="Канал объявлений">📢</span>{{ channel.name }}</div>
+                            <div class="user-username">{{ channel.subtitle }}</div>
+                        </div>
+                        <span class="unread-badge" id="unread-channel-0"></span>
+                    </div>
+                </li>
                 {% for u in users %}
-                <li class="user-item{% if u.is_system %} user-item-system{% endif %}" data-id="{{ u.id }}" data-name="{{ u.name }}" data-username="{{ u.username }}" data-avatar="{{ u.avatar_uuid or '' }}" data-pinned="{{ u.pinned or 0 }}" data-system="{{ u.is_system or 0 }}">
+                <li class="user-item" data-id="{{ u.id }}" data-name="{{ u.name }}" data-username="{{ u.username }}" data-avatar="{{ u.avatar_uuid or '' }}" data-pinned="{{ u.pinned or 0 }}">
                     <div class="curtain-actions">
-                        {% if not u.is_system %}
                         <button type="button" class="curtain-del-btn" title="Удалить чат" aria-label="Удалить чат">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
                         </button>
-                        {% endif %}
                     </div>
                     <div class="curtain-slide">
                         <img class="user-avatar" src="/static/default-avatar.png" alt="" data-avatar="{{ u.avatar_uuid or '' }}">
                         <div class="user-info">
-                            <div class="user-name">{% if u.is_system %}<span class="channel-marker" title="Канал объявлений">📢</span>{% endif %}{% if u.pinned %}<span class="pin-marker" title="Закреплён"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 17v5"/><path d="M9 3h6l-1 7 3 2v2H7v-2l3-2-1-7z"/></svg></span>{% endif %}{{ u.name }}</div>
-                            <div class="user-username">{% if u.is_system %}канал объявлений{% else %}@{{ u.username }}{% endif %}</div>
+                            <div class="user-name">{% if u.pinned %}<span class="pin-marker" title="Закреплён"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 17v5"/><path d="M9 3h6l-1 7 3 2v2H7v-2l3-2-1-7z"/></svg></span>{% endif %}{{ u.name }}</div>
+                            <div class="user-username">@{{ u.username }}</div>
                         </div>
                         <span class="unread-badge" id="unread-user-{{ u.id }}"></span>
                         <button type="button" class="curtain-toggle-btn" title="Действия" aria-label="Действия">
@@ -174,10 +186,15 @@
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
                     </button>
                 </div>
-                <!-- Phase 7.6d: канал «start» — вместо инпута плашка (писать может только creator) -->
+                <!-- Phase 7.6d-fix: вместо инпута плашка (писать в канал может только creator) -->
                 <div class="channel-notice" id="channelNotice" style="display: none;">
                     <span class="channel-notice-icon">📢</span>
                     <span>канал объявлений — ответы отключены</span>
+                </div>
+                <div class="channel-notice channel-notice-creator" id="creatorNotice" style="display: none;">
+                    <span class="channel-notice-icon">📢</span>
+                    <span>Напиши первое объявление</span>
+                    <button type="button" class="cmd-chip" id="insertTemplateBtn" title="Вставить шаблон приветствия">Вставить шаблон</button>
                 </div>
             </div>
             <!-- Phase 7.4a-fix: mobile accessory island (emoji + chips panel below input) -->
@@ -268,7 +285,8 @@
                     <input type="file" id="avatarInput" accept="image/*" style="display: none;">
                     <button id="changeAvatarBtn" class="slot-btn">Сменить аватарку</button>
                 </div>
-                <div class="settings-section">
+                <!-- Phase 7.6d-fix:channel-editable — имя и био остаются и в режиме канала -->
+                <div class="settings-section channel-editable">
                     <h3>Основное</h3>
                     <div class="profile-form-group">
                         <label>Имя</label>
@@ -464,11 +482,13 @@
         const currentUsername = {{ user.username | tojson }};
         const currentName = {{ (user.name or user.username) | tojson }}; // Phase 6.6: for reply labels
         const currentIsAdmin = {{ user.is_admin | tojson }}; // Phase 6.1b: for group member management
-        // Phase 7.6d: канал объявлений «start»
-        const startUserId = {{ (system_user_id or 0) | tojson }};
-        const currentIsCreator = {{ (is_creator or 0) | tojson }};
-        // Phase 7.6d: профиль, который сейчас редактируем (0 = свой, id канала = оформление канала)
-        let profileTargetUserId = 0;
+        // Phase 7.6d-fix: канал объявлений — отдельная сущность, а не пользователь
+        const CHANNEL_ID = 0;
+        let amCreator = {{ (is_creator or 0) | tojson }} ? true : false;
+        let channelState = {{ channel | tojson }};
+        let selectedChannel = false;   // открыт канал (selectedUserId и selectedGroupId = null)
+        let profileMode = 'self';      // 'self' — свой профиль, 'channel' — оформление канала
+        const WELCOME_TEMPLATE = {{ welcome_template | tojson }};
         const userThemeJson = {{ user.theme_json | tojson }} || '{}';
         let selectedUserId = null;
         let selectedGroupId = null; // Phase 6.1: active group chat (null = 1-on-1 mode)
@@ -535,6 +555,9 @@
         const messagesDiv = document.getElementById('messages');
         const inputArea = document.getElementById('inputArea');
         const channelNotice = document.getElementById('channelNotice');
+        const creatorNotice = document.getElementById('creatorNotice');
+        const insertTemplateBtn = document.getElementById('insertTemplateBtn');
+        const channelItem = document.getElementById('channelItem');
         const decorateChannelBtn = document.getElementById('decorateChannelBtn');
         const inputRow = document.querySelector('.input-row');
         const messageInput = document.getElementById('messageInput');
@@ -890,9 +913,8 @@
         let loadedProfileData = null;
         async function loadProfile() {
             try {
-                const url = profileTargetUserId
-                    ? `/api/user/${profileTargetUserId}/profile`
-                    : '/api/profile';
+                // Phase 7.6d-fix: profileMode='channel' → профиль канала из settings
+                const url = profileMode === 'channel' ? '/api/channel' : '/api/profile';
                 const res = await fetch(url);
                 if (res.ok) {
                     const data = await res.json();
@@ -909,7 +931,11 @@
                         profileBannerPreview.src = '/api/banner/' + data.banner_uuid;
                         profileBannerPreview.style.display = '';
                         profileBannerPlaceholder.style.display = 'none';
+                    } else {
+                        profileBannerPreview.style.display = 'none';
+                        profileBannerPlaceholder.style.display = '';
                     }
+                    if (profileMode === 'channel') return;   // дальше — поля пользователя
                     // Phase 7.1a: populate username/email fields
                     const el = (id) => document.getElementById(id);
                     el('profileCurrentUsername').value = '@' + (data.username || '');
@@ -1426,6 +1452,8 @@
         document.addEventListener('DOMContentLoaded', () => {
             // Open profile drawer
             profileBtn.addEventListener('click', async () => {
+                profileMode = 'self';   // Phase 7.6d-fix: ящик по умолчанию про меня
+                profileDrawer.classList.remove('profile-channel-mode');
                 await loadProfile();
                 profileDrawer.classList.add('open');
                 deleteAccountConfirm.value = '';
@@ -1462,10 +1490,10 @@
                 
                 const formData = new FormData();
                 formData.append('avatar', file);
-                if (profileTargetUserId) formData.append('target_user_id', profileTargetUserId);
+                const avatarUrl = profileMode === 'channel' ? '/api/channel/avatar' : '/api/profile/avatar';
                 
                 try {
-                    const res = await fetch('/api/profile/avatar', { method: 'POST', body: formData });
+                    const res = await fetch(avatarUrl, { method: 'POST', body: formData });
                     if (res.ok) {
                         const data = await res.json();
                         profileAvatarPreview.src = '/api/avatar/' + data.avatar_uuid;
@@ -1491,9 +1519,9 @@
                 if (!file) return;
                 const formData = new FormData();
                 formData.append('banner', file);
-                if (profileTargetUserId) formData.append('target_user_id', profileTargetUserId);
+                const bannerUrl = profileMode === 'channel' ? '/api/channel/banner' : '/api/profile/banner';
                 try {
-                    const res = await fetch('/api/profile/banner', { method: 'POST', body: formData });
+                    const res = await fetch(bannerUrl, { method: 'POST', body: formData });
                     if (res.ok) {
                         const data = await res.json();
                         profileBannerPreview.src = '/api/banner/' + data.banner_uuid;
@@ -1516,10 +1544,10 @@
                 const formData = new FormData();
                 formData.append('name', name);
                 formData.append('bio', bio);
-                if (profileTargetUserId) formData.append('target_user_id', profileTargetUserId);
+                const saveUrl = profileMode === 'channel' ? '/api/channel' : '/api/profile';
                 
                 try {
-                    const res = await fetch('/api/profile', { method: 'POST', body: formData });
+                    const res = await fetch(saveUrl, { method: 'POST', body: formData });
                     if (res.ok) {
                         profileDrawer.classList.remove('open');
                         location.reload(); // Reload to update header
@@ -1872,12 +1900,120 @@
             });
         });
 
-        // Phase 7.6d: режим канала объявлений — инпут только у creator
-        function applyChannelMode(isStartChannel) {
-            if (!inputRow || !channelNotice) return;
-            const readOnly = isStartChannel && !currentIsCreator;
+        // ===== Phase 7.6d-fix: канал объявлений =====
+        // Канал — не пользователь: свои права, своя лента, отдельная строка контактов.
+        // creator видит обычный инпут (в пустом канале — плашку с шаблоном приветствия),
+        // все остальные — плашку «канал объявлений — ответы отключены» вместо инпута.
+        function channelIsEmpty() {
+            return messagesDiv.querySelectorAll('.message').length === 0;
+        }
+
+        function applyChannelMode(isChannel) {
+            if (isChannel === undefined) isChannel = selectedChannel;
+            if (!inputRow || !channelNotice || !creatorNotice) return;
+            const readOnly = isChannel && !amCreator;
             inputRow.style.display = readOnly ? 'none' : '';
             channelNotice.style.display = readOnly ? '' : 'none';
+            // плашка creator живёт только в пустом канале
+            creatorNotice.style.display =
+                (isChannel && amCreator && channelIsEmpty()) ? '' : 'none';
+        }
+
+        async function loadChannel() {
+            const res = await fetch('/api/channel/messages');
+            if (!res.ok) return;
+            const data = await res.json();
+            channelState = data.channel || channelState;
+            amCreator = !!data.is_creator;
+            clearMessages();
+            (data.messages || []).forEach(m => appendMessage(
+                Object.assign({}, m, { is_broadcast: 1, peer_type: 'broadcast' })
+            ));
+            scrollToBottom();
+            applyChannelMode(true);
+            markAsRead('channel', 0);   // Phase 7.3: канал тоже participates in unread
+        }
+
+        async function openChannel() {
+            document.querySelectorAll('.user-item').forEach(i => i.classList.remove('active'));
+            document.querySelectorAll('.group-item').forEach(i => i.classList.remove('active'));
+            channelItem.classList.add('active');
+            document.querySelector('.main').classList.add('chat-active');
+
+            selectedUserId = null;
+            selectedGroupId = null;
+            selectedChannel = true;
+            location.hash = 'c=channel';
+            try { sessionStorage.setItem('vb_last_chat', 'channel'); } catch (e) {}
+
+            exitEditMode(); exitDeleteMode();
+            cancelReply();
+            closeAllCurtains();
+            searchInput.value = '';
+            messagesDiv.dataset.lastDateKey = '';
+            Object.keys(typingTimers).forEach(k => clearTimeout(typingTimers[k]));
+            typingTimers = {}; typingNames = {}; renderTypingIsland();
+
+            chatHeader.style.display = '';
+            chatHeaderName.textContent = channelState.name || 'ВайбБункер';
+            checkMarquee();
+            chatHeaderAvatar.src = getAvatarUrl(channelState.avatar_uuid);
+            chatHeaderAvatar.style.display = '';
+            // Phase 7.6d-fix: канал не удаляют, участников и команд у него нет
+            chatHeaderActions.style.display = 'none';
+            groupMembersBtn.style.display = 'none';
+            blockModeBar.style.display = 'none';
+            cmdChips.style.display = 'none';
+            inputArea.style.display = 'flex';
+            await loadChannel();
+        }
+
+        async function openChannelProfile() {
+            // просмотр канала: имя, био, баннер, аватар (оформление — только creator)
+            const res = await fetch('/api/channel');
+            if (!res.ok) return;
+            const data = await res.json();
+            channelState = data;
+            amCreator = !!data.is_creator;
+            otherProfileAvatar.src = getAvatarUrl(data.avatar_uuid);
+            otherProfileName.textContent = data.name;
+            otherProfileUsername.textContent = data.subtitle || 'канал объявлений';
+            otherProfileBio.textContent = data.bio || 'Объявления ВайбБункера';
+            if (data.banner_uuid) {
+                otherProfileBanner.src = '/api/banner/' + data.banner_uuid;
+                otherProfileBanner.style.display = '';
+                otherProfileBannerPlaceholder.style.display = 'none';
+            } else {
+                otherProfileBanner.style.display = 'none';
+                otherProfileBannerPlaceholder.style.display = '';
+            }
+            if (decorateChannelBtn) {
+                decorateChannelBtn.style.display = amCreator ? '' : 'none';
+            }
+            otherProfileModal.classList.add('active');
+        }
+
+        if (channelItem) {
+            channelItem.addEventListener('click', (e) => {
+                if (e.target.closest('button')) return;
+                closeAllCurtains();
+                openChannel();
+            });
+            const channelAvatar = channelItem.querySelector('.user-avatar');
+            if (channelAvatar) {
+                channelAvatar.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    openChannelProfile();
+                });
+            }
+        }
+
+        if (insertTemplateBtn) {
+            insertTemplateBtn.addEventListener('click', () => {
+                messageInput.value = WELCOME_TEMPLATE;
+                if (creatorNotice) creatorNotice.style.display = 'none';
+                messageInput.focus();
+            });
         }
 
         // Search functionality
@@ -1885,8 +2021,8 @@
             const query = e.target.value.toLowerCase().trim();
             const users = document.querySelectorAll('.user-item');
             users.forEach(item => {
-                // Phase 7.6d: канал объявлений в поиске не участвует
-                if (item.dataset.system === '1') {
+                // Phase 7.6d-fix: канал объявлений в поиске не участвует
+                if (item.dataset.channel === '1') {
                     item.style.display = query ? 'none' : '';
                     return;
                 }
@@ -1970,18 +2106,27 @@
             ws.onmessage = (event) => {
                 const msg = JSON.parse(event.data);
                 // Phase 7.2b: message edited via WS
+                // Phase 7.6d-fix: объявление удалено (канал) — убираем пузырь
+                if (msg.type === 'message_deleted') {
+                    const gone = document.querySelector(`[data-msg-id="${msg.message_id}"]`);
+                    if (gone) gone.remove();
+                    return;
+                }
                 if (msg.type === 'message_edited') {
                     const bubble = document.querySelector(`[data-msg-id="${msg.message_id}"]`);
                     if (bubble) {
                         // Update text content
+                        // Phase 7.6d-fix: текст всегда лежит в .message-text
+                        const textEl = bubble.querySelector('.message-text');
+                        if (textEl) textEl.innerHTML = renderMarkdown(msg.text);
                         const body = bubble.querySelector('.message-body');
-                        if (body) {
+                        if (body && !textEl) {
                             // group: find text node in body
                             const nodes = body.childNodes;
                             for (let i = 0; i < nodes.length; i++) {
                                 if (nodes[i].nodeType === 3) { nodes[i].textContent = msg.text; break; }
                             }
-                        } else {
+                        } else if (!textEl) {
                             // flat: update direct text (skip avatar, quote, atts)
                             const children = bubble.childNodes;
                             for (let i = 0; i < children.length; i++) {
@@ -2007,6 +2152,23 @@
                 // Phase 6.1b: sidebar refresh signal when someone adds me to a group
                 if (msg.type === 'group_added') {
                     loadGroups();
+                    return;
+                }
+                // Phase 7.6d-fix: объявление канала — общая лента для всех
+                if (msg.peer_type === 'broadcast' || Number(msg.is_broadcast || 0) === 1) {
+                    if (selectedChannel) {
+                        appendMessage(msg);
+                        if (isNearBottom()) scrollToBottom();
+                    } else {
+                        bumpUnread('channel', 0);
+                    }
+                    if (msg.sender_id !== currentUser) {
+                        playBlip();
+                        if (document.hidden) {
+                            const senderName = msg.sender_name || 'ВайбБункер';
+                            showDesktopNotification(senderName, msg.text || '📢 Объявление', 0);
+                        }
+                    }
                     return;
                 }
                 // Phase 6.1: group messages route by group_id, dialogs by participant ids
@@ -2132,13 +2294,15 @@
                     const item = document.querySelector(`.group-item[data-group-id="${gid}"]`);
                     if (item) item.click();
                 }
+            } else if (chatKey === 'channel') {
+                if (channelItem) channelItem.click();   // Phase 7.6d-fix: канал
             }
         });
         // Phase 7.3: load unread counts on page load
         loadUnread();
         
-        // Load users and handle selection
-        document.querySelectorAll('.user-item').forEach(item => {
+        // Load users and handle selection (Phase 7.6d-fix: канал — отдельная строка)
+        document.querySelectorAll('.user-item:not(#channelItem)').forEach(item => {
             item.addEventListener('click', async (e) => {
                 // If curtain is open or click is on a button, don't open chat
                 if (item.classList.contains('curtain-open') ||
@@ -2169,9 +2333,9 @@
                 chatHeaderActions.style.display = 'flex';
                 groupMembersBtn.style.display = 'none';
                 // Phase 7.6d: канал «start» — удалять нельзя, писать может только creator
-                const isStartChannel = (startUserId && selectedUserId === startUserId);
-                deleteChatBtn.style.display = isStartChannel ? 'none' : '';
-                applyChannelMode(isStartChannel);
+                selectedChannel = false;   // Phase 7.6d-fix: вышли из канала
+                deleteChatBtn.style.display = '';
+                applyChannelMode(false);
                 inputArea.style.display = 'flex';
                 renderBlockMode(); // Phase 7.4a-fix3: check block state on dialog open
                 cancelReply();          // Phase 6.6: never carry a reply across chats
@@ -2261,6 +2425,7 @@
             
             selectedUserId = null;
             selectedGroupId = groupId;
+            selectedChannel = false;   // Phase 7.6d-fix: вышли из канала
             location.hash = 'c=group:' + groupId; // Phase micro: hash for chat persistence
             try { sessionStorage.setItem('vb_last_chat', 'group:' + groupId); } catch(e) {}
             exitEditMode(); exitDeleteMode(); // Phase 7.2b: reset modes on chat switch
@@ -2887,11 +3052,15 @@
         }
         
         function appendMessage(msg) {
+            // Phase 7.6d-fix: объявление канала (peer_type='broadcast')
+            const isChannelMsg = Number(msg.is_broadcast || 0) === 1 || msg.peer_type === 'broadcast';
+
             // Phase 7.3: date separator — check if day changed from previous message
+            // Phase 7.6d-fix: без валидного created_at разделитель не создаётся вовсе
             if (msg.created_at) {
                 const key = getDateKey(msg.created_at);
                 const lastKey = messagesDiv.dataset.lastDateKey || '';
-                if (key !== lastKey) {
+                if (key && key !== lastKey) {
                     const sep = document.createElement('div');
                     sep.className = 'date-separator';
                     sep.innerHTML = `<span class="date-sep-label">${formatDateSep(msg.created_at)}</span>`;
@@ -2903,7 +3072,7 @@
 
             const div = document.createElement('div');
             const mine = msg.sender_id === currentUser;
-            const isSystemMsg = Number(msg.is_system || 0) === 1; // Phase 7.6d: сообщение канала
+            const isSystemMsg = isChannelMsg || Number(msg.is_system || 0) === 1;
             div.className = isSystemMsg
                 ? 'message system-announcement'
                 : `message ${mine ? 'sent' : 'received'}`;
@@ -2952,19 +3121,21 @@
             
             const editedHtml = msg.edited_at ? '<span class="message-edited"> (изм.)</span>' : '';
             const timeHtml = `<div class="message-time">${formatTime(msg.created_at)}${editedHtml}</div>`;
+            // Phase 7.6d-fix: markdown-подмножество (escapeHtml внутри renderMarkdown)
+            const textHtml = `<span class="message-text">${renderMarkdown(msg.text)}</span>`;
             
             // Phase 6.1: in groups other people's bubbles show sender name above the text;
             // messages WITHOUT a reply keep the legacy structure byte-for-byte (regression safety)
             if (isSystemMsg) {
-                // Phase 7.6d: объявление канала — по центру, без аватара и без цитаты
-                div.innerHTML = `<div class="message-body">${escapeHtml(msg.text)}${timeHtml}</div>`;
+                // Phase 7.6d-fix: объявление канала — по центру, без аватара и без цитаты
+                div.innerHTML = `<div class="message-body">${textHtml}${timeHtml}</div>`;
             } else if (isGroupMsg && !mine) {
                 const nameHtml = msg.sender_name
                     ? `<div class="message-sender-name">${escapeHtml(msg.sender_name)}</div>`
                     : '';
-                div.innerHTML = avatarHtml + `<div class="message-body">${nameHtml}${quoteHtml}${escapeHtml(msg.text)}${attsHtml}${timeHtml}</div>`;
+                div.innerHTML = avatarHtml + `<div class="message-body">${nameHtml}${quoteHtml}${textHtml}${attsHtml}${timeHtml}</div>`;
             } else {
-                div.innerHTML = avatarHtml + quoteHtml + escapeHtml(msg.text) + attsHtml + timeHtml;
+                div.innerHTML = avatarHtml + quoteHtml + textHtml + attsHtml + timeHtml;
             }
             
             // Phase 6.1b FIX: the div was built but never attached to the DOM
@@ -3349,9 +3520,54 @@
             div.textContent = text;
             return div.innerHTML;
         }
+
+        // ===== Phase 7.6d-fix: markdown-подмножество в пузырях =====
+        // Порядок обязателен и не меняется: сначала escapeHtml (сырого HTML в пузыре
+        // не бывает никогда), потом только наши теги. XSS-безопасно по построению.
+        function renderMarkdown(text) {
+            let s = escapeHtml(text || '');
+            // ```блок кода```
+            s = s.replace(/```([\s\S]+?)```/g, function (m, code) {
+                return '<pre class="md-code-block"><code>' + code.replace(/^\n+|\n+$/g, '') + '</code></pre>';
+            });
+            // `код`
+            s = s.replace(/`([^`\n]+)`/g, '<code class="md-code">$1</code>');
+            // **жирный**
+            s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+            // ~~зачёркнутый~~
+            s = s.replace(/~~([^~]+)~~/g, '<del>$1</del>');
+            // *курсив* (не начинается внутри слова)
+            s = s.replace(/(^|[^*\w])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
+            // автоссылки http(s) — всегда в новой вкладке и без opener
+            s = s.replace(/(https?:\/\/[^\s<]+)/g, function (url) {
+                const clean = url.replace(/[.,;:!?)\]}'"]+$/, '');
+                const tail = url.slice(clean.length);
+                return '<a href="' + clean + '" target="_blank" rel="noopener noreferrer">' + clean + '</a>' + tail;
+            });
+            // переносы строк
+            s = s.replace(/\n/g, '<br>');
+            return s;
+        }
+
+        // ===== Phase 7.6d-fix: разбор дат =====
+        // SQLite отдаёт 'YYYY-MM-DD HH:MM:SS'; new Date() на такой строке в части
+        // браузеров возвращает Invalid Date. Разбираем по компонентам, локальное время.
+        function parseTs(timestamp) {
+            if (!timestamp && timestamp !== 0) return null;
+            if (timestamp instanceof Date) return isNaN(timestamp.getTime()) ? null : timestamp;
+            const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/.exec(String(timestamp));
+            let d;
+            if (m) {
+                d = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0));
+            } else {
+                d = new Date(timestamp);
+            }
+            return isNaN(d.getTime()) ? null : d;
+        }
         
         function formatTime(timestamp) {
-            const d = new Date(timestamp);
+            const d = parseTs(timestamp);
+            if (!d) return '';           // нет валидного ts — пузырь просто без часов
             return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         }
         
@@ -3377,6 +3593,13 @@
                 badge.textContent = count;
                 badge.classList.toggle('visible', count > 0);
             });
+            // Phase 7.6d-fix: канал объявлений
+            const chBadge = document.getElementById('unread-channel-0');
+            if (chBadge) {
+                const count = unreadState['channel:0'] || 0;
+                chBadge.textContent = count;
+                chBadge.classList.toggle('visible', count > 0);
+            }
             // group badges
             document.querySelectorAll('.group-item').forEach(el => {
                 const gid = el.dataset.groupId;
@@ -3414,6 +3637,7 @@
             const now = Date.now();
             if (now - lastTypingSent < 1500) return; // throttle 1.5s
             lastTypingSent = now;
+            if (selectedChannel) return;   // Phase 7.6d-fix: канал не «печатает»
             if (!ws || ws.readyState !== 1) return;
             const payload = { type: 'typing' };
             if (selectedGroupId) payload.group_id = selectedGroupId;
@@ -3469,7 +3693,8 @@
 
         // ===== Phase 7.3: date separator =====
         function formatDateSep(dateStr) {
-            const d = new Date(dateStr);
+            const d = parseTs(dateStr);
+            if (!d) return '';
             const now = new Date();
             const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
             const msgDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
@@ -3480,7 +3705,11 @@
         }
 
         function getDateKey(dateStr) {
-            return dateStr.slice(0, 10); // YYYY-MM-DD
+            const d = parseTs(dateStr);
+            if (!d) return '';           // нет валидного ts — разделитель не создаём
+            return d.getFullYear() + '-' +
+                   String(d.getMonth() + 1).padStart(2, '0') + '-' +
+                   String(d.getDate()).padStart(2, '0');
         }
 
         // ===== Phase 7.3: scroll-to-bottom =====
@@ -3517,7 +3746,14 @@
             }
 
             // Phase 6.1: need either a dialog or a group selected
-            if (!selectedUserId && !selectedGroupId) return;
+            // Phase 7.6d-fix: канал — третий допустимый контекст
+            if (!selectedUserId && !selectedGroupId && !selectedChannel) return;
+
+            // Phase 7.6d-fix: объявления канала — только текст
+            if (selectedChannel && attachedFiles.length > 0) {
+                alert('Канал объявлений принимает только текст');
+                return;
+            }
             
             // Phase 6.2: "/" in a group is a COMMAND, never a message
             if (selectedGroupId && text.startsWith('/')) {
@@ -3534,14 +3770,19 @@
             }
             
             const formData = new FormData();
-            formData.append('recipient_id', selectedUserId || 0);
-            if (selectedGroupId) {
-                formData.append('group_id', selectedGroupId);
+            if (selectedChannel) {
+                formData.append('channel', '1');   // Phase 7.6d-fix: объявление в канал
+            } else {
+                formData.append('recipient_id', selectedUserId || 0);
+                if (selectedGroupId) {
+                    formData.append('group_id', selectedGroupId);
+                }
             }
             formData.append('text', text);
             
             // Phase 6.6: armed reply rides along if it still belongs to THIS chat
-            const currentChatKey = selectedGroupId ? 'g' + selectedGroupId : 'u' + selectedUserId;
+            const currentChatKey = selectedChannel ? 'ch'
+                : (selectedGroupId ? 'g' + selectedGroupId : 'u' + selectedUserId);
             if (replyCtx && replyCtx.chatKey === currentChatKey) {
                 formData.append('reply_to_id', replyCtx.id);
             }
@@ -3572,6 +3813,7 @@
                     const msg = await res.json();
                     appendMessage(msg);
                     scrollToBottom();
+                    if (selectedChannel) applyChannelMode(true);   // плашка «первое объявление» больше не нужна
                 } else {
                     const err = await res.json();
                     alert(err.detail || 'Failed to send message');
@@ -3626,6 +3868,7 @@
                         const msg = JSON.parse(xhr.responseText);
                         appendMessage(msg);
                         scrollToBottom();
+                        if (selectedChannel) applyChannelMode(true);
                     } catch (e) {
                         alert('Failed to parse server response');
                     }
@@ -3838,7 +4081,7 @@
         
         // Click on user avatar to open other user's profile modal
         // The rest of the user-item row opens the chat dialog
-        document.querySelectorAll('.user-item').forEach(item => {
+        document.querySelectorAll('.user-item:not(#channelItem)').forEach(item => {
             const userAvatar = item.querySelector('.user-avatar');
             
             if (userAvatar) {
@@ -3888,11 +4131,8 @@
                     } catch(e) {}
                 }
 
-                // Phase 7.6d: «Оформить канал» — только creator и только на профиле канала
-                if (decorateChannelBtn) {
-                    decorateChannelBtn.style.display =
-                        (data.is_system && currentIsCreator) ? '' : 'none';
-                }
+                // Phase 7.6d-fix: оформление канала — только в модалке канала (openChannelProfile)
+                if (decorateChannelBtn) decorateChannelBtn.style.display = 'none';
 
                 otherProfileModal.classList.add('active');
             } catch (err) {
@@ -3902,8 +4142,8 @@
         
         // Phase 7.6d: creator оформляет канал — тот же ящик профиля, но цель = канал start
         function exitChannelEditMode() {
-            if (!profileTargetUserId) return;
-            profileTargetUserId = 0;
+            if (profileMode !== 'channel') return;
+            profileMode = 'self';
             profileDrawer.classList.remove('profile-channel-mode');
             loadProfile();   // вернули ящик к своему профилю
         }
@@ -3911,7 +4151,7 @@
         if (decorateChannelBtn) {
             decorateChannelBtn.addEventListener('click', async () => {
                 otherProfileModal.classList.remove('active');
-                profileTargetUserId = startUserId;
+                profileMode = 'channel';
                 profileDrawer.classList.add('profile-channel-mode');
                 await loadProfile();
                 profileDrawer.classList.add('open');
@@ -3970,13 +4210,16 @@
         })();
 
         // Click on chat header avatar or name to open other user's profile modal
+        // Phase 7.6d-fix: в канале шапка открывает профиль канала
         chatHeaderAvatar.addEventListener('click', async () => {
+            if (selectedChannel) { await openChannelProfile(); return; }
             if (selectedUserId) {
                 await openOtherUserProfile(selectedUserId);
             }
         });
         
         chatHeaderName.addEventListener('click', async () => {
+            if (selectedChannel) { await openChannelProfile(); return; }
             if (selectedUserId) {
                 await openOtherUserProfile(selectedUserId);
             }

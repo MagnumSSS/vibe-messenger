@@ -821,110 +821,197 @@ def get_db():
 
 
 # ===================================================================== #
-# Phase 7.6d: системный контакт «start» (канал объявлений)
+# Phase 7.6d-fix: канал объявлений «ВайбБункер»
 # ===================================================================== #
+# Канал — это НЕ пользователь:
+#   * в users нет никаких ботов (служебный @start удалён миграцией);
+#   * профиль канала лежит в settings (broadcast_*), правит его только creator;
+#   * сообщения канала — обычные строки messages с peer_type='broadcast',
+#     peer_id=0 и sender_id = реальный создатель канала.
 
-START_USERNAME = "start"          # служебный username системного канала
-START_DISPLAY_NAME = "ВайбБункер"  # как канал подписан в списке контактов
-START_PASSWORD_HASH = "!system-account-no-login!"
-START_WELCOME_TEXT = (
+# Как выглядела служебная строка канала в версии 7.6d — по ней чистим старые базы
+LEGACY_START_USERNAME = "start"
+LEGACY_START_PASSWORD_HASH = "!system-account-no-login!"
+
+CHANNEL_NAME_DEFAULT = "ВайбБункер"     # имя канала по умолчанию
+CHANNEL_SUBTITLE = "канал объявлений"   # подпись под именем в списке
+CHANNEL_MARKER = "📢"                   # маркер канала
+CHANNEL_PEER_TYPE = "broadcast"         # значение messages.peer_type для объявлений
+PEER_TYPE_USER = "user"
+PEER_TYPE_GROUP = "group"
+
+# Профиль канала по умолчанию. Ключи — единственные разрешённые в settings.
+CHANNEL_SETTINGS_DEFAULTS = {
+    "broadcast_name": CHANNEL_NAME_DEFAULT,
+    "broadcast_bio": "",
+    "broadcast_avatar_uuid": "",
+    "broadcast_banner_uuid": "",
+}
+
+# Шаблон первого объявления: кнопка «Вставить шаблон» у creator в пустом канале.
+WELCOME_TEMPLATE = (
     "Добро пожаловать в ВайбБункер! 👋\n\n"
-    "• Темы: свой аватар, баннер, био, шрифт — в профиле (шестерёнка сверху).\n"
-    "• Жесты: свайп по сообщению влево — ответ, вправо — удаление, долгое нажатие — меню.\n"
-    "• Режимы: закрепить контакт, мьют, удалить чат — через «занавес» у контакта.\n"
-    "• Группы: кнопка «+» в разделе Группы, команды начинаются с «/».\n"
-    "• Почта и коды: в профиле можно подтвердить почту и сменить пароль по коду из письма.\n"
-    "• PWA: «Установить» в меню браузера — приложение откроется без вкладок.\n\n"
-    "Этот канал — объявления: сообщения по центру, отвечать в него нельзя."
+    "• Профиль и темы: аватар, баннер, био, своя тема — шестерёнка сверху.\n\n"
+    "• Сообщения: свайп по сообщению — ответ; чипы «Редакт»/«Удалить» — режимы; "
+    "долгое нажатие — меню.\n\n"
+    "• Контакт: потяни строку контакта («занавес») — пин, мьют, удаление чата.\n\n"
+    "• Группы: «+» в разделе Группы; команды начинаются с «/».\n\n"
+    "• Почта: в профиле — подтверждение почты и смена пароля по коду.\n\n"
+    "• PWA: «Установить» в меню браузера — приложение без вкладок.\n\n"
+    "Это канал объявлений — ответы отключены."
 )
 
-# кэш: id системного пользователя не меняется в течение жизни процесса
-SYSTEM_USER_ID: int | None = None
 
-
-def ensure_system_user(conn) -> int:
-    """Создать (или найти) системного пользователя «start». Возвращает его id."""
-    global SYSTEM_USER_ID
-    row = conn.execute(
-        "SELECT id FROM users WHERE username = ? AND is_system = 1", (START_USERNAME,)
-    ).fetchone()
-    if not row:
-        conn.execute(
-            """
-            INSERT INTO users (name, username, password_hash, is_admin, email, is_system)
-            VALUES (?, ?, ?, 0, NULL, 1)
-            """,
-            (START_DISPLAY_NAME, START_USERNAME, START_PASSWORD_HASH),
-        )
-        row = conn.execute(
-            "SELECT id FROM users WHERE username = ? AND is_system = 1", (START_USERNAME,)
-        ).fetchone()
-        app_logger.info("системный канал создан: username=%s id=%s", START_USERNAME, row["id"])
-    SYSTEM_USER_ID = row["id"]
-    return SYSTEM_USER_ID
-
-
-def system_user_id() -> int | None:
-    """id системного канала «start» (None, если schema ещё не создана)."""
-    global SYSTEM_USER_ID
-    if SYSTEM_USER_ID:
-        return SYSTEM_USER_ID
+def get_channel_profile(conn) -> dict:
+    """Профиль канала из settings (broadcast_*), с дефолтами для пустой БД."""
+    profile = dict(CHANNEL_SETTINGS_DEFAULTS)
     try:
-        with get_db() as conn:
-            row = conn.execute(
-                "SELECT id FROM users WHERE is_system = 1 ORDER BY id LIMIT 1"
-            ).fetchone()
+        rows = conn.execute("SELECT key, value FROM settings").fetchall()
     except Exception:
-        return None
+        rows = []
+    for row in rows:
+        key = row["key"]
+        if key in profile:
+            profile[key] = row["value"]
+    return profile
+
+
+def channel_payload(conn) -> dict:
+    """Публичное описание канала для шаблона и API."""
+    profile = get_channel_profile(conn)
+    name = (profile.get("broadcast_name") or "").strip() or CHANNEL_NAME_DEFAULT
+    return {
+        "id": 0,
+        "is_channel": True,
+        "peer_type": CHANNEL_PEER_TYPE,
+        "name": name,
+        "subtitle": CHANNEL_SUBTITLE,
+        "marker": CHANNEL_MARKER,
+        "bio": profile.get("broadcast_bio") or "",
+        "avatar_uuid": profile.get("broadcast_avatar_uuid") or "",
+        "banner_uuid": profile.get("broadcast_banner_uuid") or "",
+    }
+
+
+def set_channel_fields(conn, fields: dict) -> None:
+    """Записать настройки канала. Ключи — только из CHANNEL_SETTINGS_DEFAULTS (A03)."""
+    for key, value in fields.items():
+        if key not in CHANNEL_SETTINGS_DEFAULTS:
+            raise ValueError(f"недопустимый ключ настроек канала: {key!r}")
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, str(value)),
+        )
+
+
+def creator_user_id(conn) -> int | None:
+    """id создателя: помеченный is_creator, иначе самый первый живой пользователь."""
+    row = conn.execute("SELECT id FROM users WHERE is_creator = 1 ORDER BY id LIMIT 1").fetchone()
     if row:
-        SYSTEM_USER_ID = row["id"]
-    return SYSTEM_USER_ID
+        return int(row["id"])
+    row = conn.execute("SELECT MIN(id) AS id FROM users").fetchone()
+    if row and row["id"] is not None:
+        return int(row["id"])
+    return None
 
 
-def is_system_peer(peer_id) -> bool:
-    start_id = system_user_id()
-    return bool(start_id) and int(peer_id or 0) == int(start_id)
+def is_creator_user(user) -> bool:
+    return bool(user) and int(user.get("is_creator") or 0) == 1
 
 
-def deliver_start_message(conn, text: str, skip_user_id: int | None = None) -> list[int]:
-    """
-    Сообщение от лица канала «start»: отдельная строка каждому живому пользователю
-    (1-на-1 модель данных), системные аккаунты пропускаем. Возвращает id сообщений.
-    """
-    start_id = system_user_id()
-    if not start_id:
-        return []
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    recipients = conn.execute(
-        "SELECT id FROM users WHERE is_system = 0 AND id != ?"
-        + (" AND id != ?" if skip_user_id else ""),
-        (start_id, skip_user_id) if skip_user_id else (start_id,),
-    ).fetchall()
-    ids = []
-    for recipient in recipients:
-        cur = conn.execute(
-            "INSERT INTO messages (sender_id, recipient_id, text, created_at) VALUES (?, ?, ?, ?)",
-            (start_id, recipient["id"], text, now),
+def require_creator(user) -> None:
+    """Писать, править и удалять в канале может только создатель (админы — читатели)."""
+    if not is_creator_user(user):
+        raise HTTPException(
+            status_code=403,
+            detail="Канал объявлений: писать и оформлять может только создатель",
         )
-        ids.append(cur.lastrowid)
-    conn.commit()
-    return ids
 
 
-def send_welcome_message(user_id: int) -> int | None:
-    """Приветствие от канала «start» новому пользователю."""
-    start_id = system_user_id()
-    if not start_id:
-        return None
-    with get_db() as conn:
-        cur = conn.execute(
-            "INSERT INTO messages (sender_id, recipient_id, text, created_at) VALUES (?, ?, ?, ?)",
-            (start_id, user_id, START_WELCOME_TEXT, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-        )
-        conn.commit()
-        message_id = cur.lastrowid
-    app_logger.info("приветствие от start отправлено: user_id=%s message_id=%s", user_id, message_id)
-    return message_id
+def normalize_read_peer_type(peer_type: str) -> str:
+    """Фронт шлёт type='channel' для отметки «прочитано» — внутри это 'broadcast'."""
+    if peer_type in ("channel", CHANNEL_PEER_TYPE):
+        return CHANNEL_PEER_TYPE
+    return peer_type or PEER_TYPE_USER
+
+
+# ---------- миграции 7.6d-fix (вызываются из ensure_schema) ---------- #
+
+def _migrate_channel_columns(conn) -> None:
+    """Проставить peer_type/peer_id существующим сообщениям (группы и 1-на-1)."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
+    if "peer_type" not in cols or "peer_id" not in cols:
+        return
+    cur = conn.execute(
+        "UPDATE messages SET peer_type = ?, peer_id = COALESCE(group_id, 0) "
+        "WHERE (group_id IS NOT NULL AND group_id != 0) AND peer_type = ?",
+        (PEER_TYPE_GROUP, PEER_TYPE_USER),
+    )
+    if cur.rowcount:
+        app_logger.info("миграция каналов: перемаркировано group-сообщений: %s", cur.rowcount)
+    cur = conn.execute(
+        "UPDATE messages SET peer_id = recipient_id "
+        "WHERE peer_type = ? AND (group_id IS NULL OR group_id = 0) "
+        "AND peer_id = 0 AND recipient_id > 0",
+        (PEER_TYPE_USER,),
+    )
+    if cur.rowcount:
+        app_logger.info("миграция каналов: перемаркировано 1-на-1 сообщений: %s", cur.rowcount)
+
+
+def _remove_system_user(conn) -> int:
+    """
+    Служебный бот @start больше не нужен: удаляем его и всё, что на него ссылалось.
+    Помечен он был флагом is_system, но старые базы могли дойти без колонки —
+    тогда системную строку узнаём по связке username + служебный password_hash.
+    """
+    ids = [int(r["id"]) for r in conn.execute(
+        "SELECT id FROM users WHERE is_system = 1 "
+        "OR (username = ? AND password_hash = ?)",
+        (LEGACY_START_USERNAME, LEGACY_START_PASSWORD_HASH),
+    ).fetchall()]
+    if not ids:
+        return 0
+    ph = ",".join("?" * len(ids))
+    conn.execute(
+        f"DELETE FROM attachments WHERE message_id IN "
+        f"(SELECT id FROM messages WHERE sender_id IN ({ph}) OR recipient_id IN ({ph}))",
+        ids + ids,
+    )
+    conn.execute(
+        f"DELETE FROM messages WHERE sender_id IN ({ph}) OR recipient_id IN ({ph})", ids + ids
+    )
+    conn.execute(f"DELETE FROM pins WHERE user_id IN ({ph}) OR contact_id IN ({ph})", ids + ids)
+    conn.execute(f"DELETE FROM mutes WHERE user_id IN ({ph}) OR contact_id IN ({ph})", ids + ids)
+    conn.execute(f"DELETE FROM blocks WHERE blocker_id IN ({ph}) OR blocked_id IN ({ph})", ids + ids)
+    conn.execute(f"DELETE FROM reads WHERE user_id IN ({ph})", ids)
+    conn.execute(f"DELETE FROM group_members WHERE user_id IN ({ph})", ids)
+    conn.execute(f"DELETE FROM theme_presets WHERE user_id IN ({ph})", ids)
+    conn.execute(f"DELETE FROM email_codes WHERE user_id IN ({ph})", ids)
+    conn.execute(f"DELETE FROM invites WHERE created_by IN ({ph})", ids)
+    conn.execute(f"DELETE FROM warns WHERE user_id IN ({ph}) OR by_admin_id IN ({ph})", ids + ids)
+    conn.execute(f"DELETE FROM users WHERE id IN ({ph})", ids)
+    app_logger.info("миграция каналов: служебный контакт «start» удалён: id=%s", ids)
+    return len(ids)
+
+
+def _ensure_creator(conn) -> None:
+    """creator = первый живой пользователь (min id), если флаг ещё никому не выставлен."""
+    if conn.execute("SELECT 1 FROM users WHERE is_creator = 1 LIMIT 1").fetchone():
+        return
+    row = conn.execute("SELECT MIN(id) AS id FROM users").fetchone()
+    if row and row["id"] is not None:
+        conn.execute("UPDATE users SET is_creator = 1 WHERE id = ?", (int(row["id"]),))
+        app_logger.info("миграция каналов: creator назначен: user_id=%s", int(row["id"]))
+
+
+def _seed_channel_settings(conn) -> None:
+    """Профиль канала живёт в settings — создадим ключи, если их ещё нет."""
+    for key, default in CHANNEL_SETTINGS_DEFAULTS.items():
+        exists = conn.execute("SELECT 1 FROM settings WHERE key = ?", (key,)).fetchone()
+        if not exists:
+            conn.execute("INSERT INTO settings (key, value) VALUES (?, ?)", (key, default))
 
 
 def ensure_schema():
@@ -991,6 +1078,9 @@ def ensure_schema():
         msg_column_additions = [
             ("deleted_for_sender", "INTEGER DEFAULT 0"),
             ("deleted_for_recipient", "INTEGER DEFAULT 0"),
+            # Phase 7.6d-fix: 'user' | 'group' | 'broadcast' + адресат (0 для канала)
+            ("peer_type", "TEXT NOT NULL DEFAULT 'user'"),
+            ("peer_id", "INTEGER NOT NULL DEFAULT 0"),
         ]
         for col_name, col_type in msg_column_additions:
             if col_name not in msg_columns:
@@ -1193,8 +1283,11 @@ def ensure_schema():
         # ссылается на users(id) — в группах это служебный sentinel 0.
         _migrate_messages_recipient_fk(conn)
 
-        # Phase 7.6d: системный контакт «start» — канал объявлений, создаётся один раз
-        ensure_system_user(conn)
+        # Phase 7.6d-fix: канал объявлений без бота в users
+        _migrate_channel_columns(conn)   # peer_type/peer_id для существующих сообщений
+        _remove_system_user(conn)        # служебный @start удалён вместе с историей
+        _ensure_creator(conn)            # creator = первый живой пользователь
+        _seed_channel_settings(conn)     # профиль канала: имя/био/аватар/баннер
 
         conn.commit()
 
@@ -1524,10 +1617,10 @@ async def register(request: Request, name: str = Form(...), email: str = Form(..
                 "email": email,
             })
         
-        # Phase 7.6d: системный канал «start» в счёт живых пользователей не идёт,
-        # иначе первый настоящий юзер не стал бы админом и не прошёл бы без инвайта
-        count = conn.execute("SELECT COUNT(*) FROM users WHERE is_system = 0").fetchone()[0]
+        count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         is_admin = 1 if (count == 0 and FIRST_USER_ADMIN) else 0
+        # Phase 7.6d-fix: creator — первый зарегистрированный пользователь (ботов в users нет)
+        is_creator = 1 if count == 0 else 0
         
         if count > 0 or not FIRST_USER_ADMIN:
             if not invite_code:
@@ -1562,29 +1655,21 @@ async def register(request: Request, name: str = Form(...), email: str = Form(..
                 })
         
         conn.execute(
-            "INSERT INTO users (name, username, password_hash, is_admin, email) VALUES (?, ?, ?, ?, ?)",
-            (name, username, password_hash, is_admin, email_clean)
+            "INSERT INTO users (name, username, password_hash, is_admin, email, is_creator) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (name, username, password_hash, is_admin, email_clean, is_creator)
         )
         new_user_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         
         if invite_code and count > 0:
             conn.execute("UPDATE invites SET used_by = ? WHERE code = ?", (new_user_id, invite_code))
         
-        # Phase 7.6d: первый зарегистрированный (не системный) пользователь — creator:
-        # только он пишет в канал «start» и оформляет его профиль
-        alive = conn.execute("SELECT COUNT(*) AS n FROM users WHERE is_system = 0").fetchone()["n"]
-        if alive == 1:
-            conn.execute("UPDATE users SET is_creator = 1 WHERE id = ?", (new_user_id,))
+        if is_creator:
             app_logger.info("creator назначен: user_id=%s", new_user_id)
         
         conn.commit()
     
     _clear_failures(ip)
-    # Phase 7.6d: онбординг — приветствие от канала «start» при каждой регистрации
-    try:
-        send_welcome_message(new_user_id)
-    except Exception:
-        app_logger.exception("приветствие от start не отправлено: user_id=%s", new_user_id)
     return RedirectResponse(url="/", status_code=303)
 
 
@@ -1633,16 +1718,19 @@ async def chat_page(request: Request):
     
     with get_db() as conn:
         # Phase 6.6: pinned contacts float to the top (marker flag for the template)
+        # Phase 7.6d-fix: канал объявлений — не пользователь, в этом списке его нет
+        # (отрисовывается отдельной строкой поверх списка)
         users = conn.execute("""
-            SELECT u.id, u.name, u.username, u.avatar_uuid, u.is_system,
+            SELECT u.id, u.name, u.username, u.avatar_uuid,
                    CASE WHEN p.contact_id IS NULL THEN 0 ELSE 1 END AS pinned
             FROM users u
             LEFT JOIN pins p ON p.contact_id = u.id AND p.user_id = ?
             WHERE u.id != ?
-            -- Phase 7.6d: канал «start» всегда сверху, дальше закреплённые
-            ORDER BY u.is_system DESC, pinned DESC, u.id ASC
+            ORDER BY pinned DESC, u.id ASC
         """, (user["id"], user["id"])).fetchall()
-    
+
+        channel = channel_payload(conn)
+
     # Ensure theme_json is never None - default to '{}'
     if user.get("theme_json") is None:
         user["theme_json"] = "{}"
@@ -1651,9 +1739,11 @@ async def chat_page(request: Request):
         "user": user,
         "users": [dict(u) for u in users],
         "max_upload_bytes": MAX_UPLOAD_BYTES,
-        # Phase 7.6d: фронту нужен id канала и флаг creator (оформление канала, плашка вместо инпута)
-        "system_user_id": system_user_id(),
+        # Phase 7.6d-fix: канал и флаг creator (инпут/плашка, оформление канала)
+        "channel": channel,
         "is_creator": int(user.get("is_creator") or 0),
+        # шаблон первого объявления (кнопка «Вставить шаблон» у creator в пустом канале)
+        "welcome_template": WELCOME_TEMPLATE,
     })
 
 
@@ -1665,7 +1755,7 @@ async def api_users(request: Request):
     
     with get_db() as conn:
         users = conn.execute(
-            "SELECT id, name, username, avatar_uuid, bio, is_system FROM users WHERE id != ?",
+            "SELECT id, name, username, avatar_uuid, bio FROM users WHERE id != ?",
             (user["id"],),
         ).fetchall()
     
@@ -1681,7 +1771,7 @@ async def api_user_profile(request: Request, user_id: int):
     
     with get_db() as conn:
         row = conn.execute(
-            "SELECT id, name, username, avatar_uuid, bio, banner_uuid, theme_json, is_system "
+            "SELECT id, name, username, avatar_uuid, bio, banner_uuid, theme_json "
             "FROM users WHERE id = ?",
             (user_id,),
         ).fetchone()
@@ -1702,7 +1792,7 @@ async def api_messages(request: Request, recipient_id: int):
         messages = conn.execute("""
             SELECT m.id, m.sender_id, m.recipient_id, m.text, m.created_at, m.edited_at,
                    sender.avatar_uuid as sender_avatar_uuid,
-                   sender.is_system AS is_system,
+                   m.peer_type, m.peer_id,
                    m.reply_to_id,
                    r.text AS reply_to_text, ru.name AS reply_to_name
             FROM messages m
@@ -1710,6 +1800,8 @@ async def api_messages(request: Request, recipient_id: int):
             LEFT JOIN messages r ON r.id = m.reply_to_id
             LEFT JOIN users ru ON ru.id = r.sender_id
             WHERE m.group_id IS NULL
+              -- Phase 7.6d-fix: объявления канала в личные диалоги не попадают
+              AND IFNULL(m.peer_type, 'user') != 'broadcast'
               AND ((m.sender_id = ? AND m.recipient_id = ?) OR (m.sender_id = ? AND m.recipient_id = ?))
               -- Phase 6.5: hide rows this user deleted ("у себя" / "у всех" / delete-chat)
               AND ((m.sender_id = ? AND m.deleted_for_sender = 0) OR (m.recipient_id = ? AND m.deleted_for_recipient = 0))
@@ -1735,6 +1827,217 @@ async def api_messages(request: Request, recipient_id: int):
             result.append(msg_dict)
     
     return JSONResponse({"messages": result, "muted_by_me": muted_by_me})
+
+
+# ============== Phase 7.6d-fix: канал объявлений (без бота в users) ==============
+
+async def push_to_all(payload: dict, exclude_uid: int | None = None) -> None:
+    """Разослать событие всем живым WS-подключениям (канал читают все)."""
+    for uid, ws_conn in list(app.state.connections.items()):
+        if exclude_uid is not None and int(uid) == int(exclude_uid):
+            continue
+        try:
+            await ws_conn.send_json(payload)
+        except Exception:
+            pass
+
+
+def channel_message_rows(conn, limit: int | None = None) -> list:
+    """История канала: peer_type='broadcast', sender_id — реальный создатель."""
+    sql = """
+        SELECT m.id, m.sender_id, m.text, m.created_at, m.edited_at,
+               u.name AS sender_name, u.username AS sender_username,
+               u.avatar_uuid AS sender_avatar_uuid
+        FROM messages m
+        LEFT JOIN users u ON u.id = m.sender_id
+        WHERE m.peer_type = 'broadcast'
+        ORDER BY m.created_at ASC, m.id ASC
+    """
+    rows = conn.execute(sql).fetchall() if limit is None else conn.execute(sql + " LIMIT ?", (limit,)).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        item.update({
+            "peer_type": CHANNEL_PEER_TYPE,
+            "peer_id": 0,
+            "is_broadcast": 1,
+            "channel": 1,
+            "group_id": None,
+            "recipient_id": 0,
+            "sender_name": item.get("sender_name") or CHANNEL_NAME_DEFAULT,
+            "sender_username": item.get("sender_username") or "",
+            "sender_avatar_uuid": item.get("sender_avatar_uuid") or "",
+            "attachments": [],
+            "reply_to_id": None,
+        })
+        result.append(item)
+    return result
+
+
+@app.get("/api/channel")
+async def get_channel(request: Request):
+    """Профиль канала: имя, био, аватар, баннер + права вызывающего."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    with get_db() as conn:
+        payload = channel_payload(conn)
+        payload["is_creator"] = int(is_creator_user(user))
+        payload["creator_id"] = creator_user_id(conn)
+    return JSONResponse(payload)
+
+
+@app.post("/api/channel")
+async def update_channel(request: Request, name: str = Form(""), bio: str = Form("")):
+    """Оформить канал: имя и описание. Только creator (админы — читатели)."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    require_creator(user)
+
+    clean_name = (name or "").strip()[:50]
+    if not clean_name:
+        raise HTTPException(status_code=400, detail="Название канала обязательно")
+    clean_bio = (bio or "").strip()[:200]
+
+    with get_db() as conn:
+        set_channel_fields(conn, {"broadcast_name": clean_name, "broadcast_bio": clean_bio})
+        conn.commit()
+        payload = channel_payload(conn)
+    log_admin_action(user["id"], "channel_profile", None, f"name={clean_name}")
+    payload["is_creator"] = 1
+    app_logger.info("канал оформлен: creator_id=%s name=%r", user["id"], clean_name)
+    return JSONResponse({"success": True, "channel": payload})
+
+
+def _save_channel_image(upload: UploadFile, subdir: str) -> tuple[str, str]:
+    """Сохранить картинку профиля канала (avatars/ или banners/). Возвращает uuid-имя."""
+    if not upload.filename:
+        raise HTTPException(status_code=400, detail="No file provided")
+    mime_type = upload.content_type or mimetypes.guess_type(upload.filename)[0]
+    if not mime_type or not mime_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Only image files are allowed")
+    ext = Path(upload.filename).suffix.lower()
+    uuid_name = f"{uuid.uuid4().hex}{ext}"
+    target_dir = os.path.join(UPLOADS_DIR, subdir)
+    os.makedirs(target_dir, exist_ok=True)
+    return uuid_name, os.path.join(target_dir, uuid_name)
+
+
+@app.post("/api/channel/avatar")
+async def upload_channel_avatar(request: Request, avatar: UploadFile = File(...)):
+    """Аватар канала — только creator."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    require_creator(user)
+    uuid_name, file_path = _save_channel_image(avatar, "avatars")
+    part_path = file_path + ".part"
+    data = await avatar.read()
+    try:
+        async with aiofiles.open(part_path, "wb") as f:
+            await f.write(data)
+        os.replace(part_path, file_path)
+    except Exception:
+        try:
+            await aiofiles.os.remove(part_path)
+        except OSError:
+            pass
+        raise
+    with get_db() as conn:
+        set_channel_fields(conn, {"broadcast_avatar_uuid": uuid_name})
+        conn.commit()
+    return JSONResponse({"avatar_uuid": uuid_name})
+
+
+@app.post("/api/channel/banner")
+async def upload_channel_banner(request: Request, banner: UploadFile = File(...)):
+    """Баннер канала — только creator."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    require_creator(user)
+    uuid_name, file_path = _save_channel_image(banner, "banners")
+    part_path = file_path + ".part"
+    data = await banner.read()
+    try:
+        async with aiofiles.open(part_path, "wb") as f:
+            await f.write(data)
+        os.replace(part_path, file_path)
+    except Exception:
+        try:
+            await aiofiles.os.remove(part_path)
+        except OSError:
+            pass
+        raise
+    with get_db() as conn:
+        set_channel_fields(conn, {"broadcast_banner_uuid": uuid_name})
+        conn.commit()
+    return JSONResponse({"banner_uuid": uuid_name})
+
+
+@app.get("/api/channel/messages")
+async def get_channel_messages(request: Request):
+    """История канала объявлений: одна лента на всех, пишет в неё только creator."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    with get_db() as conn:
+        messages = channel_message_rows(conn)
+        payload = channel_payload(conn)
+        payload["is_creator"] = int(is_creator_user(user))
+        payload["creator_id"] = creator_user_id(conn)
+    return JSONResponse({
+        "messages": messages,
+        "channel": payload,
+        "is_creator": payload["is_creator"],
+    })
+
+
+async def post_channel_message(request: Request, user, text: str) -> JSONResponse:
+    """
+    Объявление в канал: одна строка на всех (peer_type='broadcast', peer_id=0),
+    автор — реальный создатель. Доставка — веером по WS.
+    """
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="Empty message")
+    if len(text) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=400, detail="Message too long")
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db() as conn:
+        cur = conn.execute(
+            "INSERT INTO messages (sender_id, recipient_id, text, group_id, reply_to_id, "
+            "peer_type, peer_id, created_at) VALUES (?, 0, ?, NULL, NULL, ?, 0, ?)",
+            (user["id"], text, CHANNEL_PEER_TYPE, now),
+        )
+        message_id = int(cur.lastrowid)
+        conn.commit()
+        row = conn.execute(
+            "SELECT m.id, m.sender_id, m.text, m.created_at, m.edited_at, "
+            "u.name AS sender_name, u.username AS sender_username, u.avatar_uuid AS sender_avatar_uuid "
+            "FROM messages m LEFT JOIN users u ON u.id = m.sender_id WHERE m.id = ?",
+            (message_id,),
+        ).fetchone()
+        item = dict(row)
+        item.update({
+            "type": "message",
+            "peer_type": CHANNEL_PEER_TYPE,
+            "peer_id": 0,
+            "is_broadcast": 1,
+            "channel": 1,
+            "group_id": None,
+            "recipient_id": 0,
+            "sender_name": item.get("sender_name") or CHANNEL_NAME_DEFAULT,
+            "sender_username": item.get("sender_username") or "",
+            "sender_avatar_uuid": item.get("sender_avatar_uuid") or "",
+            "attachments": [],
+            "success": True,
+        })
+
+    app_logger.info("объявление в канале: creator_id=%s message_id=%s", user["id"], message_id)
+    await push_to_all(item, exclude_uid=user["id"])
+    return JSONResponse(item)
 
 
 # ============== Phase 6.1: Groups ==============
@@ -1985,9 +2288,10 @@ async def mark_read(request: Request):
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
     body = await request.json()
-    peer_type = body.get("type", "user")
+    # Phase 7.6d-fix: канал присылает type='channel', id=0 — внутри это peer_type='broadcast'
+    peer_type = normalize_read_peer_type(body.get("type", "user"))
     peer_id = body.get("id")
-    if not peer_id:
+    if peer_id is None:
         raise HTTPException(status_code=400, detail="Missing id")
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with get_db() as conn:
@@ -2014,6 +2318,7 @@ async def get_unread(request: Request):
                 CASE WHEN sender_id = ? THEN recipient_id ELSE sender_id END AS peer_id
             FROM messages
             WHERE (sender_id = ? OR recipient_id = ?) AND group_id IS NULL
+              AND IFNULL(peer_type, 'user') != 'broadcast'
         """, (user["id"], user["id"], user["id"])).fetchall()
         for p in peers:
             pid = p["peer_id"]
@@ -2040,6 +2345,19 @@ async def get_unread(request: Request):
             """, (gid, user["id"], last_read)).fetchone()["c"]
             if count > 0:
                 result.append({"type": "group", "id": gid, "count": count})
+        # Phase 7.6d-fix: канал объявлений — общая лента, непрочитанное считаем по created_at
+        row = conn.execute(
+            "SELECT last_read_at FROM reads WHERE user_id = ? AND peer_type = ? AND peer_id = 0",
+            (user["id"], CHANNEL_PEER_TYPE),
+        ).fetchone()
+        last_read = row["last_read_at"] if row else "1970-01-01 00:00:00"
+        count = conn.execute(
+            "SELECT COUNT(*) AS c FROM messages "
+            "WHERE peer_type = ? AND sender_id != ? AND created_at > ?",
+            (CHANNEL_PEER_TYPE, user["id"], last_read),
+        ).fetchone()["c"]
+        if count > 0:
+            result.append({"type": "channel", "id": 0, "count": count})
     return JSONResponse(result)
 
 
@@ -2400,10 +2718,10 @@ async def websocket_endpoint(websocket: WebSocket):
                             try: await ws_conn.send_json(payload)
                             except: pass
                 else:
-                    peer_id = data.get("peer_id")
-                    # Phase 7.6d: «канал печатает» — бессмыслица, start не получает typing
-                    if peer_id and is_system_peer(peer_id):
+                    # Phase 7.6d-fix: «канал печатает» — бессмыслица, канал не собеседник
+                    if data.get("channel"):
                         continue
+                    peer_id = data.get("peer_id")
                     if peer_id:
                         ws_conn = app.state.connections.get(peer_id)
                         if ws_conn:
@@ -2632,58 +2950,6 @@ def reply_payload(reply_to_id):
     return {"reply_to_id": int(reply_to_id), "reply_to_text": clip_reply_snippet(row["text"]), "reply_to_name": row["name"] or ""}
 
 
-async def broadcast_from_start(request: Request, user, text: str, files) -> JSONResponse:
-    """
-    Phase 7.6d: creator пишет в канал «start» → объявление уходит ВСЕМ пользователям
-    от лица канала (по строке на получателя: модель сообщений у нас 1-на-1).
-    """
-    if not text.strip() and not files:
-        raise HTTPException(status_code=400, detail="Empty message")
-    if len(text) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=400, detail="Message too long")
-    if files:
-        # вложения в объявлениях не поддерживаем: канал — текстовый
-        raise HTTPException(status_code=400, detail="Канал объявлений принимает только текст")
-
-    start_id = system_user_id()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with get_db() as conn:
-        recipients = conn.execute(
-            "SELECT id FROM users WHERE is_system = 0 ORDER BY id ASC"
-        ).fetchall()
-        ids = []
-        for recipient in recipients:
-            cur = conn.execute(
-                "INSERT INTO messages (sender_id, recipient_id, text, created_at) VALUES (?, ?, ?, ?)",
-                (start_id, recipient["id"], text, now),
-            )
-            ids.append(cur.lastrowid)
-        conn.commit()
-
-    app_logger.info(
-        "объявление в канале start: creator_id=%s, получателей=%s", user["id"], len(ids)
-    )
-    for recipient, message_id in zip(recipients, ids):
-        ws_conn = app.state.connections.get(recipient["id"])
-        if ws_conn:
-            try:
-                await ws_conn.send_json({
-                    "type": "message",
-                    "id": message_id,
-                    "sender_id": start_id,
-                    "recipient_id": recipient["id"],
-                    "text": text,
-                    "created_at": now,
-                    "edited_at": None,
-                    "sender_name": START_DISPLAY_NAME,
-                    "attachments": [],
-                    "is_system": True,
-                })
-            except Exception:
-                pass
-    return JSONResponse({"id": ids[0], "broadcast": len(ids), "is_system": True, "success": True})
-
-
 @app.post("/api/send")
 async def send_message(
     request: Request,
@@ -2691,18 +2957,20 @@ async def send_message(
     group_id: int = Form(0),
     text: str = Form(""),
     reply_to_id: int = Form(0),
+    channel: int = Form(0),
     files: list[UploadFile] = File(default=[])
 ):
     user = get_current_user_fresh(request)  # Use fresh data to catch ban status
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
-    
-    # Phase 7.6d: канал «start» — вещание только для creator, остальным 403
+
+    # Phase 7.6d-fix: канал объявлений — вещание только для creator, остальным 403
     # (проверяем ДО всех остальных веток: админы тут не имеют привилегий)
-    if not group_id and is_system_peer(recipient_id):
-        if not user.get("is_creator"):
-            raise HTTPException(status_code=403, detail="Канал объявлений: писать может только создатель")
-        return await broadcast_from_start(request, user, text, files)
+    if channel:
+        require_creator(user)
+        if files:
+            raise HTTPException(status_code=400, detail="Канал объявлений принимает только текст")
+        return await post_channel_message(request, user, text)
     
     # Check if user is banned
     if is_banned(user):
@@ -2769,9 +3037,14 @@ async def send_message(
             if not reply_target:
                 raise HTTPException(status_code=404, detail="Сообщение для ответа не найдено")
         
+        # Phase 7.6d-fix: peer_type/peer_id — явная маркировка получателя (канал = 0)
         conn.execute(
-            "INSERT INTO messages (sender_id, recipient_id, text, group_id, reply_to_id) VALUES (?, ?, ?, ?, ?)",
-            (user["id"], recipient_id, text, group_id if is_group else None, reply_target["id"] if reply_target else None)
+            "INSERT INTO messages (sender_id, recipient_id, text, group_id, reply_to_id, "
+            "peer_type, peer_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (user["id"], recipient_id, text, group_id if is_group else None,
+             reply_target["id"] if reply_target else None,
+             PEER_TYPE_GROUP if is_group else PEER_TYPE_USER,
+             group_id if is_group else recipient_id)
         )
         message_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         
@@ -2850,7 +3123,8 @@ async def send_message(
         
         # Get the inserted message with attachments
         msg = conn.execute(
-            "SELECT id, sender_id, recipient_id, group_id, text, created_at, reply_to_id FROM messages WHERE id = ?",
+            "SELECT id, sender_id, recipient_id, group_id, text, created_at, reply_to_id, "
+            "peer_type, peer_id FROM messages WHERE id = ?",
             (message_id,)
         ).fetchone()
         
@@ -3537,44 +3811,27 @@ async def get_profile(request: Request):
     with get_db() as conn:
         row = conn.execute(
             "SELECT id, name, username, email, email_verified, avatar_uuid, bio, font_scale, banner_uuid, "
-            "is_creator, is_system FROM users WHERE id = ?",
+            "is_creator FROM users WHERE id = ?",
             (user["id"],),
         ).fetchone()
 
     payload = dict(row)
     # Phase R7: фронту нужны и статус верификации, и доступность почты как таковой
     payload["mail_backend"] = MAIL_BACKEND
-    # Phase 7.6d: фронту нужны роли (creator оформляет канал) и id самого канала
+    # Phase 7.6d-fix: creator оформляет канал объявлений (профиль канала — в settings)
     payload["is_creator"] = int(user.get("is_creator") or 0)
-    payload["is_system"] = int(user.get("is_system") or 0)
-    payload["system_user_id"] = system_user_id()
     return JSONResponse(payload)
 
 
-def resolve_profile_target(user, target_user_id: int) -> int:
-    """
-    Phase 7.6d: чей профиль правим. Свой — всегда можно; чужой — только канал
-    «start» и только руками creator (админы-не-creator тут обычные читатели).
-    """
-    if not target_user_id or int(target_user_id) == int(user["id"]):
-        return int(user["id"])
-    if not is_system_peer(target_user_id):
-        raise HTTPException(status_code=403, detail="Чужой профиль редактировать нельзя")
-    if not user.get("is_creator"):
-        raise HTTPException(status_code=403, detail="Канал может оформлять только создатель")
-    return int(system_user_id())
-
-
 @app.post("/api/profile")
-async def update_profile(request: Request, name: str = Form(...), bio: str = Form(""), target_user_id: int = Form(0)):
-    """Update current user's profile (name and bio). target_user_id — оформление канала start (creator only)."""
+async def update_profile(request: Request, name: str = Form(...), bio: str = Form("")):
+    """Update current user's profile (name and bio). Профиль канала — POST /api/channel."""
     user = get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
-    target_id = resolve_profile_target(user, target_user_id)
-    
+
     with get_db() as conn:
-        conn.execute("UPDATE users SET name = ?, bio = ? WHERE id = ?", (name, bio, target_id))
+        conn.execute("UPDATE users SET name = ?, bio = ? WHERE id = ?", (name, bio, user["id"]))
         conn.commit()
     
     return JSONResponse({"success": True})
@@ -3826,12 +4083,12 @@ async def save_theme_put(request: Request, theme_json: str = Form(...)):
 
 
 @app.post("/api/profile/avatar")
-async def upload_avatar(request: Request, avatar: UploadFile = File(...), target_user_id: int = Form(0)):
-    """Upload avatar for current user (или для канала start, если это creator)"""
+async def upload_avatar(request: Request, avatar: UploadFile = File(...)):
+    """Upload avatar for current user (аватар канала — POST /api/channel/avatar)"""
     user = get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
-    target_id = resolve_profile_target(user, target_user_id)
+    target_id = int(user["id"])
     
     # Validate file
     if not avatar.filename:
@@ -3886,12 +4143,12 @@ async def get_avatar(avatar_uuid: str):
 
 
 @app.post("/api/profile/banner")
-async def upload_banner(request: Request, banner: UploadFile = File(...), target_user_id: int = Form(0)):
-    """Upload banner for current user (или для канала start, если это creator)"""
+async def upload_banner(request: Request, banner: UploadFile = File(...)):
+    """Upload banner for current user (баннер канала — POST /api/channel/banner)"""
     user = get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
-    target_id = resolve_profile_target(user, target_user_id)
+    target_id = int(user["id"])
     if not banner.filename:
         raise HTTPException(status_code=400, detail="No file provided")
     mime_type = banner.content_type or mimetypes.guess_type(banner.filename)[0]
@@ -3970,8 +4227,15 @@ async def delete_account(request: Request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
     with get_db() as conn:
+        was_creator = int(user.get("is_creator") or 0)
         _purge_user_references(conn, user["id"])
         conn.execute("DELETE FROM users WHERE id = ?", (user["id"],))
+        # Phase 7.6d-fix: creator ушёл — канал переходит к первому живому пользователю
+        if was_creator:
+            heir = conn.execute("SELECT MIN(id) AS id FROM users").fetchone()
+            if heir and heir["id"] is not None:
+                conn.execute("UPDATE users SET is_creator = 1 WHERE id = ?", (int(heir["id"]),))
+                app_logger.info("creator передан: user_id=%s", int(heir["id"]))
         conn.commit()
     
     log_admin_action(user["id"], "delete_self", user["id"], "self-deletion")
@@ -4148,16 +4412,36 @@ async def edit_message(message_id: int, request: Request, text: str = Form(...))
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
     with get_db() as conn:
-        msg = conn.execute("SELECT id, sender_id, group_id, recipient_id FROM messages WHERE id = ?", (message_id,)).fetchone()
+        msg = conn.execute(
+            "SELECT id, sender_id, group_id, recipient_id, peer_type FROM messages WHERE id = ?",
+            (message_id,),
+        ).fetchone()
         if not msg:
             raise HTTPException(status_code=404, detail="Message not found")
         if msg["sender_id"] != user["id"]:
             raise HTTPException(status_code=403, detail="Only author can edit")
         if not text.strip():
             raise HTTPException(status_code=400, detail="Empty message")
+        # Phase 7.6d-fix: объявление канала правит только его автор-создатель
+        is_broadcast = (msg["peer_type"] or PEER_TYPE_USER) == CHANNEL_PEER_TYPE
+        if is_broadcast:
+            require_creator(user)
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("UPDATE messages SET text = ?, edited_at = ? WHERE id = ?", (text, now, message_id))
         conn.commit()
+
+    event = {
+        "type": "message_edited", "message_id": message_id,
+        "text": text, "edited_at": now,
+        "group_id": msg["group_id"], "sender_id": msg["sender_id"],
+        "recipient_id": msg["recipient_id"],
+    }
+    if is_broadcast:
+        # канал читают все — правку видят все онлайн
+        event["peer_type"] = CHANNEL_PEER_TYPE
+        await push_to_all(event)
+        return JSONResponse({"ok": True, "edited_at": now})
+
     # broadcast to participants
     participants = set()
     if msg["group_id"]:
@@ -4170,12 +4454,7 @@ async def edit_message(message_id: int, request: Request, text: str = Form(...))
         ws_conn = app.state.connections.get(uid)
         if ws_conn:
             try:
-                await ws_conn.send_json({
-                    "type": "message_edited", "message_id": message_id,
-                    "text": text, "edited_at": now,
-                    "group_id": msg["group_id"], "sender_id": msg["sender_id"],
-                    "recipient_id": msg["recipient_id"]
-                })
+                await ws_conn.send_json(event)
             except Exception:
                 pass
     return JSONResponse({"ok": True, "edited_at": now})
@@ -4193,7 +4472,20 @@ async def delete_message_endpoint(request: Request, message_id: int = Form(...),
         msg = conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone()
         if not msg:
             raise HTTPException(status_code=404, detail="Message not found")
-        
+
+        # Phase 7.6d-fix: объявление канала удаляет только creator
+        if (msg["peer_type"] or PEER_TYPE_USER) == CHANNEL_PEER_TYPE:
+            require_creator(user)
+            conn.execute("DELETE FROM attachments WHERE message_id = ?", (message_id,))
+            conn.execute("DELETE FROM messages WHERE id = ?", (message_id,))
+            conn.commit()
+            app_logger.info("объявление удалено: creator_id=%s message_id=%s", user["id"], message_id)
+            await push_to_all({
+                "type": "message_deleted", "message_id": message_id,
+                "peer_type": CHANNEL_PEER_TYPE, "peer_id": 0,
+            }, exclude_uid=user["id"])
+            return JSONResponse({"success": True, "deleted": True})
+
         # Phase 7.2b: group messages — check membership instead of recipient_id
         if msg["group_id"]:
             membership = conn.execute(
@@ -4228,15 +4520,15 @@ async def delete_message_endpoint(request: Request, message_id: int = Form(...),
 
 # ========== DELETE CHAT ENDPOINT ==========
 @app.post("/api/delete-chat")
-async def delete_chat_endpoint(request: Request, recipient_id: int = Form(...)):
+async def delete_chat_endpoint(request: Request, recipient_id: int = Form(0), channel: int = Form(0)):
     """Delete entire chat with a user (marks all messages as deleted for current user)"""
     user = get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    # Phase 7.6d: чат с каналом «start» удалять нельзя — онбординг должен остаться
-    if is_system_peer(recipient_id):
-        raise HTTPException(status_code=403, detail="Чат с каналом объявлений удалить нельзя")
+    # Phase 7.6d-fix: канал объявлений не удаляют — ни через чат, ни через «занавес»
+    if channel or not recipient_id:
+        raise HTTPException(status_code=403, detail="Канал объявлений удалить нельзя")
     
     with get_db() as conn:
         conn.execute("""

@@ -22,28 +22,45 @@ A lightweight private web messenger for small groups, designed for Raspberry Pi 
 - Health check endpoint `/health`
 - Database migrations on startup
 
-## Стартовый контакт: канал «ВайбБункер» (Phase 7.6d)
+## Канал объявлений «ВайбБункер» (Phase 7.6d-fix)
 
-Системный контакт `username=start` создаётся в `ensure_schema()` (`is_system=1`, подпись
-«ВайбБункер»). Он не входит в счётчик живых пользователей, поэтому **первый зарегистрированный
-по-прежнему становится админом**. Первый зарегистрированный получает `is_creator=1`.
+Канал — **не пользователь**. В `users` нет ботов: служебный `@start` удалён миграцией
+(`_remove_system_user()` — чистит самого бота, его сообщения, пины, мьюты, риды). Профиль
+канала живёт в `settings` (`broadcast_name`, `broadcast_bio`, `broadcast_avatar_uuid`,
+`broadcast_banner_uuid`), сообщения — в `messages` с `peer_type='broadcast'`, `peer_id=0`
+и `sender_id` = реальный создатель. **Creator = первый зарегистрированный** (`users.is_creator`
+у `min(id)`; миграция `_ensure_creator()` назначает его и в уже существующих базах).
 
 | Поведение | Правило |
 |---|---|
-| Онбординг | При каждой регистрации — приветствие от канала (темы, жесты, режимы, группы, почта-коды, PWA) |
-| Место в списке | Всегда сверху (`ORDER BY u.is_system DESC, pinned DESC, id ASC`), с бейджем 📢 и подписью «канал объявлений» |
-| Удаление | Нельзя: `POST /api/delete-chat` с `recipient_id=start` → **403**, кнопка «занавеса» у канала не渲染ится |
-| Рендер | Сообщения канала идут по центру (`.system-announcement`), свайп-ответ и цитирование на них отключены |
-| Кто пишет | Только creator: `POST /api/send` с `recipient_id=start` → **403** всем остальным, включая админов |
-| Рассылка | Сообщение creator уходит ВСЕМ пользователям от лица канала (broadcast, по строке на получателя) |
-| Инпут | У creator — обычный (канал как средство объявлений), у остальных — плашка «канал объявлений — ответы отключены» |
-| Профиль канала | Смотрят все; редактируют (имя/аватар/баннер/bio) только creator — кнопка «Оформить канал» видна только ему |
-| Прочее | Непрочитанные бейджи работают; `typing` в канал не шлётся; в поиске контактов канал не участвует |
+| Онбординг | Автосообщений нет: канал появляется сверху **пустым**, первое объявление пишет creator сам |
+| Пустой канал | У creator — плашка «Напиши первое объявление» + кнопка «Вставить шаблон» (правдивый текст про темы, жесты, режимы, группы, почту и PWA); у остальных — плашка «канал объявлений — ответы отключены» |
+| Место в списке | Отдельная строка `#channelItem` над списком контактов, бейдж 📢, подпись «канал объявлений»; без «занавеса» и без стрелки действий |
+| Удаление | Нельзя: `POST /api/delete-chat` с `channel=1` → **403** для всех, включая creator |
+| Рендер | Объявления идут по центру (`.system-announcement`), без аватара, без цитаты и без свайп-ответа |
+| Кто пишет | Только creator: `POST /api/send` с `channel=1` → **403** всем остальным, включая админов |
+| Рассылка | Одна строка на всех + веерная доставка по WS (`push_to_all`); unread-бейдж считается как `type='channel', id=0` |
+| Правка и удаление | Только creator: `POST /api/messages/{id}/edit` и `POST /api/delete-message` → **403** остальным; удаление рассылает `message_deleted` |
+| Профиль канала | `GET /api/channel` смотрят все; `POST /api/channel`, `/api/channel/avatar`, `/api/channel/banner` — только creator (админы-не-creator — читатели) |
+| Админка | Системных строк в Users нет уже потому, что бота в `users` больше нет |
+| Прочее | `typing` в канал не шлётся; в поиске контактов канал не участвует |
 
-Серверные точки входа: `ensure_system_user()`, `system_user_id()`, `is_system_peer()`,
-`broadcast_from_start()`, `send_welcome_message()`, `resolve_profile_target()`.
-Фронт: `templates/chat.html` (`data-system`, `applyChannelMode()`, `profileTargetUserId`) и
-`static/style.css` (`.system-announcement`, `.channel-notice`, `.profile-channel-mode`).
+**Markdown-подмножество в пузырях** (все чаты): рендер = `escapeHtml()` **первым шагом**, затем
+`**жирный**`, `*курсив*`, `~~страйк~~`, `` `код` ``, ```блоки```, автоссылки `http(s)`
+(`target="_blank" rel="noopener noreferrer"`) и переносы строк. Сырого HTML в пузыре не бывает —
+XSS-безопасно по построению.
+
+**Даты**: `parseTs()` разбирает `YYYY-MM-DD HH:MM:SS` по компонентам (в части браузеров
+`new Date('YYYY-MM-DD HH:MM:SS')` даёт `Invalid Date`); сообщение без валидного `created_at`
+не создаёт разделитель дат и не показывает время.
+
+Серверные точки входа: `channel_payload()`, `get_channel_profile()`, `set_channel_fields()`,
+`creator_user_id()`, `require_creator()`, `post_channel_message()`, `channel_message_rows()`,
+`push_to_all()`, миграции `_migrate_channel_columns()` / `_remove_system_user()` /
+`_ensure_creator()` / `_seed_channel_settings()`.
+Фронт: `templates/chat.html` (`#channelItem`, `openChannel()`, `loadChannel()`,
+`applyChannelMode()`, `renderMarkdown()`, `parseTs()`, `profileMode`) и `static/style.css`
+(`.system-announcement`, `.channel-notice`, `.md-code`, `.md-code-block`, `.profile-channel-mode`).
 
 ## Почта и коды подтверждения (Phase R7)
 
@@ -604,3 +621,5 @@ Private use only.
 - phase R7 complete
 
 - phase 7.6d complete
+
+- 7.6d-fix complete

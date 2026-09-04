@@ -1035,32 +1035,59 @@ async def run_scenarios(report: Report, data_dir: str) -> None:
 
     # ---------------- aa) онбординг: приветствие от канала start ----------------
     def scenario_aa():
-        # C — свежий пользователь: приветствие от «start» приходит само
+        # C — свежий пользователь: канал есть, но ПУСТОЙ (автосообщений больше нет)
         carol = state.get("carol")
         assert carol is not None, "нет третьего пользователя из сценария u"
-        start_id = carol.json("/api/profile", method="GET")["system_user_id"]
-        assert start_id, "сервер не сообщил id системного канала"
 
-        history = dialog_history(carol, start_id)
-        assert history, f"у нового пользователя нет сообщений от канала start: {history}"
-        welcome = history[0]
-        assert welcome.get("is_system") == 1, f"нет флага центрирования is_system: {welcome}"
-        assert "ВайбБункер" in (welcome.get("text") or ""), f"текст не похож на приветствие: {welcome}"[:200]
-
-        # канал сверху списка контактов и помечен системным
+        # канала нет в users: канал объявлений — не пользователь
         contacts = carol.json("/api/users", method="GET")
-        assert contacts and contacts[0].get("is_system") == 1, \
-            f"канал start не первый в списке контактов: {[c.get('name') for c in contacts]}"
-        state["start_id"] = start_id
-    await report.step("aa", "онбординг: приветствие от канала start, флаг центрирования", scenario_aa)
+        assert not any(c.get("username") == "start" for c in contacts), \
+            "бот @start остался в users: " + str([c.get("username") for c in contacts])
+        assert not any(c.get("is_system") for c in contacts), "в users остались системные строки"
+
+        # профиль канала доступен всем, создатель известен
+        channel = carol.json("/api/channel", method="GET")
+        assert channel.get("is_channel") is True, f"/api/channel без флага канала: {channel}"
+        assert channel.get("name") == "ВайбБункер", f"неожиданное имя канала: {channel}"
+        assert channel.get("creator_id"), f"у канала нет creator: {channel}"
+        assert channel.get("is_creator") == 0, f"C не может быть creator: {channel}"
+
+        # лента канала у нового пользователя ПУСТАЯ — приветствие пишет creator сам
+        feed = carol.json("/api/channel/messages", method="GET")
+        assert feed.get("messages") == [], \
+            f"канал не пуст для нового пользователя: {feed.get('messages')}"
+
+        # creator — первый зарегистрированный (A), остальные — читатели
+        assert alice.json("/api/profile", method="GET")["is_creator"] == 1, \
+            "первый зарегистрированный не стал creator"
+        assert bob.json("/api/profile", method="GET")["is_creator"] == 0, \
+            "creator больше одного"
+
+        # строка канала: первая в списке, без кнопки удаления и без стрелки действий
+        status, raw = carol.request("/chat", method="GET")
+        assert status == 200, f"/chat недоступен: HTTP {status}"
+        html = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+        first_item = html.index('<li class="user-item')
+        assert "user-item-system" in html[first_item:first_item + 120], \
+            "первая строка контактов — не канал объявлений"
+        row_end = html.index("</li>", first_item)
+        row = html[first_item:row_end]
+        assert "curtain-del-btn" not in row, "у канала есть кнопка удаления чата"
+        assert "curtain-toggle-btn" not in row, "у канала есть стрелка действий"
+        assert 'id="channelNotice"' in html, "нет плашки «канал объявлений»"
+        assert 'id="creatorNotice"' in html, "нет плашки creator для пустого канала"
+        assert "insertTemplateBtn" in html, "нет кнопки «Вставить шаблон»"
+        state["channel"] = channel
+    await report.step("aa", "канал без бота: пустая лента у нового юзера, строка канала сверху", scenario_aa)
 
     # ---------------- bb) писать в канал может только creator ----------------
     async def scenario_bb():
-        start_id = need("start_id", "нет id канала start")
+        channel = need("channel", "нет профиля канала")
+        assert channel.get("creator_id") == alice.json("/api/profile", method="GET")["id"], \
+            "creator канала — не первый зарегистрированный"
+
         # обычный пользователь → 403
-        status, raw = bob.request("/api/send", data={
-            "recipient_id": start_id, "group_id": 0, "text": "привет, канал", "reply_to_id": 0,
-        })
+        status, raw = bob.request("/api/send", data={"channel": 1, "text": "привет, канал"})
         assert status == 403, f"B (не creator) пишет в канал: HTTP {status} (ожидали 403): {raw[:160]!r}"
 
         # админ, но не creator → тоже 403
@@ -1073,70 +1100,88 @@ async def run_scenarios(report: Report, data_dir: str) -> None:
         assert status == 303, f"регистрация E: HTTP {status}: {raw[:160]!r}"
         assert eve.request("/login", data={"username": eve.email, "password": eve.password})[0] == 303
         alice.json("/admin/grant-admin", data={"target_user_id": eve.json("/api/profile", method="GET")["id"]})
-        status, raw = eve.request("/api/send", data={
-            "recipient_id": start_id, "group_id": 0, "text": "я админ, пусти", "reply_to_id": 0,
-        })
+        status, raw = eve.request("/api/send", data={"channel": 1, "text": "я админ, пусти"})
         assert status == 403, f"админ-не-creator пишет в канал: HTTP {status} (ожидали 403): {raw[:160]!r}"
 
-        # creator → 200, и это уходит всем (broadcast)
+        # creator → 200, объявление уходит всем
         carol = need("carol", "нет третьего пользователя")
         ws_c = await ws_open(carol)
         try:
-            sent = alice.json("/api/send", data={
-                "recipient_id": start_id, "group_id": 0,
-                "text": "ОБЪЯВЛЕНИЕ: вечером деплой", "reply_to_id": 0,
-            })
-            assert sent.get("broadcast", 0) >= 2, f"объявление не разослано: {sent}"
-            assert sent.get("is_system") is True, f"объявление не помечено системным: {sent}"
+            sent = alice.json("/api/send", data={"channel": 1, "text": "ОБЪЯВЛЕНИЕ: вечером деплой"})
+            assert sent.get("is_broadcast") == 1, f"объявление без флага канала: {sent}"
+            assert sent.get("peer_type") == "broadcast" and sent.get("peer_id") == 0, \
+                f"объявление без peer_type/peer_id: {sent}"
 
             event = await expect_event(
                 ws_c,
-                lambda ev: ev.get("type") == "message" and ev.get("text") == "ОБЪЯВЛЕНИЕ: вечером деплой",
+                lambda ev: ev.get("peer_type") == "broadcast"
+                           and ev.get("text") == "ОБЪЯВЛЕНИЕ: вечером деплой",
                 "объявление канала пришло слушателю",
             )
-            assert event.get("is_system") is True, f"событие без флага центрирования: {event}"
+            assert event.get("is_broadcast") == 1, f"событие без флага канала: {event}"
 
-            history = dialog_history(carol, start_id)
-            assert any(m.get("text") == "ОБЪЯВЛЕНИЕ: вечером деплой" and m.get("is_system") == 1
-                       for m in history), f"объявления нет в истории слушателя: {history}"
+            feed = carol.json("/api/channel/messages", method="GET")
+            assert any(m.get("text") == "ОБЪЯВЛЕНИЕ: вечером деплой" and m.get("is_broadcast") == 1
+                       for m in feed["messages"]), f"объявления нет в ленте слушателя: {feed}"
+
+            # creator правит своё объявление, не-creator — нет
+            mid = sent["id"]
+            edited = alice.json(f"/api/messages/{mid}/edit", data={"text": "ОБЪЯВЛЕНИЕ: деплой перенесён"})
+            assert edited.get("ok") is True, f"creator не смог поправить объявление: {edited}"
+            status, raw = bob.request(f"/api/messages/{mid}/edit", data={"text": "взлом объявления"})
+            assert status == 403, f"не-creator правит объявление: HTTP {status} (ожидали 403): {raw[:160]!r}"
+
+            feed = carol.json("/api/channel/messages", method="GET")
+            assert any(m["id"] == mid and m["text"] == "ОБЪЯВЛЕНИЕ: деплой перенесён"
+                       for m in feed["messages"]), f"правка не видна в ленте: {feed}"
+
+            #creator удаляет своё объявление, не-creator — нет
+            status, raw = bob.request("/api/delete-message", data={"message_id": mid, "mode": "all"})
+            assert status == 403, f"не-creator удаляет объявление: HTTP {status} (ожидали 403): {raw[:160]!r}"
+            deleted = alice.json("/api/delete-message", data={"message_id": mid, "mode": "all"})
+            assert deleted.get("deleted") is True, f"creator не удалил объявление: {deleted}"
+            feed = carol.json("/api/channel/messages", method="GET")
+            assert not any(m["id"] == mid for m in feed["messages"]), "объявление осталось в ленте"
+
+            # второе объявление остаётся в ленте для сценария cc
+            alice.json("/api/send", data={"channel": 1, "text": "ВТОРОЕ ОБЪЯВЛЕНИЕ"})
         finally:
             await ws_c.close()
         state["eve"] = eve
-    await report.step("bb", "канал start: не-creator → 403, creator → объявление всем", scenario_bb)
+    await report.step("bb", "канал: не-creator → 403, creator пишет/правит/удаляет", scenario_bb)
 
     # ---------------- cc) канал нельзя удалить, профиль — только creator ----------------
     def scenario_cc():
-        start_id = need("start_id", "нет id канала start")
-        # delete-chat для канала запрещён
-        status, raw = bob.request("/api/delete-chat", data={"recipient_id": start_id})
+        # delete-chat канала запрещён всем, включая creator
+        status, raw = bob.request("/api/delete-chat", data={"channel": 1})
         assert status == 403, f"delete-chat канала: HTTP {status} (ожидали 403): {raw[:160]!r}"
-        status, raw = alice.request("/api/delete-chat", data={"recipient_id": start_id})
+        status, raw = alice.request("/api/delete-chat", data={"channel": 1})
         assert status == 403, f"delete-chat канала от creator: HTTP {status} (ожидали 403)"
 
-        # приветствие всё ещё на месте — «занавес» ничего не стёр
-        history = dialog_history(bob, start_id)
-        assert history, "чат с каналом опустел — удаление прошло"
+        # лента канала цела — удаление не прошло
+        feed = bob.json("/api/channel/messages", method="GET")
+        assert feed["messages"], "лента канала опустела — удаление прошло"
+        assert any(m.get("text") == "ВТОРОЕ ОБЪЯВЛЕНИЕ" for m in feed["messages"]), \
+            f"второе объявление потерялось: {feed['messages']}"
 
-        # профиль канала: creator правит, остальные — нет
-        edited = alice.json("/api/profile", data={"name": "ВайбБункер", "bio": "канал объявлений",
-                                                  "target_user_id": start_id})
-        assert edited.get("success") is True, f"creator не смог оформить канал: {edited}"
-
-        status, raw = bob.request("/api/profile", data={"name": "Чужой канал", "bio": "взлом",
-                                                       "target_user_id": start_id})
-        assert status == 403, f"не-creator правит канал: HTTP {status} (ожидали 403): {raw[:160]!r}"
+        # профиль канала правит только creator
+        status, raw = bob.request("/api/channel", data={"name": "Чужой канал", "bio": "взлом"})
+        assert status == 403, f"не-creator оформляет канал: HTTP {status} (ожидали 403): {raw[:160]!r}"
 
         eve = state.get("eve")
         if eve is not None:
-            status, raw = eve.request("/api/profile", data={"name": "Админский канал", "bio": "взлом",
-                                                            "target_user_id": start_id})
-            assert status == 403, f"админ-не-creator правит канал: HTTP {status} (ожидали 403): {raw[:160]!r}"
+            status, raw = eve.request("/api/channel", data={"name": "Админский канал", "bio": "взлом"})
+            assert status == 403, f"админ-не-creator оформляет канал: HTTP {status} (ожидали 403): {raw[:160]!r}"
 
-        # оформление применилось
-        channel = bob.json(f"/api/user/{start_id}/profile", method="GET")
-        assert channel.get("is_system") == 1, f"профиль канала без флага is_system: {channel}"
+        edited = alice.json("/api/channel", data={"name": "ВайбБункер", "bio": "канал объявлений"})
+        assert edited.get("success") is True, f"creator не смог оформить канал: {edited}"
+
+        # оформление видно всем читателям
+        channel = bob.json("/api/channel", method="GET")
+        assert channel.get("name") == "ВайбБункер", f"имя канала не обновилось: {channel}"
         assert channel.get("bio") == "канал объявлений", f"описание канала не обновилось: {channel}"
-    await report.step("cc", "канал: удаление запрещено, профиль правит только creator", scenario_cc)
+        assert channel.get("is_creator") == 0, f"B внезапно creator: {channel}"
+    await report.step("cc", "канал: удаление запрещено, профиль канала правит только creator", scenario_cc)
 
     # ---------------- закрытие WS ----------------
     for ws in (state.get("ws_a"), state.get("ws_b")):
