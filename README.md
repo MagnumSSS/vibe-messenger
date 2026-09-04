@@ -40,6 +40,8 @@ A lightweight private web messenger for small groups, designed for Raspberry Pi 
 9. Логика прав (`require_admin`, матрица кика, доступ к вложениям) проверяется на сервере, а не в клиенте.
 10. Фаза без воспроизводимой проверки считается незакрытой: скрипт, отчёт, маркер.
 11. Фаза принимается **ТОЛЬКО** с зелёным `scripts/selftest.py`; последние 20 строк его вывода вкладываются в отчёт о фазе.
+    Все соединения с SQLite создаются только через `get_conn()`; вложения пишутся в `*.part` и появляются через `os.replace`;
+    `data/` целиком в `.gitignore`, поэтому `-wal`, `-shm` и `*.part` в git не попадают.
 
 ```bash
 python scripts/selftest.py   # exit 0 только если все сценарии OK
@@ -126,6 +128,19 @@ sudo systemctl restart messenger
 ```
 
 ## Backup
+
+Бэкап снимается онлайн, без остановки сервиса: `scripts/backup.sh` — тонкий шим
+над `scripts/backup.py`, который копирует БД через SQLite Online Backup API
+(`sqlite3.Connection.backup()`, корректно работает с WAL) и обязательно проверяет
+**копию** через `PRAGMA integrity_check`. Битую копию скрипт бэкапом не считает:
+печатает `ERROR: копия ... битая` и завершается ненулевым кодом.
+
+Проверить уже существующую копию (например, перед восстановлением):
+
+```bash
+python3 scripts/backup.py --verify /var/lib/messenger/backups/messenger-YYYYMMDD_HHMMSS.db
+# exit 0 — копия целая; exit 3 — битая
+```
 
 ### Manual backup
 
@@ -385,3 +400,5 @@ Private use only.
 - micro a11y2 complete
 
 - phase R1 complete
+
+- phase R2 complete

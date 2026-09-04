@@ -403,10 +403,23 @@ async def get_pulse(request: Request):
 templates = Jinja2Templates(directory="templates")
 
 
+def get_conn() -> sqlite3.Connection:
+    """
+    Phase R2: единственная точка создания соединений с SQLite.
+    Ни один модуль не вызывает sqlite3.connect напрямую — только здесь
+    выставляются PRAGMA, критичные для целостности и параллельной работы.
+    """
+    conn = sqlite3.connect(DB_PATH, timeout=5.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 5000")    # ждём чужую блокировку, вместо «database is locked»
+    conn.execute("PRAGMA foreign_keys = ON")      # целостность ссылок обязательна
+    conn.execute("PRAGMA synchronous = NORMAL")   # разумный компромисс для WAL
+    return conn
+
+
 @contextmanager
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = get_conn()
     try:
         yield conn
     finally:
@@ -645,10 +658,135 @@ def ensure_schema():
         """)
 
         msg_cols = {col[1] for col in conn.execute("PRAGMA table_info(messages)").fetchall()}
+
+        # Phase R2: foreign_keys=ON ломает групповые сообщения, если recipient_id
+        # ссылается на users(id) — в группах это служебный sentinel 0.
+        _migrate_messages_recipient_fk(conn)
+
         conn.commit()
 
 
-ensure_schema()
+# Phase R2: актуальное определение messages (без FK на recipient_id — см. выше)
+MESSAGES_COLUMNS = [
+    "id", "sender_id", "recipient_id", "text", "created_at",
+    "deleted_for_sender", "deleted_for_recipient", "group_id", "reply_to_id", "edited_at",
+]
+
+
+def _migrate_messages_recipient_fk(conn) -> bool:
+    """
+    Убрать FOREIGN KEY recipient_id -> users(id) из messages.
+
+    Групповые сообщения пишутся с recipient_id = 0 (sentinel «не адресат-пользователь»),
+    поэтому при foreign_keys=ON такойINSERT стал бы ошибкой. Пересобираем таблицу
+    один раз; данные и id сохраняются.
+    """
+    fks = conn.execute("PRAGMA foreign_key_list(messages)").fetchall()
+    if not any(fk[2] == "users" and fk[3] == "recipient_id" for fk in fks):
+        return False
+
+    conn.commit()  # PRAGMA foreign_keys нельзя менять внутри транзакции
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.execute("""
+            CREATE TABLE messages_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sender_id INTEGER NOT NULL,
+                recipient_id INTEGER NOT NULL,
+                text TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                deleted_for_sender INTEGER DEFAULT 0,
+                deleted_for_recipient INTEGER DEFAULT 0,
+                group_id INTEGER NULL,
+                reply_to_id INTEGER NULL,
+                edited_at TIMESTAMP NULL,
+                FOREIGN KEY (sender_id) REFERENCES users(id)
+            )
+        """)
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
+        columns = [c for c in MESSAGES_COLUMNS if c in existing]
+        conn.execute(
+            f"INSERT INTO messages_new ({', '.join(columns)}) SELECT {', '.join(columns)} FROM messages"
+        )
+        conn.execute("DROP TABLE messages")
+        conn.execute("ALTER TABLE messages_new RENAME TO messages")
+        conn.commit()
+    except Exception:
+        conn.execute("PRAGMA foreign_keys = ON")
+        raise
+    conn.execute("PRAGMA foreign_keys = ON")
+    print("Migrated table messages: recipient_id больше не FK (группы используют 0)")
+    return True
+
+
+# ========== Phase R2: броня SQLite ==========
+
+PART_MAX_AGE_SECONDS = 3600  # брошенные .part старше часа удаляются при старте
+
+# Служебное соединение, удерживающее WAL открытым всё время работы процесса
+_KEEPALIVE_CONN = None
+
+
+def cleanup_stale_parts(directory: str, max_age: float = PART_MAX_AGE_SECONDS) -> int:
+    """Удалить *.part (недописанные вложения) старше max_age секунд."""
+    removed = 0
+    now = time.time()
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return 0
+    for name in names:
+        if not name.endswith(".part"):
+            continue
+        path = os.path.join(directory, name)
+        try:
+            if not os.path.isfile(path) or now - os.path.getmtime(path) <= max_age:
+                continue
+            os.remove(path)
+            removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def db_integrity_check(conn) -> tuple[bool, str]:
+    """PRAGMA integrity_check → (ok, текст результата)."""
+    try:
+        rows = conn.execute("PRAGMA integrity_check").fetchall()
+    except sqlite3.DatabaseError as exc:
+        return False, f"ошибка проверки: {exc}"
+    messages = [str(row[0]) for row in rows]
+    ok = messages == ["ok"]
+    return ok, "; ".join(messages)[:500]
+
+
+def init_db() -> None:
+    """
+    Стартовая инициализация: схема, персистентный WAL, проверка целостности,
+    уборка брошенных .part.
+    """
+    global _KEEPALIVE_CONN
+    ensure_schema()
+    with get_db() as conn:
+        mode = conn.execute("PRAGMA journal_mode = WAL").fetchone()[0]
+        print(f"[startup] journal_mode = {mode}")
+        ok, detail = db_integrity_check(conn)
+        print(f"[startup] integrity_check {detail}")
+        _pulse_emit("integrity", f"{'ok' if ok else 'FAIL'}: {detail}")
+
+    # Держим одно служебное соединение: пока оно открыто, SQLite не удаляет
+    # messenger.db-wal/-shm после каждого запроса (иначе WAL-файлы живут ровно
+    # до закрытия последней коннекции) и сам ведёт контрольные точки.
+    _KEEPALIVE_CONN = get_conn()
+    _KEEPALIVE_CONN.execute("SELECT 1")
+
+    removed = cleanup_stale_parts(UPLOADS_DIR) + cleanup_stale_parts(THEME_IMAGES_DIR)
+    if removed:
+        print(f"[startup] удалено брошенных .part: {removed}")
+        _pulse_emit("cleanup", f"part removed={removed}")
+
+
+init_db()
 
 
 def hash_password(password: str) -> str:
@@ -1790,24 +1928,32 @@ async def upload_theme_image(request: Request, image_type: str, image: UploadFil
 
     # Generate UUID filename (keep extension so mimetypes can sniff on serve)
     uuid_name = f"{uuid.uuid4().hex}{Path(image.filename).suffix.lower()}"
-    file_path = os.path.join(THEME_IMAGES_DIR, uuid_name)
+    final_path = os.path.join(THEME_IMAGES_DIR, uuid_name)
+    # Phase R2: *.part + os.replace — клиент не видит недописанный файл
+    part_path = final_path + ".part"
 
     # Save file in chunks with size limit
     total_bytes = 0
-    async with aiofiles.open(file_path, 'wb') as out_file:
-        while True:
-            chunk = await image.read(65536)
-            if not chunk:
-                break
-            total_bytes += len(chunk)
-            if total_bytes > THEME_IMAGE_MAX_BYTES:
-                await out_file.close()
-                await aiofiles.os.remove(file_path)
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Image exceeds size limit ({THEME_IMAGE_MAX_BYTES // 1024} KB)"
-                )
-            await out_file.write(chunk)
+    try:
+        async with aiofiles.open(part_path, 'wb') as out_file:
+            while True:
+                chunk = await image.read(65536)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > THEME_IMAGE_MAX_BYTES:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Image exceeds size limit ({THEME_IMAGE_MAX_BYTES // 1024} KB)"
+                    )
+                await out_file.write(chunk)
+        os.replace(part_path, final_path)
+    except Exception:
+        try:
+            await aiofiles.os.remove(part_path)
+        except OSError:
+            pass
+        raise
 
     # Update user's theme_json, replacing any previous image of this type
     with get_db() as conn:
@@ -2000,27 +2146,39 @@ async def send_message(
                 # Generate UUID filename with extension
                 ext = Path(file.filename).suffix.lower()
                 uuid_name = f"{uuid.uuid4().hex}{ext}"
-                file_path = os.path.join(UPLOADS_DIR, uuid_name)
+                final_path = os.path.join(UPLOADS_DIR, uuid_name)
+                # Phase R2: пишем в *.part; финальное имя появляется только целиком
+                part_path = final_path + ".part"
                 
                 # Stream file to disk in 64KB chunks while counting bytes
                 total_bytes = 0
-                async with aiofiles.open(file_path, 'wb') as f:
-                    while True:
-                        chunk_start = time.monotonic()
-                        chunk = await file.read(chunk_bytes)
-                        if not chunk:
-                            break
-                        total_bytes += len(chunk)
-                        if total_bytes > effective_max_bytes:
-                            await aiofiles.os.remove(file_path)
-                            raise HTTPException(status_code=413, detail=f"File '{file.filename}' exceeds {max_upload_mb} MB limit")
-                        await f.write(chunk)
-                        # Phase 7.1b-fix: token-bucket – sleep = budget − elapsed
-                        if chunk_budget > 0:
-                            elapsed = time.monotonic() - chunk_start
-                            sleep_time = chunk_budget - elapsed
-                            if sleep_time > 0:
-                                await asyncio.sleep(sleep_time)
+                try:
+                    async with aiofiles.open(part_path, 'wb') as f:
+                        while True:
+                            chunk_start = time.monotonic()
+                            chunk = await file.read(chunk_bytes)
+                            if not chunk:
+                                break
+                            total_bytes += len(chunk)
+                            if total_bytes > effective_max_bytes:
+                                raise HTTPException(status_code=413, detail=f"File '{file.filename}' exceeds {max_upload_mb} MB limit")
+                            await f.write(chunk)
+                            # Phase 7.1b-fix: token-bucket – sleep = budget − elapsed
+                            if chunk_budget > 0:
+                                elapsed = time.monotonic() - chunk_start
+                                sleep_time = chunk_budget - elapsed
+                                if sleep_time > 0:
+                                    await asyncio.sleep(sleep_time)
+                    # Phase R2: os.replace — атомарное появление готового файла,
+                    # читатель никогда не видит полузаписанное вложение
+                    os.replace(part_path, final_path)
+                except Exception:
+                    # Лимит, обрыв соединения, ошибка диска — полуфайла не остаётся
+                    try:
+                        await aiofiles.os.remove(part_path)
+                    except OSError:
+                        pass
+                    raise
                 
                 # Detect mime type from extension
                 mime_type = mimetypes.guess_type(file.filename)[0] or file.content_type or "application/octet-stream"
@@ -2413,6 +2571,42 @@ async def get_admin_audit(request: Request):
     return JSONResponse([dict(r) for r in rows])
 
 
+@app.post("/api/admin/cleanup-orphans")
+async def cleanup_orphan_files(request: Request):
+    """
+    Phase R2: удалить файлы-сироты из uploads — те, на которые нет строки в attachments.
+    Аватары/баннеры лежат в подкаталогах и не трогаются; *.part не трогаются
+    (их убирает стартовая чистка по возрасту).
+    """
+    user = get_current_user(request)
+    require_admin(user)
+
+    with get_db() as conn:
+        known = {row[0] for row in conn.execute("SELECT uuid_name FROM attachments").fetchall()}
+
+    deleted, errors = 0, 0
+    try:
+        names = os.listdir(UPLOADS_DIR)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Не удалось прочитать uploads: {exc}")
+
+    for name in names:
+        path = os.path.join(UPLOADS_DIR, name)
+        if not os.path.isfile(path):          # подкаталоги avatars/ и banners/ пропускаем
+            continue
+        if name.endswith(".part") or name in known:
+            continue
+        try:
+            os.remove(path)
+            deleted += 1
+        except OSError:
+            errors += 1
+
+    log_admin_action(user["id"], "cleanup_orphans", None, f"deleted={deleted}; errors={errors}")
+    _pulse_emit("cleanup", f"orphans deleted={deleted}")
+    return JSONResponse({"deleted": deleted, "errors": errors, "kept": len(known)})
+
+
 @app.get("/api/settings/blocks")
 async def get_blocks(request: Request):
     """Get list of users that current user has blocked"""
@@ -2650,10 +2844,19 @@ async def upload_avatar(request: Request, avatar: UploadFile = File(...)):
     # Ensure avatars directory exists
     os.makedirs(os.path.join(UPLOADS_DIR, "avatars"), exist_ok=True)
     
-    # Save file
+    # Save file (Phase R2: *.part + os.replace — полуаватаров не бывает)
+    part_path = file_path + ".part"
     file_data = await avatar.read()
-    async with aiofiles.open(file_path, 'wb') as f:
-        await f.write(file_data)
+    try:
+        async with aiofiles.open(part_path, 'wb') as f:
+            await f.write(file_data)
+        os.replace(part_path, file_path)
+    except Exception:
+        try:
+            await aiofiles.os.remove(part_path)
+        except OSError:
+            pass
+        raise
     
     # Update user record
     with get_db() as conn:
@@ -2691,9 +2894,19 @@ async def upload_banner(request: Request, banner: UploadFile = File(...)):
     uuid_name = f"{uuid.uuid4().hex}{ext}"
     file_path = os.path.join(UPLOADS_DIR, "banners", uuid_name)
     os.makedirs(os.path.join(UPLOADS_DIR, "banners"), exist_ok=True)
+    # Phase R2: *.part + os.replace
+    part_path = file_path + ".part"
     file_data = await banner.read()
-    async with aiofiles.open(file_path, 'wb') as f:
-        await f.write(file_data)
+    try:
+        async with aiofiles.open(part_path, 'wb') as f:
+            await f.write(file_data)
+        os.replace(part_path, file_path)
+    except Exception:
+        try:
+            await aiofiles.os.remove(part_path)
+        except OSError:
+            pass
+        raise
     with get_db() as conn:
         conn.execute("UPDATE users SET banner_uuid = ? WHERE id = ?", (uuid_name, user["id"]))
         conn.commit()
@@ -2709,18 +2922,48 @@ async def get_banner(banner_uuid: str):
     return StreamingResponse(stream_file(file_path), media_type="image/jpeg")
 
 
+def _purge_user_references(conn, user_id: int) -> None:
+    """
+    Phase R2: при foreign_keys=ON удалить пользователя можно, только сняв ссылки.
+    Порядок: дочерние строки → владение группами → сообщения → сам пользователь.
+    Файлы удалённых вложений остаются на диске — их уберёт cleanup-orphans.
+    """
+    # группы в собственности: передаём старшему участнику, иначе владельца не будет
+    owned = [row[0] for row in conn.execute("SELECT id FROM groups WHERE owner_id = ?", (user_id,)).fetchall()]
+    for group_id in owned:
+        heir = conn.execute(
+            "SELECT user_id FROM group_members WHERE group_id = ? AND user_id != ? "
+            "ORDER BY joined_at ASC, user_id ASC LIMIT 1",
+            (group_id, user_id),
+        ).fetchone()
+        conn.execute("UPDATE groups SET owner_id = ? WHERE id = ?", (heir[0] if heir else None, group_id))
+
+    conn.execute(
+        "DELETE FROM attachments WHERE message_id IN "
+        "(SELECT id FROM messages WHERE sender_id = ? OR recipient_id = ?)",
+        (user_id, user_id),
+    )
+    conn.execute("DELETE FROM messages WHERE sender_id = ? OR recipient_id = ?", (user_id, user_id))
+    conn.execute("DELETE FROM theme_presets WHERE user_id = ?", (user_id,))
+    conn.execute("DELETE FROM reads WHERE user_id = ?", (user_id,))
+    conn.execute("DELETE FROM group_members WHERE user_id = ?", (user_id,))
+    conn.execute("DELETE FROM pins WHERE user_id = ? OR contact_id = ?", (user_id, user_id))
+    conn.execute("DELETE FROM mutes WHERE user_id = ? OR contact_id = ?", (user_id, user_id))
+    conn.execute("DELETE FROM blocks WHERE blocker_id = ? OR blocked_id = ?", (user_id, user_id))
+    conn.execute("DELETE FROM warns WHERE user_id = ? OR by_admin_id = ?", (user_id, user_id))
+    conn.execute("UPDATE invites SET used_by = NULL WHERE used_by = ?", (user_id,))
+    conn.execute("DELETE FROM invites WHERE created_by = ?", (user_id,))
+
+
 @app.post("/api/delete-account")
 async def delete_account(request: Request):
-    """Delete current user's account"""
+    """Delete current user's account (Phase R2: ссылки снимаются каскадом)"""
     user = get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
     
     with get_db() as conn:
-        conn.execute("UPDATE messages SET deleted_for_sender = 1 WHERE sender_id = ?", (user["id"],))
-        conn.execute("UPDATE messages SET deleted_for_recipient = 1 WHERE recipient_id = ?", (user["id"],))
-        # Phase 6.3: drop the account's custom theme presets along with it
-        conn.execute("DELETE FROM theme_presets WHERE user_id = ?", (user["id"],))
+        _purge_user_references(conn, user["id"])
         conn.execute("DELETE FROM users WHERE id = ?", (user["id"],))
         conn.commit()
     

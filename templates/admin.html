@@ -52,6 +52,10 @@
         .btn-cancel { background: #e4e6eb; color: #333; }
         .btn-confirm { background: #0084ff; color: white; }
         
+        /* Phase R2: toast вместо alert */
+        .toast { position: fixed; left: 50%; bottom: 2rem; transform: translateX(-50%); background: #333; color: #fff; padding: 0.75rem 1.25rem; border-radius: 6px; font-size: 0.9rem; opacity: 0; pointer-events: none; transition: opacity 0.2s ease; z-index: 2000; }
+        .toast.show { opacity: 1; }
+        
         @media (max-width: 768px) {
             .container { padding: 0.5rem; }
             table { font-size: 0.85rem; }
@@ -96,6 +100,15 @@
             <p id="limitsStatus" style="margin-top: 0.5rem; font-size: 0.85rem; color: #28a745; display: none;"></p>
         </div>
         
+        <!-- Phase R2: обслуживание хранилища -->
+        <div class="section">
+            <h2>Обслуживание</h2>
+            <div class="invite-section">
+                <button class="invite-btn" id="cleanupOrphansBtn">Почистить сирот</button>
+                <span style="font-size: 0.85rem; color: #666;">Файлы в uploads без записи в attachments (недописанные .part удаляются при старте)</span>
+            </div>
+        </div>
+
         <!-- Phase 7.1c: Audit Log -->
         <div class="section">
             <h2>Аудит</h2>
@@ -161,6 +174,9 @@
             </table>
         </div>
     </div>
+    
+    <!-- Phase R2: toast -->
+    <div class="toast" id="toast"></div>
     
     <!-- Warn Modal -->
     <div class="modal" id="warnModal">
@@ -347,6 +363,38 @@
                 alert('Failed to revoke admin');
             }
         }
+
+        // Phase R2: toast вместо alert
+        let toastTimer = null;
+        function showToast(message) {
+            const el = document.getElementById('toast');
+            el.textContent = message;
+            el.classList.add('show');
+            clearTimeout(toastTimer);
+            toastTimer = setTimeout(() => el.classList.remove('show'), 3000);
+        }
+
+        // Phase R2: чистка файлов-сирот в uploads
+        document.getElementById('cleanupOrphansBtn').addEventListener('click', async () => {
+            const btn = document.getElementById('cleanupOrphansBtn');
+            btn.disabled = true;
+            try {
+                const res = await fetch('/api/admin/cleanup-orphans', { method: 'POST' });
+                const data = await res.json();
+                if (!res.ok) {
+                    showToast('Ошибка чистки: ' + (data.detail || res.status));
+                    return;
+                }
+                showToast(data.deleted === 0
+                    ? 'Сирот нет — удалять нечего'
+                    : 'Удалено файлов-сирот: ' + data.deleted);
+                loadAudit();
+            } catch (err) {
+                showToast('Ошибка чистки: ' + err);
+            } finally {
+                btn.disabled = false;
+            }
+        });
 
         // Phase 7.1b: load/save upload limits
         async function loadLimits() {

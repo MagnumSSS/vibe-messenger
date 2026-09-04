@@ -30,6 +30,8 @@ import json
 import os
 import shutil
 import socket
+import sqlite3
+import struct
 import subprocess
 import sys
 import tempfile
@@ -85,10 +87,13 @@ def _multipart(fields: dict, files: list[tuple[str, str, bytes]]) -> tuple[bytes
         parts.append(
             f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n{value}\r\n'.encode()
         )
-    for field, filename, content in files:
+    for item in files:
+        # (поле, имя файла, байты[, Content-Type])
+        field, filename, content = item[0], item[1], item[2]
+        ctype = item[3] if len(item) > 3 else "application/octet-stream"
         parts.append(
             f'--{boundary}\r\nContent-Disposition: form-data; name="{field}"; '
-            f'filename="{filename}"\r\nContent-Type: application/octet-stream\r\n\r\n'.encode()
+            f'filename="{filename}"\r\nContent-Type: {ctype}\r\n\r\n'.encode()
             + content + b"\r\n"
         )
     parts.append(f"--{boundary}--\r\n".encode())
@@ -279,10 +284,16 @@ def stop_server(proc: subprocess.Popen | None) -> str:
 # Сценарии
 # --------------------------------------------------------------------------- #
 
-async def run_scenarios(report: Report) -> None:
+async def run_scenarios(report: Report, data_dir: str) -> None:
     alice = Client(*USER_A)
     bob = Client(*USER_B)
-    state: dict = {"alice": alice, "bob": bob}
+    state: dict = {
+        "alice": alice,
+        "bob": bob,
+        "data_dir": data_dir,
+        "db_path": os.path.join(data_dir, "messenger.db"),
+        "uploads_dir": os.path.join(data_dir, "uploads"),
+    }
 
     # ---------------- a) /health ----------------
     async def scenario_a():
@@ -391,6 +402,7 @@ async def run_scenarios(report: Report) -> None:
         att_ids = [a["id"] for m in history for a in (m.get("attachments") or [])]
         assert att_id in att_ids, f"вложение {att_id} не видно в истории B: {att_ids}"
         state["att_id"] = att_id
+        state["att_name"] = attachments[0]["uuid_name"]
     await report.step("g", "A→B вложение (PNG): B скачивает, байты идентичны", scenario_g)
 
     # ---------------- h) B отвечает с reply_to_id: у A цитата ----------------
@@ -500,6 +512,107 @@ async def run_scenarios(report: Report) -> None:
         assert warn_row.get("target") == bob.username, f"цель в логе: {warn_row}"
     await report.step("l", "админ-лог содержит записи о действиях", scenario_l)
 
+    # ---------------- m) журнал БД = WAL ----------------
+    def scenario_m():
+        db_path = need("db_path", "нет пути к БД")
+        conn = sqlite3.connect(db_path)
+        try:
+            mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        finally:
+            conn.close()
+        assert str(mode).lower() == "wal", f"journal_mode = {mode!r}, ожидался 'wal'"
+        # следы WAL на диске: -wal/-shm живут, пока открыта последняя коннекция
+        assert os.path.exists(db_path + "-wal"), f"нет файла {db_path}-wal"
+    await report.step("m", "БД в режиме WAL (journal_mode)", scenario_m)
+
+    # ---------------- n) обрыв аплоада не оставляет .part ----------------
+    def scenario_n():
+        data_dir = need("data_dir", "нет DATA_DIR")
+        b_id = need("b_id", "нет id B")
+        cookie = alice.session_cookie()
+
+        boundary = "----selftest-abort"
+        head = (
+            f"--{boundary}\r\n"
+            f"Content-Disposition: form-data; name=\"recipient_id\"\r\n\r\n{b_id}\r\n"
+            f"--{boundary}\r\n"
+            f"Content-Disposition: form-data; name=\"group_id\"\r\n\r\n0\r\n"
+            f"--{boundary}\r\n"
+            f"Content-Disposition: form-data; name=\"reply_to_id\"\r\n\r\n0\r\n"
+            f"--{boundary}\r\n"
+            f"Content-Disposition: form-data; name=\"text\"\r\n\r\naborted\r\n"
+            f"--{boundary}\r\n"
+            f"Content-Disposition: form-data; name=\"files\"; filename=\"aborted.bin\"\r\n"
+            f"Content-Type: application/octet-stream\r\n\r\n"
+        ).encode()
+        # заявляем 4 МБ, реально отдаём ~1 МБ и рвём соединение на середине
+        declared = len(head) + 4 * 1024 * 1024 + len(f"\r\n--{boundary}--\r\n")
+        headers = (
+            f"POST /api/send HTTP/1.1\r\n"
+            f"Host: {HOST}:{PORT}\r\n"
+            f"Cookie: {cookie}\r\n"
+            f"Content-Type: multipart/form-data; boundary={boundary}\r\n"
+            f"Content-Length: {declared}\r\n\r\n"
+        ).encode()
+        payload = headers + head + b"A" * (1024 * 1024)
+        uploads = Path(need("uploads_dir", "нет каталога uploads"))
+        before = {p.name for p in uploads.iterdir() if p.is_file()}
+
+        def parts_left():
+            return sorted(str(p) for p in Path(data_dir).rglob("*.part"))
+
+        # 1) отдаём начало потока и рвём соединение на середине (RST вместо FIN)
+        sock = socket.create_connection((HOST, PORT), timeout=5)
+        try:
+            sock.sendall(payload[: len(headers) + len(head) + 256 * 1024])
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            sock.close()
+        except OSError:
+            pass
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and parts_left():
+            time.sleep(0.1)
+        assert not parts_left(), f"после обрыва соединения остались .part: {parts_left()}"
+
+        # 2) превышение лимита: сервер пишет .part и обязан его убрать сам
+        oversize = b"\x89PNG\r\n\x1a\n" + b"P" * (6 * 1024 * 1024)  # лимит на картинку темы — 5 МБ
+        status, raw = alice.request(
+            "/api/theme/image/wallpaper",
+            files=[("image", "oversize.png", oversize, "image/png")],
+        )
+        assert status == 400, f"превышение лимита: HTTP {status}: {raw[:160]!r}"
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and parts_left():
+            time.sleep(0.1)
+        assert not parts_left(), f"после превышения лимита остались .part: {parts_left()}"
+
+        # 3) ни один из двух сбоев не оставил мусора в uploads
+        after = {p.name for p in uploads.iterdir() if p.is_file()}
+        assert after == before, f"в uploads появились лишние файлы: {after - before}"
+    await report.step("n", "обрыв аплоада: .part не остаётся", scenario_n)
+
+    # ---------------- o) cleanup-orphans удаляет сирот и считает их ----------------
+    def scenario_o():
+        uploads = Path(need("uploads_dir", "нет каталога uploads"))
+        att_name = need("att_name", "нет имени вложения из сценария g")
+
+        planted = []
+        for _ in range(2):
+            orphan = uploads / f"orphan-{uuid.uuid4().hex}.bin"
+            orphan.write_bytes(b"orphan payload")
+            planted.append(orphan)
+
+        result = alice.json("/api/admin/cleanup-orphans")
+        assert result.get("deleted") == 2, f"ожидали deleted=2, ответ: {result}"
+        assert not any(p.exists() for p in planted), f"сироты остались на диске: {planted}"
+        assert (uploads / att_name).exists(), f"чистка съела живое вложение {att_name}"
+
+        again = alice.json("/api/admin/cleanup-orphans")
+        assert again.get("deleted") == 0, f"повторная чистка снова что-то удалила: {again}"
+    await report.step("o", "cleanup-orphans удаляет сирот, счёт верный", scenario_o)
+
     # ---------------- закрытие WS ----------------
     for ws in (state.get("ws_a"), state.get("ws_b")):
         if ws is not None:
@@ -551,7 +664,7 @@ def main() -> int:
             print("SELFTEST: 0/0 OK")
             return 1
 
-        asyncio.run(run_scenarios(report))
+        asyncio.run(run_scenarios(report, data_dir))
     finally:
         log = stop_server(proc)
         shutil.rmtree(data_dir, ignore_errors=True)
