@@ -27,6 +27,38 @@ A lightweight private web messenger for small groups, designed for Raspberry Pi 
 - Python 3.8+
 - Dependencies in `requirements.txt`
 
+## Конфигурация: .env, режимы, стартовые проверки
+
+Приложение стартует одной командой `python main.py` (или `uvicorn main:app`): настройки
+берутся из `.env` в корне репозитория — его читает `scripts/load_env.py` (stdlib, без зависимостей).
+
+```bash
+cp .env.example .env && nano .env
+python main.py
+```
+
+Правила загрузки:
+- формат `KEY=VALUE`, `#` — комментарий (строчный и хвостовой), значения можно в кавычках;
+- **уже заданные переменные окружения не перезаписываются**: `SECRET_KEY=… python main.py` важнее файла;
+- нет `.env` — не ошибка, работают значения по умолчанию.
+
+Режимы (`APP_MODE`, по умолчанию `dev`):
+- `dev` — слабый или отсутствующий `SECRET_KEY` разрешён, в `app.log` уходит warning;
+- `prod` — `SECRET_KEY` обязан быть не короче 32 символов (и не `localdev`), иначе error в лог и **exit 1**.
+
+Стартовые проверки (провал — exit 1 с понятным сообщением):
+- `DATA_DIR` существует/создаётся и доступен для записи (пробный файл создаётся и удаляется);
+- в `prod` — проверка `SECRET_KEY`.
+
+Что получилось в итоге, видно в логе старта:
+```
+dev-режим: SECRET_KEY задан (64 символов)
+сессия: cookie same_site=none secure=True; X-Frame-Options=none
+старт приложения: DATA_DIR=./data, PORT=8000
+journal_mode = wal
+integrity_check ok
+```
+
 ## Режим сессионной cookie и встраивание
 
 По умолчанию cookie сессии — `SameSite=Lax` без `Secure`, а ответы содержат `X-Frame-Options: DENY`
@@ -108,15 +140,19 @@ sudo cp .env.example /etc/messenger/env
 sudo nano /etc/messenger/env
 ```
 
-Edit `/etc/messenger/env`:
+Edit `/etc/messenger/env` (или просто `cp .env.example .env` в корне репозитория —
+приложение само прочитает его при старте, см. ниже):
 ```
+APP_MODE=prod
 SECRET_KEY=<generate-with-python-c-secrets.token_hex(32)>
 FIRST_USER_ADMIN=1   # Set to 1 ONLY for initial setup, then 0
-MAX_UPLOAD_BYTES=10485760
+MAX_UPLOAD_BYTES=5242880
 THEME_IMAGE_MAX_BYTES=5242880
 PORT=8000
 DATA_DIR=/var/lib/messenger/data
 BACKUP_DIR=/var/lib/messenger/backups
+RETAIN_COUNT=5
+UPDATE_BRANCH=main
 ```
 
 Generate SECRET_KEY:
@@ -445,3 +481,5 @@ Private use only.
 - phase R3 complete
 
 - phase R4 complete
+
+- phase R5 complete

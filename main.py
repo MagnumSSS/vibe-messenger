@@ -28,19 +28,18 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 from fastapi.staticfiles import StaticFiles 
 
+# ========== Phase R5: .env подхватывается ДО чтения любых настроек ==========
+# Явные переменные окружения всегда важнее файла (load_env их не перезаписывает).
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts"))
+import load_env  # noqa: E402  (импорт после настройки sys.path — так и задумано)
+
+load_env.load()
+
 # Config from env
-SECRET_KEY = os.environ.get("SECRET_KEY")
-if SECRET_KEY is None:
-    # Fixed dev key for development - DO NOT use in production
-    SECRET_KEY = "dev-secret-key-change-in-production"
-    import sys
-    print("=" * 80, file=sys.stderr)
-    print("WARNING: SECRET_KEY not set! Using fixed development key.", file=sys.stderr)
-    print("All sessions will persist across restarts, but this is INSECURE for production.", file=sys.stderr)
-    print("Please set the SECRET_KEY environment variable in production.", file=sys.stderr)
-    print("=" * 80, file=sys.stderr)
-# Phase R4: сам ключ в логи не пишем никогда — только факт его отсутствия
-SECRET_KEY_FROM_ENV = os.environ.get("SECRET_KEY") is not None
+APP_MODE = (os.environ.get("APP_MODE") or "dev").strip().lower()
+SECRET_KEY = (os.environ.get("SECRET_KEY") or "").strip()
+# Phase R4: сам ключ в логи не пишем никогда — только факт/длину
+DEV_FALLBACK_KEY = "dev-secret-key-change-in-production"
 FIRST_USER_ADMIN = os.environ.get("FIRST_USER_ADMIN", "1") == "1"
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", "10485760"))  # 10MB default
 THEME_IMAGE_MAX_BYTES = int(os.environ.get("THEME_IMAGE_MAX_BYTES", str(5 * 1024 * 1024)))  # ~5MB for theme image slots (separate from MAX_UPLOAD_BYTES)
@@ -49,7 +48,31 @@ PORT = int(os.environ.get("PORT", "8000"))
 # DB and uploads are derived from it, tests may point it at a temp dir.
 DATA_DIR = os.environ.get("DATA_DIR", "data")
 
-os.makedirs(DATA_DIR, exist_ok=True)
+
+# ========== Phase R5: guard DATA_DIR ==========
+# Проверяем ДО логирования и БД: если каталог недоступен, дальше нет смысла идти.
+def guard_data_dir(path: str) -> None:
+    """Каталог данных должен существовать (или создаваться) и быть доступен для записи."""
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError as exc:
+        sys.stderr.write(f"FATAL: DATA_DIR={path!r} не удалось создать: {exc}\n")
+        sys.exit(1)
+    if not os.path.isdir(path):
+        sys.stderr.write(f"FATAL: DATA_DIR={path!r} не является каталогом\n")
+        sys.exit(1)
+    probe = os.path.join(path, ".write-test")
+    try:
+        with open(probe, "w") as handle:
+            handle.write("ok")
+        os.remove(probe)
+    except OSError as exc:
+        sys.stderr.write(f"FATAL: DATA_DIR={path!r} недоступен для записи: {exc}\n")
+        sys.exit(1)
+
+
+guard_data_dir(DATA_DIR)
+
 DB_PATH = os.path.join(DATA_DIR, "messenger.db")
 UPLOADS_DIR = os.path.join(DATA_DIR, "uploads")
 THEME_IMAGES_DIR = os.path.join(DATA_DIR, "theme_images")
@@ -117,8 +140,29 @@ app_logger = logging.getLogger("messenger.app")
 error_logger = logging.getLogger("messenger.error")
 admin_logger = logging.getLogger("messenger.admin")
 
-if not SECRET_KEY_FROM_ENV:
-    app_logger.warning("SECRET_KEY не задан — используется небезопасный ключ разработки")
+# ========== Phase R5: режимы (dev|prod) и строгость к SECRET_KEY ==========
+if APP_MODE not in ("dev", "prod"):
+    app_logger.warning("APP_MODE=%r неизвестен — работаем как dev", APP_MODE)
+    APP_MODE = "dev"
+
+if APP_MODE == "prod":
+    if not SECRET_KEY or SECRET_KEY == "localdev" or len(SECRET_KEY) < 32:
+        error_logger.error(
+            "APP_MODE=prod требует SECRET_KEY >= 32 символов "
+            "(сейчас: %s); сгенерируй: python -c \"import secrets;print(secrets.token_hex(32))\"",
+            "не задан" if not SECRET_KEY else f"{len(SECRET_KEY)} символов"
+        )
+        sys.exit(1)
+    app_logger.info("APP_MODE=prod, SECRET_KEY задан (%d символов)", len(SECRET_KEY))
+elif not SECRET_KEY:
+    SECRET_KEY = DEV_FALLBACK_KEY
+    app_logger.warning("dev-режим: SECRET_KEY не задан — используется небезопасный ключ разработки")
+elif SECRET_KEY == "localdev":
+    app_logger.warning("dev-режим: SECRET_KEY=localdev — небезопасный ключ dev-режима")
+elif len(SECRET_KEY) < 32:
+    app_logger.warning("dev-режим: слабый SECRET_KEY (%d символов) — для прода непригоден", len(SECRET_KEY))
+else:
+    app_logger.info("dev-режим: SECRET_KEY задан (%d символов)", len(SECRET_KEY))
 
 # uptime считается от момента импорта приложения
 START_TIME = time.monotonic()

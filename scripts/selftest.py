@@ -50,6 +50,7 @@ import websockets
 
 HOST = "127.0.0.1"
 PORT = 8099                       # по ТЗ: тестовый инстанс живёт на 8099
+ENV_PORT = 8098                    # второй инстанс — для сценариев r/s (.env и prod-guard)
 BASE = f"http://{HOST}:{PORT}"
 WS_URL = f"ws://{HOST}:{PORT}/ws"
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5242880
@@ -64,6 +65,9 @@ HTTP_TIMEOUT = 10.0
 PNG_1X1 = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 )
+
+# копии репозитория и временные DATA_DIR для сценариев r/s (чистим в main())
+EXTRA_TEMP_DIRS: list = []
 
 USER_A = ("Alice", "alice@selftest.local", "selftest-pass")
 USER_B = ("Bob", "bob@selftest.local", "selftest-pass")
@@ -196,6 +200,29 @@ def dialog_history(client: Client, peer_id: int) -> list:
     return messages
 
 
+def _clean_env() -> dict:
+    """Окружение без переменных, которые сценарии r/s задают сами (из .env или явно)."""
+    env = dict(os.environ)
+    for key in ("SECRET_KEY", "DATA_DIR", "APP_MODE", "PORT",
+                "MAX_UPLOAD_BYTES", "FIRST_USER_ADMIN", "BACKUP_DIR"):
+        env.pop(key, None)
+    return env
+
+
+def _make_repo_copy() -> str:
+    """Копия репозитория во временном каталоге — там можно смело писать .env."""
+    path = tempfile.mkdtemp(prefix="selftest-repo-")
+    shutil.copytree(
+        REPO_ROOT, path,
+        ignore=shutil.ignore_patterns(
+            ".git", ".venv", "__pycache__", "data", "*.db", "*.pyc", "*.log", "backups"
+        ),
+        dirs_exist_ok=True,
+    )
+    EXTRA_TEMP_DIRS.append(path)
+    return path
+
+
 async def expect_event(ws, predicate, label: str, timeout: float = EVENT_TIMEOUT):
     """Ждать событие, удовлетворяющее predicate; посторонние события пропускаем."""
     deadline = time.monotonic() + timeout
@@ -216,10 +243,10 @@ async def expect_event(ws, predicate, label: str, timeout: float = EVENT_TIMEOUT
 # Жизненный цикл сервера
 # --------------------------------------------------------------------------- #
 
-def port_is_busy() -> bool:
+def port_is_busy(port: int = PORT) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.5)
-        return sock.connect_ex((HOST, PORT)) == 0
+        return sock.connect_ex((HOST, port)) == 0
 
 
 def start_server(data_dir: str) -> subprocess.Popen:
@@ -684,6 +711,91 @@ async def run_scenarios(report: Report, data_dir: str) -> None:
             "errors_last_hour не учитывает перехваченное исключение"
     await report.step("q", "логи: app.log со стартом, error.log ловит намеренный сбой", scenario_q)
 
+    # ---------------- r) настройки подхватываются из .env ----------------
+    def scenario_r():
+        repo = _make_repo_copy()
+        env_data_dir = tempfile.mkdtemp(prefix="selftest-env-data-")
+        EXTRA_TEMP_DIRS.append(env_data_dir)
+        (Path(repo) / ".env").write_text(
+            "# комментарий игнорируется\n"
+            f"SECRET_KEY=test-env-key\n"
+            f"DATA_DIR={env_data_dir}\n"
+            "MAX_UPLOAD_BYTES=5242880\n",
+            encoding="utf-8",
+        )
+
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "uvicorn", "main:app", "--host", HOST,
+             "--port", str(ENV_PORT), "--log-level", "warning"],
+            cwd=repo, env=_clean_env(),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        try:
+            deadline = time.monotonic() + STARTUP_TIMEOUT
+            started = False
+            while time.monotonic() < deadline:
+                if proc.poll() is not None:
+                    raise AssertionError(
+                        f"сервер с .env упал при старте:\n{(proc.stdout.read() or '')[-1200:]}"
+                    )
+                try:
+                    with urllib.request.urlopen(f"http://{HOST}:{ENV_PORT}/health", timeout=1) as resp:
+                        if resp.status == 200:
+                            started = True
+                            break
+                except urllib.error.HTTPError:
+                    started = True
+                    break
+                except Exception:
+                    time.sleep(0.15)
+            assert started, f"сервер с .env не поднялся за {STARTUP_TIMEOUT:.0f}s"
+
+            app_log = Path(env_data_dir) / "logs" / "app.log"
+            text = ""
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                if app_log.is_file():
+                    text = app_log.read_text(encoding="utf-8", errors="replace")
+                    if "старт приложения" in text:
+                        break
+                time.sleep(0.1)
+            assert f"DATA_DIR={env_data_dir}" in text, \
+                f"в логе нет DATA_DIR из .env: {text[-400:]!r}"
+            # длина ключа ровно из .env (12 символов) — значит файл действительно прочитан
+            assert "SECRET_KEY" in text and "(12 символов)" in text, \
+                f"SECRET_KEY не подхвачен из .env: {text[-400:]!r}"
+        finally:
+            stop_server(proc)
+    await report.step("r", ".env подхватывается: SECRET_KEY и DATA_DIR из файла", scenario_r)
+
+    # ---------------- s) prod со слабым ключом не стартует ----------------
+    def scenario_s():
+        repo = _make_repo_copy()
+        prod_data_dir = tempfile.mkdtemp(prefix="selftest-prod-data-")
+        EXTRA_TEMP_DIRS.append(prod_data_dir)
+
+        env = _clean_env()
+        env["APP_MODE"] = "prod"
+        env["SECRET_KEY"] = "localdev"
+        env["DATA_DIR"] = prod_data_dir
+
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-m", "uvicorn", "main:app", "--host", HOST,
+                 "--port", str(ENV_PORT), "--log-level", "warning"],
+                cwd=repo, env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            raise AssertionError("prod-guard не сработал: сервер стартовал со слабым SECRET_KEY")
+
+        output = proc.stdout or ""
+        assert proc.returncode != 0, \
+            f"ожидали ненулевой exit в prod со слабым ключом, получили {proc.returncode}"
+        assert "SECRET_KEY" in output, f"в выводе нет упоминания SECRET_KEY:\n{output[-600:]}"
+        assert "32" in output, f"в выводе нет требования про 32 символа:\n{output[-600:]}"
+    await report.step("s", "APP_MODE=prod со слабым SECRET_KEY — старт запрещён", scenario_s)
+
     # ---------------- закрытие WS ----------------
     for ws in (state.get("ws_a"), state.get("ws_b")):
         if ws is not None:
@@ -698,9 +810,10 @@ async def run_scenarios(report: Report, data_dir: str) -> None:
 # --------------------------------------------------------------------------- #
 
 def main() -> int:
-    if port_is_busy():
-        print(f"FAIL предварительная проверка: порт {PORT} занят — "
-              f"selftest не трогает чужие серверы. Освободите {PORT} и повторите.")
+    busy = [port for port in (PORT, ENV_PORT) if port_is_busy(port)]
+    if busy:
+        print(f"FAIL предварительная проверка: порт(ы) {', '.join(map(str, busy))} заняты — "
+              f"selftest не трогает чужие серверы. Освободите их и повторите.")
         print("SELFTEST: 0/0 OK")
         return 1
 
@@ -739,6 +852,8 @@ def main() -> int:
     finally:
         log = stop_server(proc)
         shutil.rmtree(data_dir, ignore_errors=True)
+        for path in EXTRA_TEMP_DIRS:
+            shutil.rmtree(path, ignore_errors=True)
         # лог сервера печатаем только когда что-то упало: иначе это шум миграций
         if log.strip() and report.failed:
             tail = "\n".join(log.strip().splitlines()[-15:])
