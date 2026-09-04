@@ -22,6 +22,54 @@ A lightweight private web messenger for small groups, designed for Raspberry Pi 
 - Health check endpoint `/health`
 - Database migrations on startup
 
+## UI-полировка и присутствие (Phase 7.8)
+
+### Шапка — остров, внутри неё остров «ава + ник»
+
+| ТЗ | Как сделано |
+|---|---|
+| Шапка = остров liquid glass на всех экранах | `.chat-header` — радиус 16px, `backdrop-filter`, цвет из токена `header_color` (`--header-island-color`); верхняя шапка приложения красится тем же токеном, стекло сохраняется |
+| Вложенный остров «ава + ник» | `#chatPeerIsland` (`.chat-peer-island`) — пилюля под стеклом внутри шапки; на десктопе и на мобиле (390×844: ава 28px, прижата к стрелке «Назад», `gap` 4px — без дыр по центру) |
+| Цвет ника | токен `name_color` (`--name-color`) красит `#chatHeaderName` и `#otherProfileName`; по умолчанию тумблер `name_color_auto` = **вкл** → цвет считается YIQ-автоконтрастом от `panel` (тёмная тема → `#fff`, светлая → `#111`), выкл → берётся сам токен |
+| Тёмная тема без чёрного текста | производные токены `--header-text`, `--header-island-text`, `--name-color` считаются `contrastText()`; те же производные ставит `applyThemeToElement()` для **чужой** темы в модалке профиля — чужой тёмный пресет не оставляет чёрный ник |
+| Баннер собеседника в шапке | тумблер `peer_banner_header` (per-user, лежит в `theme_json.toggles`): вкл — `#chatHeaderBanner` под стеклом вложенного острова, выкл — просто цвет. У канала берётся его собственный баннер |
+
+### Присутствие (online / last_seen)
+
+`online` — факт живого WS-подключения (`app.state.connections`), в БД не хранится.
+`last_seen` — колонка `users.last_seen`: пишется на подключении, на отключении и раз в минуту
+фоновой задачей `presence_heartbeat()` для всех, кто держит соединение.
+
+| Событие | Что происходит |
+|---|---|
+| WS-коннект | `ensure_presence_heartbeat()` + `touch_last_seen()` + рассылка `{"type":"presence","user_id","online":true,"last_seen"}` |
+| WS-дисконнект | удаление из `connections` + `touch_last_seen()` + `presence` с `online:false` |
+| Раз в минуту | `last_seen` обновляется у всех онлайн (heartbeat) |
+
+Клиент: `presenceMap` → `renderPresenceRings()` (граница авы: зелёная `presence_online` /
+серая `presence_offline`), `renderPresenceIsland()` — островок «был(а) в сети сегодня в HH:MM»
+(«вчера», «5 сентября в HH:MM», «давно»), скрыт когда собеседник онлайн или печатает
+(typing приоритетнее). Цвет текста островка — токен `presence_text`.
+Данные: `GET /api/users` и `GET /api/user/{id}/profile` отдают `online` + `last_seen`,
+плюс фоновый опрос раз в 45 с.
+
+### Мелочи
+
+| ТЗ | Как сделано |
+|---|---|
+| Трэш в контактах | `.curtain-actions` — `justify-content: flex-end`, `padding-right: 10px`, ширина по иконке (44px), сдвиг строки `-64px`; `.user-info { flex:1; min-width:0 }` — ник не наезжает |
+| Мобила: подтверждение удаления | `#deleteChatConfirm` вынесен из `.chat-area` (на мобиле она уведена за экран `translateX(100%)`) на верхний уровень: `position: fixed` + затемнение `#deleteChatBackdrop`; тап по затемнению, круглая кнопка и Escape закрывают |
+| Кнопки закрытия | единый `.island-close` (круглый островок 34px с SVG-крестом) в редакторе тем, профиле, чужом профиле, создании группы, участниках, удалении аккаунта, модалке картинки и в админ-модалках (`#warnCloseBtn`, `#banCloseBtn`) |
+| Канал | объявления по центру (`.system-announcement`), md-рендер с переносами строк; `\n → <br>` теперь **только вне** ` ```блоков``` ` (внутри `<pre>` работают настоящие переводы строк) |
+
+Серверные точки входа: `PRESENCE_HEARTBEAT_SECONDS`, `touch_last_seen()`, `push_presence()`,
+`presence_heartbeat()`, `ensure_presence_heartbeat()`, токены `header_color` / `name_color` /
+`presence_online` / `presence_offline` / `presence_text` и секция `toggles` манифеста
+(`merge_theme_with_defaults()`, `sanitize_theme_config()`).
+Фронт: `templates/chat.html` (`renderToggleRows()`, `loadPresence()`, `renderPresenceRings()`,
+`peerPresenceText()`, `renderPresenceIsland()`, `refreshPeerMeta()`, `renderPeerBanner()`) и
+`static/style.css` (`.chat-peer-island`, `.presence-island`, `.island-close`, `.modal-backdrop`).
+
 ## Канал объявлений «ВайбБункер» (Phase 7.6d-fix)
 
 Канал — **не пользователь**. В `users` нет ботов: служебный `@start` удалён миграцией
@@ -623,3 +671,4 @@ Private use only.
 - phase 7.6d complete
 
 - 7.6d-fix complete
+- phase 7.8 complete

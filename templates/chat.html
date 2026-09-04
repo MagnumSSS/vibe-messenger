@@ -125,8 +125,12 @@
                 <button type="button" class="chat-back-btn" id="chatBackBtn" aria-label="Назад">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
                 </button>
-                <img class="chat-header-avatar" id="chatHeaderAvatar" src="/static/default-avatar.png" alt="" title="View profile" style="width: 32px; height: 32px; border-radius: 50%; margin-right: 8px; cursor: pointer;">
-                <span id="chatHeaderNameWrap" class="marquee-wrap" title="View profile"><span id="chatHeaderName" class="marquee-inner" style="cursor: pointer;">Select a contact</span></span>
+                <!-- Phase 7.8: вложенный остров «ава + ник» (на десктопе и на мобиле) -->
+                <div class="chat-peer-island" id="chatPeerIsland" title="View profile">
+                    <img class="chat-peer-banner" id="chatHeaderBanner" src="" alt="" style="display: none;">
+                    <img class="chat-header-avatar" id="chatHeaderAvatar" src="/static/default-avatar.png" alt="">
+                    <span id="chatHeaderNameWrap" class="marquee-wrap"><span id="chatHeaderName" class="marquee-inner">Select a contact</span></span>
+                </div>
                 <div class="chat-header-actions" id="chatHeaderActions" style="display: none;">
                     <button id="groupMembersBtn" class="delete-chat-btn" title="Участники" style="display: none;">👥 Участники</button>
                     <!-- Phase 6.5: glass trash chip, neutral SVG icon -->
@@ -138,6 +142,8 @@
                 </div>
             </div>
             <div class="messages" id="messages">
+                <!-- Phase 7.8: островок присутствия («был(а) в сети …») -->
+                <div class="presence-island" id="presenceIsland" style="display: none;"></div>
                 <!-- Phase 7.3-fix: typing island at end of messages -->
                 <div class="typing-island" id="typingIsland"></div>
             </div>
@@ -212,22 +218,13 @@
             <!-- Phase 6.5: message delete mini-menu - Liquid Glass island anchored to a bubble -->
             <div class="msg-del-menu" id="msgDelMenu" style="display: none;"></div>
 
-            <!-- Phase 6.5: delete-chat confirmation island (Да/Отмена), 1-on-1 only -->
-            <div class="chat-del-confirm" id="deleteChatConfirm" style="display: none;">
-                <div class="chat-del-title">Удалить чат?</div>
-                <p class="chat-del-text">Вся переписка с <strong id="deleteChatUserName"></strong> исчезнет у вас. Контакт останется в списке.</p>
-                <div class="chat-del-buttons">
-                    <button type="button" class="cancel-btn" id="cancelDeleteChatBtn">Отмена</button>
-                    <button type="button" class="btn_danger" id="confirmDeleteChatBtn">Да</button>
-                </div>
-            </div>
         </div>
 
         <!-- Theme Drawer (Phase 5.2g): flex child of .main so it squeezes the messenger area -->
         <aside class="theme-drawer" id="themeDrawer">
             <div class="theme-drawer-header">
                 <h2>Настройки темы</h2>
-                <button class="slot-btn theme-drawer-close" id="themeDrawerClose" title="Закрыть">&times;</button>
+                <button type="button" class="island-close" id="themeDrawerClose" title="Закрыть" aria-label="Закрыть"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg></button>
             </div>
             <div class="theme-drawer-body">
                 <div class="settings-section">
@@ -246,6 +243,11 @@
                 <div class="settings-section">
                     <h3>Размеры</h3>
                     <div id="sizingSliders"></div>
+                </div>
+                <!-- Phase 7.8: бинарные настройки темы -->
+                <div class="settings-section">
+                    <h3>Переключатели</h3>
+                    <div id="toggleRows"></div>
                 </div>
                 <div class="settings-section">
                     <h3>Пресеты</h3>
@@ -269,7 +271,7 @@
         <aside class="theme-drawer profile-drawer" id="profileDrawer">
             <div class="theme-drawer-header">
                 <h2>Профиль</h2>
-                <button class="theme-drawer-close" id="profileDrawerClose" title="Закрыть">&times;</button>
+                <button type="button" class="island-close" id="profileDrawerClose" title="Закрыть" aria-label="Закрыть"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg></button>
             </div>
             <div class="theme-drawer-body">
                 <div class="profile-banner-area" id="profileBannerArea">
@@ -400,7 +402,7 @@
     <!-- Image Modal -->
     <div class="modal" id="imageModal">
         <div class="modal-content">
-            <button class="modal-close" id="modalClose">&times;</button>
+            <button type="button" class="island-close modal-close" id="modalClose" title="Закрыть" aria-label="Закрыть"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg></button>
             <img class="modal-img" id="modalImg" src="" alt="">
             <a class="modal-download" id="modalDownload" download>Download</a>
         </div>
@@ -421,13 +423,14 @@
             </div>
             <!-- Phase 7.6d: оформить канал может только creator -->
             <button class="glass-chip" id="decorateChannelBtn" style="width: 100%; margin-top: 0.75rem; display: none;">Оформить канал</button>
-            <button class="glass-chip" id="closeOtherProfileBtn" style="width: 100%; margin-top: 1rem;">Закрыть</button>
+            <button type="button" class="island-close" id="closeOtherProfileBtn" title="Закрыть" aria-label="Закрыть"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg></button>
         </div>
     </div>
     
     <!-- Create Group Modal (Phase 6.1) -->
     <div class="modal" id="createGroupModal">
         <div class="profile-modal-content">
+            <button type="button" class="island-close" id="createGroupCloseBtn" title="Закрыть" aria-label="Закрыть"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg></button>
             <h2>Новая группа</h2>
             <div class="profile-form-group">
                 <label>Название</label>
@@ -450,13 +453,14 @@
                 <button type="button" id="addMemberBtn" class="member-add-btn">Добавить</button>
             </div>
             <ul class="members-list" id="membersList"></ul>
-            <button class="glass-chip" id="closeMembersBtn">Закрыть</button>
+            <button type="button" class="island-close" id="closeMembersBtn" title="Закрыть" aria-label="Закрыть"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg></button>
         </div>
     </div>
 
     <!-- Delete Account Modal -->
     <div class="modal" id="deleteAccountModal">
         <div class="delete-account-modal-content">
+            <button type="button" class="island-close" id="deleteAccountCloseBtn" title="Закрыть" aria-label="Закрыть"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg></button>
             <h2>Удаление аккаунта</h2>
             <p>Это действие необратимо. Все ваши сообщения и данные будут удалены.</p>
             <div class="warning">⚠️ Введите ваш username для подтверждения: <strong id="confirmUsernameDisplay"></strong></div>
@@ -465,6 +469,20 @@
                 <button class="cancel-btn" id="cancelDeleteAccountBtn">Отмена</button>
                 <button class="delete-confirm-btn" id="confirmDeleteAccountBtn">Удалить аккаунт</button>
             </div>
+        </div>
+    </div>
+
+    <!-- Phase 7.8: подтверждение удаления чата — фиксированная модалка.
+         Раньше островок жил внутри .chat-area, а на мобиле она уведена за экран:
+         из контактов (сайдбар) подтверждение открывалось «в пустоту». -->
+    <div class="modal-backdrop" id="deleteChatBackdrop" style="display: none;"></div>
+    <div class="chat-del-confirm" id="deleteChatConfirm" style="display: none;" role="dialog" aria-modal="true" aria-label="Удалить чат?">
+        <button type="button" class="island-close" id="deleteChatCloseBtn" title="Закрыть" aria-label="Закрыть"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg></button>
+        <div class="chat-del-title">Удалить чат?</div>
+        <p class="chat-del-text">Вся переписка с <strong id="deleteChatUserName"></strong> исчезнет у вас. Контакт останется в списке.</p>
+        <div class="chat-del-buttons">
+            <button type="button" class="cancel-btn" id="cancelDeleteChatBtn">Отмена</button>
+            <button type="button" class="btn_danger" id="confirmDeleteChatBtn">Да</button>
         </div>
     </div>
 
@@ -508,10 +526,12 @@
         // Phase 7.3: unread state
         let unreadState = {}; // { "user:5": 3, "group:2": 7 }
         // Phase 7.3-fix2: clear messages but keep the typing island alive
+        // Phase 7.8: presence-островок живёт рядом с typing — его тоже возвращаем,
+        // иначе после первого же открытия диалога «был(а) в сети» исчезал из DOM
         function clearMessages() {
-            const island = typingIsland;
+            const islands = [presenceIsland, typingIsland].filter(Boolean);
             messagesDiv.innerHTML = '';
-            if (island) messagesDiv.appendChild(island);
+            islands.forEach(island => messagesDiv.appendChild(island));
             messagesDiv.dataset.lastDateKey = '';
         }
 
@@ -520,6 +540,9 @@
         let typingNames = {}; // { userId: name }
         let typingIndicator = document.getElementById('typingIndicator');
         let typingIsland = document.getElementById('typingIsland');
+        const presenceIsland = document.getElementById('presenceIsland');   // Phase 7.8
+        const chatPeerIsland = document.getElementById('chatPeerIsland');
+        const chatHeaderBanner = document.getElementById('chatHeaderBanner');
         let typingTimeout = null;
         let lastTypingSent = 0;
 
@@ -625,6 +648,7 @@
         const imageSlots = document.getElementById('imageSlots');
         const effectSliders = document.getElementById('effectSliders');
         const sizingSliders = document.getElementById('sizingSliders');
+        const toggleRows = document.getElementById('toggleRows');   // Phase 7.8
         const presetButtons = document.getElementById('presetButtons');
         const resetThemeBtn = document.getElementById('resetThemeBtn');
         // Phase 6.3: custom theme presets
@@ -641,6 +665,7 @@
         const deleteChatConfirm = document.getElementById('deleteChatConfirm');
         const deleteChatBtn = document.getElementById('deleteChatBtn');
         const deleteChatUserName = document.getElementById('deleteChatUserName');
+        const deleteChatBackdrop = document.getElementById('deleteChatBackdrop');
         const cancelDeleteChatBtn = document.getElementById('cancelDeleteChatBtn');
         const confirmDeleteChatBtn = document.getElementById('confirmDeleteChatBtn');
         const settingsBtn = document.getElementById('settingsBtn');
@@ -658,14 +683,23 @@
             muted: '#666666', accent: '#0084ff', btn_primary: '#0084ff', btn_danger: '#dc3545',
             bubble_sent: '#0084ff', bubble_received: '#e4e6eb', input_bg: '#ffffff',
             border: '#dddddd', modal_bg: '#ffffff', hover: '#f5f5f5', active: '#e6f2ff',
-            select_border: '#0084ff', chip_cmd: '#dbe7ff'
+            select_border: '#0084ff', chip_cmd: '#dbe7ff',
+            // Phase 7.8
+            header_color: '#ffffff', name_color: '#0084ff',
+            presence_online: '#2ecc71', presence_offline: '#9aa0a6', presence_text: '#666666'
         };
+        // Phase 7.8: тумблеры темы (бинарные настройки, не цвета)
+        const FALLBACK_TOGGLES = { name_color_auto: true, peer_banner_header: false };
         const TOKEN_CSS_VARS = {
             bg: '--bg-color', panel: '--panel-color', header: '--header-color', text: '--text-primary',
             muted: '--text-secondary', accent: '--accent-color', btn_primary: '--btn-primary-bg',
             btn_danger: '--btn-danger-bg', bubble_sent: '--bubble-sent-bg', bubble_received: '--bubble-received-bg',
             input_bg: '--input-bg', border: '--border-color', modal_bg: '--modal-bg', hover: '--hover-bg', active: '--active-bg',
-            select_border: '--select-border', chip_cmd: '--chip-cmd-bg'
+            select_border: '--select-border', chip_cmd: '--chip-cmd-bg',
+            // Phase 7.8
+            header_color: '--header-island-color', name_color: '--name-color',
+            presence_online: '--presence-online', presence_offline: '--presence-offline',
+            presence_text: '--presence-text'
         };
         const FALLBACK_EFFECTS = { wallpaper_blur: 0, bubble_blur: 0 };
         const EFFECT_CSS_VARS = {
@@ -716,7 +750,7 @@
             if (theme.sent) colors.bubble_sent = theme.sent;
             if (theme.received) colors.bubble_received = theme.received;
             if (theme.bg) colors.bg = theme.bg;
-            return { colors: colors, images: {}, effects: {}, sizing: {} };
+            return { colors: colors, images: {}, effects: {}, sizing: {}, toggles: {} };
         }
 
         function clampEffect(val, key) {
@@ -759,10 +793,21 @@
                 v = Math.max(spec.min || 0.5, Math.min(spec.max || 2, v));
                 s.setProperty(SIZING_CSS_VARS[szKey], String(v));
             }
-            // derived tokens
+            // Phase 7.8: derived + presence/name tokens
             const bg = t.colors.bg || FALLBACK_COLORS.bg;
+            const islandBg = t.colors.header_color || FALLBACK_COLORS.header_color;
             s.setProperty('--border-color', deriveBorderColor(bg));
             s.setProperty('--header-text', contrastText(t.colors.header || FALLBACK_COLORS.header));
+            s.setProperty('--header-island-color', islandBg);
+            s.setProperty('--header-island-text', contrastText(islandBg));
+            s.setProperty('--presence-online', t.colors.presence_online || FALLBACK_COLORS.presence_online);
+            s.setProperty('--presence-offline', t.colors.presence_offline || FALLBACK_COLORS.presence_offline);
+            s.setProperty('--presence-text', t.colors.presence_text || FALLBACK_COLORS.presence_text);
+            // цвет ника: по умолчанию авто-контраст из панели темы, иначе токен
+            const nameAuto = t.toggles.name_color_auto !== false;
+            const panelBg = t.colors.panel || FALLBACK_COLORS.panel;
+            s.setProperty('--name-color',
+                nameAuto ? contrastText(panelBg) : (t.colors.name_color || FALLBACK_COLORS.name_color));
         applyContrast();
 
         // Profile modal buttons exist statically - contrast them once styles are ready
@@ -798,6 +843,18 @@
             s.setProperty('--input-bg', t.colors.input_bg || FALLBACK_COLORS.input_bg);
             s.setProperty('--bubble-sent-bg', t.colors.bubble_sent || FALLBACK_COLORS.bubble_sent);
             s.setProperty('--bubble-received-bg', t.colors.bubble_received || FALLBACK_COLORS.bubble_received);
+            // Phase 7.8: те же производные токены, что и на корне (иначе в чужой теме чёрный ник)
+            const islandBgEl = t.colors.header_color || FALLBACK_COLORS.header_color;
+            s.setProperty('--header-island-color', islandBgEl);
+            s.setProperty('--header-island-text', contrastText(islandBgEl));
+            s.setProperty('--presence-online', t.colors.presence_online || FALLBACK_COLORS.presence_online);
+            s.setProperty('--presence-offline', t.colors.presence_offline || FALLBACK_COLORS.presence_offline);
+            s.setProperty('--presence-text', t.colors.presence_text || FALLBACK_COLORS.presence_text);
+            const panelBgEl = t.colors.panel || FALLBACK_COLORS.panel;
+            s.setProperty('--name-color',
+                (t.toggles.name_color_auto !== false)
+                    ? contrastText(panelBgEl)
+                    : (t.colors.name_color || FALLBACK_COLORS.name_color));
         }
         
         // YIQ-based contrast: returns dark or light text color for a given hex background
@@ -986,7 +1043,7 @@
         const THEME_IMAGE_LIMIT = 5 * 1024 * 1024; // ~5MB, mirrors THEME_IMAGE_MAX_BYTES on server
         let themeManifest = null;
         let themePresets = null;
-        let currentTheme = { colors: {}, images: {}, effects: {}, sizing: {} };
+        let currentTheme = { colors: {}, images: {}, effects: {}, sizing: {}, toggles: {} };
         const TOKEN_LABELS = {
             bg: 'Фон', panel: 'Панели', header: 'Шапка', text: 'Текст', muted: 'Второстепенный текст',
             accent: 'Акцент', btn_primary: 'Основная кнопка', btn_danger: 'Опасная кнопка',
@@ -996,7 +1053,15 @@
             select_border: 'Рамка выделения', chip_cmd: 'Фон командных чипов',
             header_img: 'Картинка шапки', wallpaper: 'Обои чата', bubble_img: 'Картинка пузырей',
             wallpaper_blur: 'Размытие обоев', bubble_blur: 'Размытие пузырей',
-            chip_size: 'Размер чипов'
+            chip_size: 'Размер чипов',
+            // Phase 7.8
+            header_color: 'Остров шапки', name_color: 'Ник собеседника',
+            presence_online: 'Онлайн (граница авы)', presence_offline: 'Оффлайн (граница авы)',
+            presence_text: 'Островок «был в сети»'
+        };
+        const TOGGLE_LABELS = {
+            name_color_auto: 'Цвет ника: авто-контраст из темы',
+            peer_banner_header: 'Баннер собеседника в шапке'
         };
         const PRESET_LABELS = { default: 'Дефолт', dark: 'Тёмная' };
 
@@ -1015,7 +1080,7 @@
                         fetchJson('/api/theme/presets')
                     ]);
                 }
-                currentTheme = await fetchJson('/api/theme');
+                currentTheme = normalizeTheme(await fetchJson('/api/theme'));
                 renderEditor();
                 loadCustomPresets();
             } catch (e) {
@@ -1028,8 +1093,47 @@
             renderImageSlots();
             renderEffectSliders();
             renderSizingSliders();
+            renderToggleRows();          // Phase 7.8: бинарные настройки темы
             renderPresetButtons();
             applyEditorContrast();
+        }
+
+        // Phase 7.8: один тумблер на переключатель из манифеста (как цвета — без хардкода)
+        function renderToggleRows() {
+            if (!toggleRows) return;
+            toggleRows.innerHTML = '';
+            const toggles = (themeManifest && themeManifest.toggles) || {};
+            for (const key of Object.keys(toggles)) {
+                const row = document.createElement('div');
+                row.className = 'color-picker-row theme-toggle-row';
+                const label = document.createElement('label');
+                label.textContent = TOGGLE_LABELS[key] || toggles[key].label || key;
+                label.htmlFor = 'theme-toggle-' + key;
+                const track = document.createElement('button');
+                track.type = 'button';
+                track.id = 'theme-toggle-' + key;
+                track.className = 'glass-toggle';
+                track.setAttribute('aria-label', label.textContent);
+                const on = currentTheme.toggles[key] !== undefined
+                    ? !!currentTheme.toggles[key]
+                    : FALLBACK_TOGGLES[key];
+                track.classList.toggle('on', !!on);
+                track.setAttribute('aria-pressed', on ? 'true' : 'false');
+                track.innerHTML = '<span class="glass-toggle-track"><span class="glass-toggle-thumb"></span></span>';
+                track.addEventListener('click', () => {
+                    const next = !track.classList.contains('on');
+                    track.classList.toggle('on', next);
+                    track.setAttribute('aria-pressed', next ? 'true' : 'false');
+                    currentTheme.toggles[key] = next;
+                    applyThemeDirect(currentTheme);
+                    renderPeerBanner();     // тумблер баннера применяется к открытой шапке сразу
+                    scheduleThemeSave();
+                    applyEditorContrast();
+                });
+                row.appendChild(label);
+                row.appendChild(track);
+                toggleRows.appendChild(row);
+            }
         }
 
         // One color input per color token of the manifest - no hardcoded control list
@@ -1239,6 +1343,10 @@
                     // and blur sliders keep their current state (and their labels)
                     const preset = normalizeTheme(JSON.parse(JSON.stringify(presets[name])));
                     currentTheme.colors = Object.assign({}, preset.colors);
+                    // Phase 7.8: тумблеры пресета тоже применяем (иначе «Тёмная» едет с чужими)
+                    if (preset.toggles && Object.keys(preset.toggles).length) {
+                        currentTheme.toggles = Object.assign({}, preset.toggles);
+                    }
                     applyThemeDirect(currentTheme);
                     syncEditorInputs();
                     scheduleThemeSave();
@@ -1309,6 +1417,10 @@
                     currentTheme.colors = Object.assign({}, preset.colors);
                     currentTheme.effects = Object.assign({}, preset.effects);
                     currentTheme.sizing = Object.assign({}, preset.sizing);
+                    // Phase 7.8: тумблеры — часть конфига, иначе пресет теряет настройки шапки
+                    if (preset.toggles && Object.keys(preset.toggles).length) {
+                        currentTheme.toggles = Object.assign({}, preset.toggles);
+                    }
                     applyThemeDirect(currentTheme);
                     syncEditorInputs();
                     scheduleThemeSave();
@@ -1351,7 +1463,7 @@
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                     body: new URLSearchParams({
                         name: name,
-                        theme_json: JSON.stringify({ colors: currentTheme.colors, effects: currentTheme.effects, sizing: currentTheme.sizing })
+                        theme_json: JSON.stringify({ colors: currentTheme.colors, effects: currentTheme.effects, sizing: currentTheme.sizing, toggles: currentTheme.toggles })
                     }).toString()
                 });
                 presetNameInput.value = '';
@@ -1690,6 +1802,10 @@
                 deleteAccountConfirm.value = '';
             });
             
+            const deleteAccountCloseBtn = document.getElementById('deleteAccountCloseBtn');
+            if (deleteAccountCloseBtn) deleteAccountCloseBtn.addEventListener('click', () => {
+                deleteAccountModal.classList.remove('active');
+            });
             cancelDeleteAccountBtn.addEventListener('click', () => {
                 deleteAccountModal.classList.remove('active');
             });
@@ -1778,6 +1894,11 @@
             cancelCreateGroupBtn.addEventListener('click', () => {
                 createGroupModal.classList.remove('active');
             });
+            // Phase 7.8: единое круглое закрытие
+            const createGroupCloseBtn = document.getElementById('createGroupCloseBtn');
+            if (createGroupCloseBtn) createGroupCloseBtn.addEventListener('click', () => {
+                createGroupModal.classList.remove('active');
+            });
             
             createGroupModal.addEventListener('click', (e) => {
                 if (e.target === createGroupModal) {
@@ -1841,6 +1962,10 @@
             });
 
             cancelDeleteChatBtn.addEventListener('click', closeChatDelConfirm);
+            // Phase 7.8: тап по затемнению и круглая кнопка закрытия
+            if (deleteChatBackdrop) deleteChatBackdrop.addEventListener('click', closeChatDelConfirm);
+            const deleteChatCloseBtn = document.getElementById('deleteChatCloseBtn');
+            if (deleteChatCloseBtn) deleteChatCloseBtn.addEventListener('click', closeChatDelConfirm);
 
             confirmDeleteChatBtn.addEventListener('click', async () => {
                 const target = chatDeleteTarget;
@@ -1955,6 +2080,9 @@
             typingTimers = {}; typingNames = {}; renderTypingIsland();
 
             chatHeader.style.display = '';
+            peerBannerUuid = '';
+            renderPeerBanner();
+            renderPresenceIsland();
             chatHeaderName.textContent = channelState.name || 'ВайбБункер';
             checkMarquee();
             chatHeaderAvatar.src = getAvatarUrl(channelState.avatar_uuid);
@@ -2149,6 +2277,16 @@
                     handleTyping(msg);
                     return;
                 }
+                // Phase 7.8: присутствие — кто-то вошёл в сеть или вышел из неё
+                if (msg.type === 'presence' && msg.user_id) {
+                    presenceMap[msg.user_id] = {
+                        online: !!msg.online,
+                        last_seen: msg.last_seen || (presenceMap[msg.user_id] || {}).last_seen || null
+                    };
+                    renderPresenceRings();
+                    renderPresenceIsland();
+                    return;
+                }
                 // Phase 6.1b: sidebar refresh signal when someone adds me to a group
                 if (msg.type === 'group_added') {
                     loadGroups();
@@ -2300,6 +2438,9 @@
         });
         // Phase 7.3: load unread counts on page load
         loadUnread();
+        // Phase 7.8: присутствие — первая загрузка и фоновое обновление
+        loadPresence();
+        setInterval(loadPresence, 45000);
         
         // Load users and handle selection (Phase 7.6d-fix: канал — отдельная строка)
         document.querySelectorAll('.user-item:not(#channelItem)').forEach(item => {
@@ -2349,6 +2490,9 @@
                 typingTimers = {}; typingNames = {};
                 renderTypingIsland();
                 loadDialogChips(selectedUserId);
+                // Phase 7.8: присутствие собеседника + его баннер для шапки
+                renderPresenceIsland();
+                renderPeerBanner();
                 
                 // Load messages
                 const res = await fetch(`/api/messages/${selectedUserId}`);
@@ -2358,6 +2502,7 @@
                 scrollToBottom();
                 // Phase 7.3: mark dialog as read
                 markAsRead('user', selectedUserId);
+                refreshPeerMeta(selectedUserId);   // Phase 7.8: presence + banner шапки
                 // Phase 7.1d: sync mute state from server
                 if (data.muted_by_me !== undefined) {
                     dialogStateCache.muted_by_me = data.muted_by_me;
@@ -2946,6 +3091,7 @@
             chatDeleteTarget = uid;
             deleteChatUserName.textContent = displayName;
             closeMsgDelMenu();
+            if (deleteChatBackdrop) deleteChatBackdrop.style.display = 'block';
             deleteChatConfirm.style.display = 'block';
         }
         
@@ -3494,6 +3640,7 @@
         
         function closeChatDelConfirm() {
             deleteChatConfirm.style.display = 'none';
+            if (deleteChatBackdrop) deleteChatBackdrop.style.display = 'none';
         }
         
         // Modal functions
@@ -3526,9 +3673,12 @@
         // не бывает никогда), потом только наши теги. XSS-безопасно по построению.
         function renderMarkdown(text) {
             let s = escapeHtml(text || '');
-            // ```блок кода```
+            // ```блок кода``` — выносим в плейсхолдер: внутри <pre> переносы остаются
+            // настоящими переводами строк (white-space: pre-wrap), <br> там не нужен
+            const codeBlocks = [];
             s = s.replace(/```([\s\S]+?)```/g, function (m, code) {
-                return '<pre class="md-code-block"><code>' + code.replace(/^\n+|\n+$/g, '') + '</code></pre>';
+                codeBlocks.push(code.replace(/^\n+|\n+$/g, ''));
+                return '\u0001CODE' + (codeBlocks.length - 1) + '\u0001';
             });
             // `код`
             s = s.replace(/`([^`\n]+)`/g, '<code class="md-code">$1</code>');
@@ -3544,8 +3694,12 @@
                 const tail = url.slice(clean.length);
                 return '<a href="' + clean + '" target="_blank" rel="noopener noreferrer">' + clean + '</a>' + tail;
             });
-            // переносы строк
+            // переносы строк — только вне code-блоков (ТЗ 7.8, п.4)
             s = s.replace(/\n/g, '<br>');
+            // возвращаем code-блоки на место
+            s = s.replace(/\u0001CODE(\d+)\u0001/g, function (m, i) {
+                return '<pre class="md-code-block"><code>' + codeBlocks[+i] + '</code></pre>';
+            });
             return s;
         }
 
@@ -3688,6 +3842,107 @@
             typingIsland.classList.add('visible');
             if (isNearBottom()) {
                 typingIsland.scrollIntoView({ behavior: 'smooth', block: 'end' });
+            }
+            renderPresenceIsland();   // Phase 7.8: пока печатает — островок «был в сети» не нужен
+        }
+
+        // ===== Phase 7.8: присутствие (online / last_seen) =====
+        // Сервер хранит online (живое WS-подключение) и last_seen (users).
+        // Клиент держит кэш, обновляет его по WS-событию presence и раз в 45 секунд.
+        const presenceMap = {};   // { user_id: { online: bool, last_seen: 'YYYY-MM-DD HH:MM:SS' } }
+
+        function formatLastSeen(ts) {
+            const d = parseTs(ts);
+            if (!d) return '';
+            const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            const now = new Date();
+            const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+            const day = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+            const diff = Math.round((today - day) / 86400000);
+            if (diff === 0) return 'сегодня в ' + time;
+            if (diff === 1) return 'вчера в ' + time;
+            const date = new Intl.DateTimeFormat('ru', { day: 'numeric', month: 'long' }).format(d);
+            return date + ' в ' + time;
+        }
+
+        async function loadPresence() {
+            try {
+                const res = await fetch('/api/users');
+                if (!res.ok) return;
+                const users = await res.json();
+                users.forEach(u => {
+                    presenceMap[u.id] = { online: !!u.online, last_seen: u.last_seen || null };
+                });
+                renderPresenceRings();
+                renderPresenceIsland();
+            } catch (e) { console.error('Failed to load presence:', e); }
+        }
+
+        function renderPresenceRings() {
+            // границы авы в контактах: зелёная — онлайн, серая — оффлайн
+            document.querySelectorAll('.user-item').forEach(li => {
+                const uid = parseInt(li.dataset.id);
+                const img = li.querySelector('.user-avatar');
+                if (!img || !uid) return;
+                const state = presenceMap[uid];
+                if (!state) { img.removeAttribute('data-presence'); return; }
+                img.dataset.presence = state.online ? 'online' : 'offline';
+            });
+        }
+
+        function peerPresenceText(uid) {
+            const state = presenceMap[uid];
+            if (!state) return '';
+            if (state.online) return '';
+            if (!state.last_seen) return 'был(а) в сети давно';
+            const when = formatLastSeen(state.last_seen);
+            return when ? ('был(а) в сети ' + when) : 'был(а) в сети давно';
+        }
+
+        function renderPresenceIsland() {
+            if (!presenceIsland) return;
+            // приоритет у «печатает»: пока собеседник печатает, островок присутствия скрыт
+            const hide = !selectedUserId || selectedChannel ||
+                         Object.keys(typingNames || {}).length > 0;
+            const text = hide ? '' : peerPresenceText(selectedUserId);
+            if (!text) {
+                presenceIsland.style.display = 'none';
+                presenceIsland.textContent = '';
+                return;
+            }
+            presenceIsland.textContent = text;
+            presenceIsland.style.display = '';
+        }
+
+        // мета собеседника: присутствие + баннер для шапки (per-user тумблер темы)
+        async function refreshPeerMeta(uid) {
+            if (!uid) return;
+            try {
+                const res = await fetch(`/api/user/${uid}/profile`);
+                if (!res.ok) return;
+                const data = await res.json();
+                presenceMap[uid] = { online: !!data.online, last_seen: data.last_seen || null };
+                peerBannerUuid = data.banner_uuid || '';
+                renderPresenceRings();
+                renderPresenceIsland();
+                renderPeerBanner();
+            } catch (e) { console.error('Failed to load peer meta:', e); }
+        }
+
+        let peerBannerUuid = '';   // баннер собеседника для шапки (пусто у канала — свой)
+
+        function renderPeerBanner() {
+            if (!chatHeaderBanner) return;
+            const on = !!(currentTheme.toggles && currentTheme.toggles.peer_banner_header);
+            const uuid = selectedChannel ? (channelState.banner_uuid || '') : peerBannerUuid;
+            if (on && uuid) {
+                chatHeaderBanner.src = '/api/banner/' + uuid;
+                chatHeaderBanner.style.display = '';
+                if (chatPeerIsland) chatPeerIsland.classList.add('with-banner');
+            } else {
+                chatHeaderBanner.removeAttribute('src');
+                chatHeaderBanner.style.display = 'none';
+                if (chatPeerIsland) chatPeerIsland.classList.remove('with-banner');
             }
         }
 

@@ -38,6 +38,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+from datetime import datetime
 import urllib.parse
 import urllib.request
 import uuid
@@ -1182,6 +1183,71 @@ async def run_scenarios(report: Report, data_dir: str) -> None:
         assert channel.get("bio") == "канал объявлений", f"описание канала не обновилось: {channel}"
         assert channel.get("is_creator") == 0, f"B внезапно creator: {channel}"
     await report.step("cc", "канал: удаление запрещено, профиль канала правит только creator", scenario_cc)
+
+    # ---------------- dd) присутствие: online по WS-коннекту + last_seen ----------------
+    async def scenario_dd():
+        a_id, b_id = need("a_id", "нет id A"), need("b_id", "нет id B")
+        ws_a = need("ws_a", "нет WS-соединения A")
+        ws_b = need("ws_b", "нет WS-соединения B")
+
+        def b_row():
+            users = alice.json("/api/users", method="GET")
+            for u in users:
+                if int(u["id"]) == b_id:
+                    return u
+            raise AssertionError(f"пользователь B пропал из /api/users: {users}")
+
+        def wait_online(want: bool, what: str):
+            deadline = time.monotonic() + 5.0
+            while True:
+                row = b_row()
+                if row.get("online") is want:
+                    return row
+                if time.monotonic() >= deadline:
+                    raise AssertionError(f"{what}: online={row.get('online')} (ожидали {want})")
+                time.sleep(0.2)
+
+        # 1) у B живой WS → A видит online=true и свежий last_seen
+        row = wait_online(True, "B подключён по WS")
+        assert "last_seen" in row, f"в /api/users нет поля last_seen: {row}"
+        assert row.get("last_seen"), f"last_seen пуст у онлайн-пользователя: {row}"
+
+        prof = alice.json(f"/api/user/{b_id}/profile", method="GET")
+        assert prof.get("online") is True, f"профиль B: online={prof.get('online')} (ожидали True)"
+        assert prof.get("last_seen"), f"в профиле B нет last_seen: {prof}"
+
+        # 2) B уходит в оффлайн → A получает presence-событие, online=false, last_seen свежий
+        await ws_b.close()
+        ev = await expect_event(
+            ws_a,
+            lambda e: (e.get("type") == "presence" and int(e.get("user_id") or 0) == b_id
+                       and e.get("online") is False),
+            "presence: B ушёл в оффлайн",
+        )
+        assert ev.get("last_seen"), f"в presence-событии нет last_seen: {ev}"
+
+        row = wait_online(False, "B отключился от WS")
+        ls = row.get("last_seen")
+        assert ls, f"last_seen пуст после отключения: {row}"
+        delta = abs((datetime.now() - datetime.strptime(str(ls)[:19], "%Y-%m-%d %H:%M:%S")).total_seconds())
+        assert delta < 60, f"last_seen не свежий: {ls!r} (расхождение {delta:.0f}s)"
+
+        prof = alice.json(f"/api/user/{b_id}/profile", method="GET")
+        assert prof.get("online") is False, f"профиль B после выхода: online={prof.get('online')} (ожидали False)"
+
+        # 3) B вернулся → presence online=true
+        ws_b2 = await ws_open(bob)
+        await expect_event(
+            ws_a,
+            lambda e: (e.get("type") == "presence" and int(e.get("user_id") or 0) == b_id
+                       and e.get("online") is True),
+            "presence: B снова онлайн",
+        )
+        wait_online(True, "B переподключился")
+        await ws_b2.close()
+        state["ws_b"] = None   # уже закрыт — в блоке закрытия WS повторно не трогаем
+
+    await report.step("dd", "presence: online по WS-коннекту, last_seen на выходе, событие presence", scenario_dd)
 
     # ---------------- закрытие WS ----------------
     for ws in (state.get("ws_a"), state.get("ws_b")):

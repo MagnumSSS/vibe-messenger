@@ -197,6 +197,12 @@ THEME_TOKENS = {
         "hover": {"key": "hover", "css_var": "--hover-bg", "default": "#f5f5f5", "type": "color"},
         "active": {"key": "active", "css_var": "--active-bg", "default": "#e6f2ff", "type": "color"},
         "select_border": {"key": "select_border", "css_var": "--select-border", "default": "#0084ff", "type": "color"},
+        # Phase 7.8: цвет острова шапки (glass сохраняется), цвет ника, цвета присутствия
+        "header_color": {"key": "header_color", "css_var": "--header-island-color", "default": "#ffffff", "type": "color"},
+        "name_color": {"key": "name_color", "css_var": "--name-color", "default": "#0084ff", "type": "color"},
+        "presence_online": {"key": "presence_online", "css_var": "--presence-online", "default": "#2ecc71", "type": "color"},
+        "presence_offline": {"key": "presence_offline", "css_var": "--presence-offline", "default": "#9aa0a6", "type": "color"},
+        "presence_text": {"key": "presence_text", "css_var": "--presence-text", "default": "#666666", "type": "color"},
     },
     "images": {
         "header_img": {"key": "header_img", "css_var": "--header-img", "default": None, "type": "image"},
@@ -211,6 +217,13 @@ THEME_TOKENS = {
     # Phase 6.6b: sizing tokens - scale multiplier for command chips & toggle icon
     "sizing": {
         "chip_size": {"key": "chip_size", "css_var": "--chip-scale", "default": 1.0, "type": "range", "min": 0.8, "max": 1.3, "unit": "", "step": 0.05},
+    },
+    # Phase 7.8: бинарные настройки темы (тумблеры в редакторе)
+    "toggles": {
+        "name_color_auto": {"key": "name_color_auto", "default": True, "type": "toggle",
+                            "label": "Цвет ника: авто-контраст из темы"},
+        "peer_banner_header": {"key": "peer_banner_header", "default": False, "type": "toggle",
+                               "label": "Баннер собеседника в шапке"},
     }
 }
 
@@ -253,11 +266,18 @@ THEME_PRESETS = {
             "modal_bg": "#ffffff",
             "hover": "#f5f5f5",
             "active": "#e6f2ff",
-            "chip_cmd": "#dbe7ff"
+            "chip_cmd": "#dbe7ff",
+            # Phase 7.8
+            "header_color": "#ffffff",
+            "name_color": "#0084ff",
+            "presence_online": "#2ecc71",
+            "presence_offline": "#9aa0a6",
+            "presence_text": "#666666"
         },
         "images": {},
         "effects": {"wallpaper_blur": 0, "bubble_blur": 0},
-        "sizing": {"chip_size": 1.0}
+        "sizing": {"chip_size": 1.0},
+        "toggles": {"name_color_auto": True, "peer_banner_header": False}
     },
     "dark": {
         "colors": {
@@ -277,10 +297,17 @@ THEME_PRESETS = {
             "hover": "#22304f",
             "active": "#2a3a5f",
             "chip_cmd": "#2a3550",
+            # Phase 7.8: остров шапки — тёмный, ник — светлый (YIQ-автоконтраст)
+            "header_color": "#16213e",
+            "name_color": "#eaeaea",
+            "presence_online": "#2ecc71",
+            "presence_offline": "#8b8f94",
+            "presence_text": "#a0a0a0"
         },
         "images": {},
         "effects": {"wallpaper_blur": 0, "bubble_blur": 0},
-        "sizing": {"chip_size": 1.0}
+        "sizing": {"chip_size": 1.0},
+        "toggles": {"name_color_auto": True, "peer_banner_header": False}
     }
 }
 
@@ -312,7 +339,9 @@ def merge_theme_with_defaults(theme_json_str):
             "colors": {**THEME_PRESETS["default"]["colors"], **theme.get("colors", {})},
             "images": {**THEME_PRESETS["default"]["images"], **theme.get("images", {})},
             "effects": {**THEME_PRESETS["default"].get("effects", {}), **theme.get("effects", {})},
-            "sizing": {**THEME_PRESETS["default"].get("sizing", {}), **theme.get("sizing", {})}
+            "sizing": {**THEME_PRESETS["default"].get("sizing", {}), **theme.get("sizing", {})},
+            # Phase 7.8: тумблеры темы
+            "toggles": {**THEME_PRESETS["default"].get("toggles", {}), **theme.get("toggles", {})}
         }
         return result
     except Exception as e:
@@ -353,6 +382,7 @@ def sanitize_theme_config(raw):
     raw_colors = raw.get("colors") if isinstance(raw.get("colors"), dict) else {}
     raw_effects = raw.get("effects") if isinstance(raw.get("effects"), dict) else {}
     raw_sizing = raw.get("sizing") if isinstance(raw.get("sizing"), dict) else {}
+    raw_toggles = raw.get("toggles") if isinstance(raw.get("toggles"), dict) else {}
 
     colors = {}
     for key, spec in THEME_TOKENS["colors"].items():
@@ -377,7 +407,13 @@ def sanitize_theme_config(raw):
             v = float(spec["default"])
         sizing[key] = max(float(spec.get("min", 0.5)), min(float(spec.get("max", 2)), v))
 
-    return {"colors": colors, "images": {}, "effects": effects, "sizing": sizing}
+    # Phase 7.8: тумблеры — только известные ключи и только булевы значения
+    toggles = {}
+    for key, spec in THEME_TOKENS.get("toggles", {}).items():
+        value = raw_toggles.get(key, spec["default"])
+        toggles[key] = bool(value) if isinstance(value, (bool, int)) else bool(spec["default"])
+
+    return {"colors": colors, "images": {}, "effects": effects, "sizing": sizing, "toggles": toggles}
 
 
 def resolve_preset_name(explicit, parsed, fallback):
@@ -1048,6 +1084,7 @@ def ensure_schema():
             ("email_verified", "INTEGER NOT NULL DEFAULT 0"),  # Phase R7: почта подтверждена кодом
             ("is_system", "INTEGER NOT NULL DEFAULT 0"),   # Phase 7.6d: системный канал «start»
             ("is_creator", "INTEGER NOT NULL DEFAULT 0"),  # Phase 7.6d: первый зарегистрированный
+            ("last_seen", "TIMESTAMP NULL"),           # Phase 7.8: присутствие
         ]
         for col_name, col_type in user_column_additions:
             if col_name not in user_columns:
@@ -1755,11 +1792,18 @@ async def api_users(request: Request):
     
     with get_db() as conn:
         users = conn.execute(
-            "SELECT id, name, username, avatar_uuid, bio FROM users WHERE id != ?",
+            "SELECT id, name, username, avatar_uuid, bio, last_seen FROM users WHERE id != ?",
             (user["id"],),
         ).fetchall()
     
-    return JSONResponse([dict(u) for u in users])
+    # Phase 7.8: присутствие — online берём из живых WS-подключений (БД не хранит статус)
+    online_ids = set(app.state.connections.keys())
+    rows = []
+    for u in users:
+        item = dict(u)
+        item["online"] = int(u["id"]) in online_ids
+        rows.append(item)
+    return JSONResponse(rows)
 
 
 @app.get("/api/user/{user_id}/profile")
@@ -1771,7 +1815,7 @@ async def api_user_profile(request: Request, user_id: int):
     
     with get_db() as conn:
         row = conn.execute(
-            "SELECT id, name, username, avatar_uuid, bio, banner_uuid, theme_json "
+            "SELECT id, name, username, avatar_uuid, bio, banner_uuid, theme_json, last_seen "
             "FROM users WHERE id = ?",
             (user_id,),
         ).fetchone()
@@ -1779,7 +1823,10 @@ async def api_user_profile(request: Request, user_id: int):
     if not row:
         raise HTTPException(status_code=404, detail="User not found")
     
-    return JSONResponse(dict(row))
+    payload = dict(row)
+    # Phase 7.8: присутствие собеседника (для островка «был(а) в сети …»)
+    payload["online"] = int(user_id) in app.state.connections
+    return JSONResponse(payload)
 
 
 @app.get("/api/messages/{recipient_id}")
@@ -2647,6 +2694,65 @@ async def group_command(request: Request, group_id: int, cmd: str = Form(""), ar
     raise HTTPException(status_code=400, detail="Команда не реализована")
 
 
+# ============== Phase 7.8: присутствие (online / last_seen) ==============
+#
+# online — факт живого WS-подключения (app.state.connections: user_id -> websocket).
+# last_seen — метка в users: пишется на подключении, на отключении и раз в минуту
+# для всех, кто держит соединение (heartbeat). Клиенты получают событие presence.
+
+PRESENCE_HEARTBEAT_SECONDS = 60
+_presence_task = None
+
+
+def touch_last_seen(user_id: int) -> str:
+    """Обновить last_seen пользователя, вернуть новую метку (YYYY-MM-DD HH:MM:SS)."""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with get_db() as conn:
+            conn.execute("UPDATE users SET last_seen = ? WHERE id = ?", (now, user_id))
+            conn.commit()
+    except Exception:
+        app_logger.exception("presence: не обновился last_seen user_id=%s", user_id)
+    return now
+
+
+async def push_presence(user_id: int, online: bool, last_seen: str | None = None) -> None:
+    """Разослать событие присутствия всем, кроме самого пользователя."""
+    await push_to_all({
+        "type": "presence",
+        "user_id": int(user_id),
+        "online": bool(online),
+        "last_seen": last_seen or "",
+    }, exclude_uid=user_id)
+
+
+async def presence_heartbeat() -> None:
+    """Пока пользователь онлайн, его last_seen должен идти вперёд (не только на выход)."""
+    while True:
+        await asyncio.sleep(PRESENCE_HEARTBEAT_SECONDS)
+        try:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with get_db() as conn:
+                for uid in list(app.state.connections.keys()):
+                    conn.execute("UPDATE users SET last_seen = ? WHERE id = ?", (now, uid))
+                conn.commit()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            app_logger.exception("presence: сбой heartbeat")
+
+
+def ensure_presence_heartbeat() -> None:
+    """Поднять фоновую задачу один раз, когда появилось первое соединение."""
+    global _presence_task
+    if _presence_task is not None and not _presence_task.done():
+        return
+    try:
+        _presence_task = asyncio.create_task(presence_heartbeat())
+    except RuntimeError:      # нет событийного цикла (импорт/тесты) — просто не страхуемся
+        _presence_task = None
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     try:
@@ -2691,6 +2797,10 @@ async def websocket_endpoint(websocket: WebSocket):
     
     # Store connection
     app.state.connections[user_id] = websocket
+    # Phase 7.8: присутствие — вошёл в сеть, метку тоже обновляем
+    ensure_presence_heartbeat()
+    _last_seen = touch_last_seen(user_id)
+    await push_presence(user_id, True, _last_seen)
     _pulse_emit("ws", f"CONNECT user_id={user_id}")
     _ws_logger.info("WS подключён: user_id=%s", user_id)
     
@@ -2745,11 +2855,14 @@ async def websocket_endpoint(websocket: WebSocket):
         _ws_logger.info("WS отключён: user_id=%s", user_id)
         if user_id in app.state.connections:
             del app.state.connections[user_id]
+        # Phase 7.8: вышел из сети — пишем last_seen и рассылаем событие
+        await push_presence(user_id, False, touch_last_seen(user_id))
     except Exception as exc:
         _pulse_emit("ws", f"DISCONNECT user_id={user_id} (error)")
         _ws_logger.warning("WS отключён с ошибкой: user_id=%s: %s", user_id, exc)
         if user_id in app.state.connections:
             del app.state.connections[user_id]
+        await push_presence(user_id, False, touch_last_seen(user_id))
 
 
 # Store active connections
