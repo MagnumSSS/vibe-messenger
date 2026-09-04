@@ -204,7 +204,7 @@ if ! DATA_DIR="$DATA_DIR" BACKUP_DIR="$BACKUP_DIR" RETAIN_COUNT="$RETAIN_COUNT" 
     exit 3
 fi
 cat "$BACKUP_OUT"
-BACKUP_FILE="$(sed -n 's/^Database backup created: //p' "$BACKUP_OUT" | tail -1)"
+BACKUP_FILE="$(sed -n 's/^BACKUP_DB=//p' "$BACKUP_OUT" | tail -1)"
 rm -f "$BACKUP_OUT"
 if [ -z "$BACKUP_FILE" ] || [ ! -f "$BACKUP_FILE" ]; then
     warn "не удалось определить файл бэкапа — обновление отменено"

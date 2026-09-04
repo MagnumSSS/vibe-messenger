@@ -152,6 +152,8 @@ def main(argv: list[str]) -> int:
             pass
         return EXIT_BACKUP
     log(f"Database backup created: {backup_db} ({pages} страниц, {elapsed:.2f}s)")
+    # машиночитаемая строка: по ней update.sh находит файл для отката
+    log(f"BACKUP_DB={backup_db}")
 
     # 2) проверка именно копии: бэкап, который нельзя восстановить, не считается бэкапом
     ok, detail = integrity_report(backup_db)
