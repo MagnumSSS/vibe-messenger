@@ -121,6 +121,24 @@ sudo ufw allow 8000/tcp
 
 ## Updating
 
+Обновление — только через `scripts/update.sh`: он сначала прогоняет selftest (на сломанном
+состоянии обновляться запрещено), снимает бэкап БД, делает `git fetch` + `reset --hard origin/<ветка>`,
+перезапускает сервис (systemd или dev-режим) и снова прогоняет `/health` + selftest.
+Зелёный постинчек — `data/last_good_hash` обновляется; красный — автоматический откат:
+код на предыдущий HEAD, БД из бэкапа, рестарт.
+
+```bash
+cd /opt/messenger
+sudo DATA_DIR=/var/lib/messenger/data BACKUP_DIR=/var/lib/messenger/backups \
+     UPDATE_BRANCH=main ./scripts/update.sh
+sudo DATA_DIR=/var/lib/messenger/data ./scripts/update.sh --dry-run   # только план, без изменений
+```
+
+Exit-коды: `0` — UPDATE OK, `1` — выполнен откат, `2` — pre-check красный,
+`3` — не снялся бэкап, `4` — не удался fetch/reset.
+
+Ручной вариант (без проверок, на свой страх и риск):
+
 ```bash
 cd /opt/messenger
 sudo git pull
@@ -152,7 +170,7 @@ sudo -u messenger /opt/messenger/scripts/backup.sh
 
 Add to crontab (`sudo crontab -e`):
 ```
-0 2 * * * DATA_DIR=/var/lib/messenger/data BACKUP_DIR=/var/lib/messenger/backups RETAIN_COUNT=7 /opt/messenger/scripts/backup.sh
+0 2 * * * DATA_DIR=/var/lib/messenger/data BACKUP_DIR=/var/lib/messenger/backups RETAIN_COUNT=5 /opt/messenger/scripts/backup.sh
 ```
 
 ### Restore from backup

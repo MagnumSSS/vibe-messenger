@@ -11,7 +11,7 @@ Env (совместимы со старым backup.sh и cron):
     DATA_DIR      — где лежит messenger.db (default /var/lib/messenger/data)
     BACKUP_DIR    — куда складываем (default /var/lib/messenger/backups)
     DB_NAME       — имя файла БД (default messenger.db)
-    RETAIN_COUNT  — сколько последних копий хранить (default 7)
+    RETAIN_COUNT  — сколько последних копий хранить (default 5)
     PYTHON        — не используется здесь, нужен shim'у backup.sh
 
 Exit-коды:
@@ -38,7 +38,7 @@ EXIT_BACKUP = 4
 DATA_DIR = os.environ.get("DATA_DIR", "/var/lib/messenger/data")
 BACKUP_DIR = os.environ.get("BACKUP_DIR", "/var/lib/messenger/backups")
 DB_NAME = os.environ.get("DB_NAME", "messenger.db")
-RETAIN_COUNT = int(os.environ.get("RETAIN_COUNT", "7"))
+RETAIN_COUNT = int(os.environ.get("RETAIN_COUNT", "5"))
 
 
 def log(message: str) -> None:

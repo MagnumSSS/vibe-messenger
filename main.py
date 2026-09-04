@@ -472,8 +472,9 @@ def ensure_schema():
                 recipient_id INTEGER NOT NULL,
                 text TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (sender_id) REFERENCES users(id),
-                FOREIGN KEY (recipient_id) REFERENCES users(id)
+                -- Phase R2: FK только на sender_id. recipient_id = 0 для групповых
+                -- сообщений (служебный sentinel), поэтому ссылкой он быть не может.
+                FOREIGN KEY (sender_id) REFERENCES users(id)
             )
         """)
         
