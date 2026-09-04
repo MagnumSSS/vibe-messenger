@@ -222,6 +222,40 @@
     </div>
 
     <script>
+        // Phase R6 (CSRF, double-submit): cookie csrftoken → заголовок X-CSRF-Token
+        // на каждом изменяющем fetch. Один патч на всю админку.
+        (function () {
+            function getCookie(name) {
+                const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const match = document.cookie.match(new RegExp('(?:^|; )' + escaped + '=([^;]*)'));
+                return match ? decodeURIComponent(match[1]) : '';
+            }
+            const originalFetch = window.fetch;
+            window.fetch = function (input, init) {
+                const options = init || {};
+                const method = String(options.method || (input && input.method) || 'GET').toUpperCase();
+                if (method !== 'GET' && method !== 'HEAD') {
+                    const token = getCookie('csrftoken');
+                    if (token) {
+                        const headers = new Headers(options.headers || (input && input.headers) || {});
+                        headers.set('X-CSRF-Token', token);
+                        return originalFetch(input, Object.assign({}, options, { headers: headers }));
+                    }
+                }
+                return originalFetch(input, init);
+            };
+        })();
+
+        // Phase R6 (XSS): пользовательские строки в innerHTML — только через escapeHtml
+        function escapeHtml(value) {
+            return String(value == null ? '' : value)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
         // Load invites, limits, audit and pulse on page load
         loadInvites();
         loadLimits();
@@ -239,9 +273,9 @@
                     const div = document.createElement('div');
                     div.className = 'invite-item';
                     div.innerHTML = `
-                        <span><code>${inv.code}</code></span>
+                        <span><code>${escapeHtml(inv.code)}</code></span>
                         <span class="invite-status ${inv.used_by ? 'used' : 'unused'}">
-                            ${inv.used_by ? 'Used by @' + inv.used_by_username : 'Unused'}
+                            ${inv.used_by ? 'Used by @' + escapeHtml(inv.used_by_username) : 'Unused'}
                         </span>
                     `;
                     list.appendChild(div);
@@ -447,11 +481,11 @@
                 const rows = await res.json();
                 const tbody = document.getElementById('auditTable');
                 tbody.innerHTML = rows.map(r => `<tr>
-                    <td style="white-space:nowrap">${r.created_at || ''}</td>
-                    <td>${r.actor ? '@' + r.actor : '-'}</td>
-                    <td>${r.action}</td>
-                    <td>${r.target ? '@' + r.target : '-'}</td>
-                    <td>${r.detail || ''}</td>
+                    <td style="white-space:nowrap">${escapeHtml(r.created_at || '')}</td>
+                    <td>${r.actor ? '@' + escapeHtml(r.actor) : '-'}</td>
+                    <td>${escapeHtml(r.action)}</td>
+                    <td>${r.target ? '@' + escapeHtml(r.target) : '-'}</td>
+                    <td>${escapeHtml(r.detail || '')}</td>
                 </tr>`).join('');
             } catch (err) {
                 console.error('Failed to load audit:', err);
@@ -525,9 +559,9 @@
                 const rows = data.events || [];
                 const tbody = document.getElementById('pulseTable');
                 tbody.innerHTML = rows.slice().reverse().map(r => `<tr>
-                    <td style="white-space:nowrap">${r.ts}</td>
-                    <td>${r.kind}</td>
-                    <td>${r.detail}</td>
+                    <td style="white-space:nowrap">${escapeHtml(r.ts)}</td>
+                    <td>${escapeHtml(r.kind)}</td>
+                    <td>${escapeHtml(r.detail)}</td>
                 </tr>`).join('');
             } catch (err) {
                 console.error('Failed to load pulse:', err);

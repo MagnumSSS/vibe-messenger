@@ -3,6 +3,7 @@ import re
 import sys
 import sqlite3
 import hashlib
+import hmac
 import secrets
 import uuid
 import json
@@ -17,7 +18,7 @@ from collections import deque
 from datetime import datetime, timezone, timedelta
 from contextlib import contextmanager
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, parse_qs
 
 
 import aiofiles
@@ -26,6 +27,7 @@ from fastapi import FastAPI, Request, Form, Depends, HTTPException, status, WebS
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse, Response
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.datastructures import MutableHeaders
 from fastapi.staticfiles import StaticFiles 
 
 # ========== Phase R5: .env подхватывается ДО чтения любых настроек ==========
@@ -443,7 +445,8 @@ def calculate_yiq_contrast(hex_color):
     return "#000000" if yiq >= 128 else "#ffffff"
 
 
-app = FastAPI()
+# Phase R6 (A05): debug-режим (трассировки в ответе) — только в dev, в prod всегда выключен
+app = FastAPI(debug=(APP_MODE == "dev"))
 
 # Формат сессионной cookie настраивается из env, чтобы приложение работало
 # и напрямую, и внутри кросс-сайтового iframe (предпросмотр в браузере):
@@ -499,6 +502,164 @@ def _clear_failures(ip: str):
     _login_failures.pop(ip, None)
 
 
+# ========== Phase R6 (A01/CSRF): double-submit токен ==========
+# Клиент присылает значение cookie csrftoken в заголовке X-CSRF-Token
+# (для HTML-форм и multipart — в поле формы csrf_token). Cookie НЕ HttpOnly:
+# фронтенд должен уметь прочитать своё же значение. В кросс-сайтовом iframe
+# режим (SameSite=None; Secure) задаётся теми же env, что и сессия.
+CSRF_COOKIE = "csrftoken"
+CSRF_HEADER = "x-csrf-token"
+CSRF_FIELD = "csrf_token"
+CSRF_SAFE_METHODS = {"GET", "HEAD", "OPTIONS", "TRACE"}
+CSRF_MAX_AGE = 14 * 24 * 3600      # как у сессии: две недели
+
+
+def _new_csrf_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+def _csrf_token_from_body(content_type: str, body: bytes) -> str:
+    """Значение поля csrf_token из тела urlencoded-формы или multipart (без разбора всей формы)."""
+    if content_type.startswith("application/x-www-form-urlencoded"):
+        try:
+            parsed = parse_qs(body.decode("utf-8", "replace"), keep_blank_values=True)
+        except Exception:
+            return ""
+        values = parsed.get(CSRF_FIELD) or []
+        return values[0] if values else ""
+    if content_type.startswith("multipart/form-data"):
+        marker = b'name="' + CSRF_FIELD.encode() + b'"'
+        idx = body.find(marker)
+        if idx == -1:
+            return ""
+        start = body.find(b"\r\n\r\n", idx)
+        if start == -1:
+            return ""
+        start += 4
+        end = body.find(b"\r\n", start)
+        return body[start:end if end != -1 else len(body)].decode("utf-8", "replace").strip()
+    return ""
+
+
+def _csrf_cookie_header(token: str) -> str:
+    """Set-Cookie для csrftoken: НЕ HttpOnly — фронтенд читает своё же значение."""
+    parts = [f"{CSRF_COOKIE}={token}", "Path=/", f"Max-Age={CSRF_MAX_AGE}"]
+    if SESSION_SAME_SITE:
+        parts.append(f"SameSite={SESSION_SAME_SITE.capitalize()}")
+    if SESSION_SECURE:
+        parts.append("Secure")
+    return "; ".join(parts)
+
+
+class CSRFMiddleware:
+    """
+    Чистый ASGI-мидлварь (не BaseHTTPMiddleware): читаем тело, достаём токен
+    и ОТДАЁМ ЕГО ОБРАТНО приложению — иначе эндпоинт получил бы пустое тело
+    (BaseHTTPMiddleware не делится уже прочитанным стримом).
+    """
+
+    # тело больше лимита аплоада (+1 МБ на границы multipart) не буферизуем
+    BODY_LIMIT = MAX_UPLOAD_BYTES + 1024 * 1024
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        headers_dict = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+        cookie_token = ""
+        for chunk in headers_dict.get("cookie", "").split("; "):
+            if chunk.startswith(CSRF_COOKIE + "="):
+                cookie_token = chunk[len(CSRF_COOKIE) + 1:]
+                break
+        token = cookie_token or _new_csrf_token()
+        # request.state живёт в scope["state"] — шаблоны берут {{ request.state.csrf_token }}
+        scope.setdefault("state", {})["csrf_token"] = token
+
+        method = scope.get("method", "GET").upper()
+        if method in CSRF_SAFE_METHODS:
+            if not cookie_token:
+                await self.app(scope, receive, self._send_with_cookie(send, token))
+            else:
+                await self.app(scope, receive, send)
+            return
+
+        # --- изменяющий запрос: проверяем токен (из заголовка или из тела) ---
+        sent_token = headers_dict.get(CSRF_HEADER, "")
+        buffered: bytes | None = None
+        if not sent_token:
+            # заголовка нет — читаем тело и ищем поле csrf_token
+            body = b""
+            more_body = True
+            while more_body:
+                message = await receive()
+                body += message.get("body", b"")
+                more_body = message.get("more_body", False)
+                if len(body) > self.BODY_LIMIT:
+                    await self._reject(send, status=413, detail="Payload too large")
+                    return
+            buffered = body
+            sent_token = _csrf_token_from_body(headers_dict.get("content-type", ""), body)
+
+        if not cookie_token or not sent_token or not hmac.compare_digest(cookie_token, sent_token):
+            admin_logger.warning(
+                "CSRF отклонён: %s %s (client=%s)", method, scope.get("path", "?"),
+                (scope.get("client") or ["?"])[0]
+            )
+            await self._reject(send, status=403, detail="CSRF token missing or invalid")
+            return
+
+        if buffered is None:
+            # тело не читали — приложение получит оригинальный receive
+            downstream_receive = receive
+        else:
+            # тело отдаём РОВНО ОДИН раз: дальше прокидываем оригинальный receive,
+            # иначе StreamingResponse дождётся «второго» http.request и упадёт
+            replayed = False
+
+            async def replay():
+                nonlocal replayed
+                if not replayed:
+                    replayed = True
+                    return {"type": "http.request", "body": buffered, "more_body": False}
+                return await receive()
+
+            downstream_receive = replay
+
+        if not cookie_token:
+            await self.app(scope, downstream_receive, self._send_with_cookie(send, token))
+        else:
+            await self.app(scope, downstream_receive, send)
+
+    @staticmethod
+    async def _reject(send, status: int, detail: str):
+        payload = json.dumps({"detail": detail}).encode()
+        await send({
+            "type": "http.response.start",
+            "status": status,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(payload)).encode()),
+            ],
+        })
+        await send({"type": "http.response.body", "body": payload})
+
+    @staticmethod
+    def _send_with_cookie(send, token: str):
+        cookie = _csrf_cookie_header(token).encode("latin-1")
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                headers.append("set-cookie", cookie.decode("latin-1"))
+            await send(message)
+
+        return send_wrapper
+
+
 @app.middleware("http")
 async def security_headers_middleware(request: Request, call_next):
     response = await call_next(request)
@@ -509,6 +670,11 @@ async def security_headers_middleware(request: Request, call_next):
         response.headers["X-Frame-Options"] = "SAMEORIGIN"
     # FRAME_OPTIONS=none — заголовок не шлём (нужно для предпросмотра в iframe)
     response.headers["Referrer-Policy"] = "no-referrer"
+    # Phase R6 (A05): запрещаем браузеру отдавать сайту гео/камеру/микрофон и т.п.
+    response.headers["Permissions-Policy"] = (
+        "geolocation=(), microphone=(), camera=(), payment=(), usb=(), "
+        "accelerometer=(), gyroscope=(), magnetometer=()"
+    )
     response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data: blob:; font-src 'self'"
     # Phase micro banner3: no-cache for all /api/* responses
     if request.url.path.startswith("/api/"):
@@ -611,11 +777,14 @@ async def error_logging_middleware(request: Request, call_next):
 @app.api_route("/api/admin/debug-boom", methods=["GET", "POST"])
 async def debug_boom(request: Request):
     """
-    Phase R4: намеренный сбой для проверки error.log (только админ).
+    Phase R4: намеренный сбой для проверки error.log (только админ, только dev).
     Клиент обязан получить 500, а traceback — лечь в data/logs/error.log.
     """
     user = get_current_user(request)
     require_admin(user)
+    # Phase R6 (A05): в prod намеренный генератор ошибок недоступен даже админу
+    if APP_MODE == "prod":
+        raise HTTPException(status_code=404, detail="Not Found")
     raise RuntimeError("DEBUG BOOM: намеренное исключение для проверки логов")
 
 
@@ -677,9 +846,13 @@ def ensure_schema():
             ("theme_json", "TEXT NULL"),             # Phase 4: RGB themes
             ("font_scale", "REAL DEFAULT 1.0"),      # Phase 7 micro: a11y font scale
             ("banner_uuid", "TEXT NULL"),            # Phase 7.6a: profile banner
+            ("session_epoch", "INTEGER NOT NULL DEFAULT 0"),  # Phase R6: смена пароля рвёт чужие сессии
         ]
         for col_name, col_type in user_column_additions:
             if col_name not in user_columns:
+                # A03: имя колонки берём только из whitelist-константы выше
+                if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", col_name):
+                    raise ValueError(f"недопустимое имя колонки: {col_name!r}")
                 conn.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}")
                 app_logger.info(f"схема: добавлена колонка users.{col_name}")
         
@@ -707,6 +880,9 @@ def ensure_schema():
         ]
         for col_name, col_type in msg_column_additions:
             if col_name not in msg_columns:
+                # A03: имя колонки берём только из whitelist-константы выше
+                if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", col_name):
+                    raise ValueError(f"недопустимое имя колонки: {col_name!r}")
                 conn.execute(f"ALTER TABLE messages ADD COLUMN {col_name} {col_type}")
                 app_logger.info(f"схема: добавлена колонка messages.{col_name}")
         
@@ -1093,7 +1269,14 @@ def get_current_user(request: Request):
         return None
     with get_db() as conn:
         row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-    return dict(row) if row else None
+    if not row:
+        return None
+    user = dict(row)
+    # Phase R6 (A07): сессия валидна, только пока её epoch совпадает с epoch пользователя.
+    # Смена пароля поднимает epoch в БД — все остальные устройства разлогиниваются.
+    if request.session.get("epoch") != user.get("session_epoch", 0):
+        return None
+    return user
 
 
 def get_current_user_fresh(request: Request):
@@ -1101,6 +1284,13 @@ def get_current_user_fresh(request: Request):
     user_id = request.session.get("user_id")
     if not user_id:
         return None
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    if not row:
+        return None
+    if request.session.get("epoch") != (row["session_epoch"] if "session_epoch" in row.keys() else 0):
+        return None
+    return dict(row)
     with get_db() as conn:
         row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     return dict(row) if row else None
@@ -1270,7 +1460,11 @@ async def login(request: Request, username: str = Form(...), password: str = For
     _clear_failures(ip)
     _pulse_emit("login", f"OK ip={ip} user={user['username']} id={user['id']}")
     _login_logger.info("логин: ip=%s, user_id=%s", ip, user["id"])
+    # Phase R6 (A07): логин = НОВАЯ сессия. Старые данные сессии выбрасываем,
+    # иначе атакующий может подсунуть заранее известный session id (session fixation).
+    request.session.clear()
     request.session["user_id"] = user["id"]
+    request.session["epoch"] = user["session_epoch"]
     return RedirectResponse(url="/chat", status_code=303)
 
 
@@ -3040,9 +3234,16 @@ async def change_password(request: Request, current_password: str = Form(...), n
     
     new_hash = hash_password(new_password)
     with get_db() as conn:
-        conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_hash, user["id"]))
+        # Phase R6 (A07): поднимаем epoch — все сессии, кроме текущей, становятся невалидными
+        conn.execute(
+            "UPDATE users SET password_hash = ?, session_epoch = session_epoch + 1 WHERE id = ?",
+            (new_hash, user["id"]),
+        )
         conn.commit()
-    
+        row = conn.execute("SELECT session_epoch FROM users WHERE id = ?", (user["id"],)).fetchone()
+    request.session["epoch"] = row["session_epoch"]
+    app_logger.info("смена пароля: user_id=%s, прочие сессии сброшены (epoch=%s)", user["id"], row["session_epoch"])
+
     return JSONResponse({"success": True})
 
 
@@ -3483,6 +3684,10 @@ async def delete_chat_endpoint(request: Request, recipient_id: int = Form(...)):
         conn.commit()
     
     return JSONResponse({"success": True})
+
+
+# Phase R6: CSRF-проверка — самый внешний мидлварь (до логирования и обработки ошибок)
+app.add_middleware(CSRFMiddleware)
 
 
 if __name__ == "__main__":

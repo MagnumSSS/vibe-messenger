@@ -22,6 +22,54 @@ A lightweight private web messenger for small groups, designed for Raspberry Pi 
 - Health check endpoint `/health`
 - Database migrations on startup
 
+## Security-аудит R6 (OWASP Top 10)
+
+Аудит по OWASP Top 10 (2021). Статусы: **OK** — так и было, **FIXED** — усилено в фазе R6,
+**N/A** — неприменимо. Улики — строки в коде/шаблонах на момент коммита фазы.
+
+| Категория | Статус | Улики / что сделано |
+|---|---|---|
+| **A01 Broken Access Control** (IDOR) | FIXED | Проверки владения в каждом `/api/*`: правка — только автор `edit_message` (`Only author can edit`), удаление — участник/админ (`Not authorized to delete this message`, `Only admins can delete messages for all`), вложения — только участник диалога или группы (`GET /api/attachment/{id}` и `/info`, `Not a group member` / `Forbidden`), `blocks`/`pins` — только свои (`WHERE blocker_id = ? AND blocked_id = ?`, `DELETE FROM pins WHERE user_id = ?`), админ-эндпоинты — 15 вызовов `require_admin()` (строка 2747). Selftest: `t`, `u`, `w`. |
+| **A02 Cryptographic Failures** | OK | Секреты вне логов (R4: `grep -icE "session=\|secret_key=" data/logs/*.log` → 0); ключ сессии — `HttpOnly`; `SameSite=Lax` по умолчанию, `None; Secure` **только** через `SESSION_SAME_SITE=none SESSION_SECURE=1` (строка 447); пароли — PBKDF2-HMAC-SHA256, 100 000 итераций, соль на пользователя (`hash_password`). |
+| **A03 Injection** | FIXED | SQL — только параметризованный: `grep -nE "execute\(\s*f\"\|execute\([^)]*\+"` по `main.py` и `scripts/*.py` даёт 2 DDL-строки с константами, теперь с whitelist-проверкой имени колонки (`re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", col_name)`, строки 854, 884). `scripts/*` не делают shell-вызовов с пользовательскими данными (`subprocess` — только в `selftest.py`, с фиксированными аргументами). |
+| **A04 Insecure Design** | OK | Rate-limit логина (5 попыток / 10 мин → 429), лимиты размера вложений (`MAX_UPLOAD_BYTES`, `THEME_IMAGE_MAX_BYTES`), удаление брошенных `.part`, invite-only регистрация после первого пользователя. |
+| **A05 Security Misconfiguration** | FIXED | Заголовки на каждом ответе: `X-Content-Type-Options: nosniff` (стр. 666), `Referrer-Policy: no-referrer` (672), `Permissions-Policy: geolocation=(), microphone=(), camera=(), payment=(), usb=(), …` (674), CSP (678); `FastAPI(debug=(APP_MODE == "dev"))` (449) — трассировки клиенту только в dev; `/api/admin/debug-boom` в `prod` отдаёт 404. |
+| **A06 Vulnerable Components** | OK | Все зависимости запинены: `requirements.txt` — 19 пакетов, все с `==` (fastapi 0.109.2, starlette 0.36.3, uvicorn 0.27.0, Jinja2 3.1.3 и т.д.). |
+| **A07 Identification & Auth Failures** | FIXED | Смена пароля требует текущий (`Current password is incorrect`); логин пересоздаёт сессию — `request.session.clear()` перед записью (стр. 1465) — защита от session fixation; смена пароля поднимает `users.session_epoch` (3239) и рвёт сессии на других устройствах: `get_current_user` сверяет `session["epoch"]` с БД (1277), `смена пароля: user_id=…, прочие сессии сброшены (epoch=N)` в app.log. |
+| **A08 Software & Data Integrity** | OK | `update.sh` с PRE/POST-чеком и автооткатом (R3), online-бэкап `backup.py` (R2), целостность БД `integrity_check ok` при старте, WAL. |
+| **A09 Logging & Monitoring Failures** | OK | `data/logs/app.log` + `error.log` с ротацией, пульс-метрики, админ-аудит, необработанные исключения → `error.log` с traceback (R4). |
+| **A10 SSRF** | N/A | Приложение не делает исходящих HTTP-запросов по пользовательским URL: внешних `fetch`/`requests` в коде нет. |
+
+### CSRF (Phase R6)
+
+При `SESSION_SAME_SITE=none` (работа в iframe) `SameSite` перестаёт защищать от CSRF — поэтому
+включён double-submit:
+
+- сервер выдаёт cookie `csrftoken` (`Path=/`, `SameSite`/`Secure` — как у сессии, **не** HttpOnly:
+  фронтенд читает своё же значение) — `CSRFMiddleware`, `main.py:554`;
+- на каждом **изменяющем** запросе (POST/PUT/PATCH/DELETE) значение должно прийти
+  в заголовке `X-CSRF-Token` либо в поле формы `csrf_token` (HTML-формы и multipart-аплоады);
+- сравнение — `hmac.compare_digest` (стр. 607), без токена или при несовпадении → **403**
+  `{"detail": "CSRF token missing or invalid"}` + запись в лог `CSRF отклонён: …`;
+- мидлварь — чистый ASGI (не `BaseHTTPMiddleware`): тело буферизуется и отдаётся приложению
+  целиком, иначе эндпоинты получали бы пустой form; тела больше `MAX_UPLOAD_BYTES + 1 МБ` → 413;
+- фронтенд: один патч `window.fetch` в `templates/chat.html` и `templates/admin.html`
+  добавляет заголовок ко всем изменяющим запросам; HTML-формы `/login` и `/register`
+  несут `{{ request.state.csrf_token }}` в скрытом поле.
+
+### XSS-аудит (Phase R6)
+
+Пользовательский текст попадает в DOM только через `escapeHtml`:
+
+- `templates/chat.html` — пузырь сообщения собирается из экранированных частей:
+  `${escapeHtml(msg.text)}`, `${escapeHtml(msg.sender_name)}`, цитата
+  `${escapeHtml(msg.reply_to_name)}` / `${escapeHtml(snippet)}`, вложения
+  `alt="${escapeHtml(att.orig_name)}"`, списки — `${escapeHtml(g.name)}`, `${escapeHtml(m.name)}`;
+- `templates/admin.html` — добавлен `escapeHtml` и применён ко всем вставкам (инвайты
+  `used_by_username`, аудит `actor`/`action`/`target`/`detail`, пульс `ts`/`kind`/`detail`);
+- Jinja-шаблоны рендерятся с автоэкранированием, `| safe` в проекте не используется;
+- CSP запрещает чужие скрипты: `script-src 'self' 'unsafe-inline'`.
+
 ## Requirements
 
 - Python 3.8+
@@ -483,3 +531,5 @@ Private use only.
 - phase R4 complete
 
 - phase R5 complete
+
+- phase R6 complete

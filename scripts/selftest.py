@@ -118,10 +118,28 @@ class Client:
             urllib.request.HTTPCookieProcessor(self.jar), NoRedirect
         )
 
+    # -- CSRF (Phase R6): double-submit — cookie csrftoken + заголовок X-CSRF-Token -- #
+    def csrf_cookie(self) -> str:
+        for cookie in self.jar:
+            if cookie.name == "csrftoken":
+                return cookie.value
+        return ""
+
+    def prime_csrf(self):
+        """Первый GET — сервер выдаёт cookie csrftoken (так же, как страница в браузере)."""
+        if not self.csrf_cookie():
+            self.request("/", method="GET")
+
     # -- транспорт ---------------------------------------------------------- #
-    def request(self, path, method="POST", data=None, files=None):
+    def request(self, path, method="POST", data=None, files=None, csrf=True):
+        method = method.upper()
+        mutating = method not in ("GET", "HEAD", "OPTIONS")
+        if csrf and mutating:
+            self.prime_csrf()
         headers = {}
         body = None
+        if csrf and mutating:
+            headers["X-CSRF-Token"] = self.csrf_cookie()
         if files is not None:
             body, headers["Content-Type"] = _multipart(data or {}, files)
         elif data is not None:
@@ -134,8 +152,8 @@ class Client:
         except urllib.error.HTTPError as exc:      # 303 / 4xx / 5xx — всё это ответы
             return exc.code, exc.read()
 
-    def json(self, path, method="POST", data=None, files=None):
-        status, raw = self.request(path, method=method, data=data, files=files)
+    def json(self, path, method="POST", data=None, files=None, csrf=True):
+        status, raw = self.request(path, method=method, data=data, files=files, csrf=csrf)
         try:
             payload = json.loads(raw.decode())
         except Exception:
@@ -795,6 +813,105 @@ async def run_scenarios(report: Report, data_dir: str) -> None:
         assert "SECRET_KEY" in output, f"в выводе нет упоминания SECRET_KEY:\n{output[-600:]}"
         assert "32" in output, f"в выводе нет требования про 32 символа:\n{output[-600:]}"
     await report.step("s", "APP_MODE=prod со слабым SECRET_KEY — старт запрещён", scenario_s)
+
+    # ---------------- t) IDOR: чужое сообщение не правится и не удаляется ----------------
+    def scenario_t():
+        b_id = need("b_id", "нет id B")
+        sent = alice.json("/api/send", data={
+            "recipient_id": b_id, "group_id": 0,
+            "text": "сообщение A: править и удалять может только автор", "reply_to_id": 0,
+        })
+        msg_id = sent["id"]
+
+        # B — участник диалога, но не автор и не админ
+        status, raw = bob.request(f"/api/messages/{msg_id}/edit", data={"text": "подмена текста"})
+        assert status == 403, f"B правит чужое сообщение: HTTP {status} (ожидали 403): {raw[:160]!r}"
+
+        status, raw = bob.request("/api/delete-message", data={"message_id": msg_id, "mode": "all"})
+        assert status == 403, f"B удаляет чужое «у всех»: HTTP {status} (ожидали 403): {raw[:160]!r}"
+
+        # контроль: автор правит своё сообщение — пускает
+        edited = alice.json(f"/api/messages/{msg_id}/edit", data={"text": "отредактировано автором"})
+        assert edited.get("ok") is True, f"автор не смог отредактировать своё сообщение: {edited}"
+    await report.step("t", "IDOR: чужое сообщение — не правится и не удаляется не-автором", scenario_t)
+
+    # ---------------- u) IDOR: вложение чужого диалога недоступно ----------------
+    def scenario_u():
+        carol = Client("Carol", "carol@selftest.local", "selftest-pass")
+        invite = alice.json("/admin/invite")
+        code = invite.get("invite_code")
+        assert code, f"инвайт для C не создан: {invite}"
+        status, raw = carol.request("/register", data={
+            "name": carol.name, "email": carol.email,
+            "password": carol.password, "invite_code": code,
+        })
+        assert status == 303, f"регистрация C: HTTP {status}: {raw[:160]!r}"
+        status, raw = carol.request("/login", data={"username": carol.email, "password": carol.password})
+        assert status == 303, f"логин C: HTTP {status}: {raw[:160]!r}"
+        c_id = carol.json("/api/profile", method="GET")["id"]
+
+        sent = alice.json(
+            "/api/send",
+            data={"recipient_id": c_id, "group_id": 0, "text": "", "reply_to_id": 0},
+            files=[("files", "secret.png", PNG_1X1)],
+        )
+        attachments = sent.get("attachments") or []
+        assert attachments, f"в ответе /api/send нет вложений: {sent}"
+        att_id = attachments[0]["id"]
+
+        # участник диалога скачивает — ок
+        status, raw = carol.request(f"/api/attachment/{att_id}", method="GET")
+        assert status == 200, f"C (участник) не скачал своё вложение: HTTP {status}"
+
+        # B в этом диалоге не участвует — ни файл, ни метаданные
+        status, _ = bob.request(f"/api/attachment/{att_id}", method="GET")
+        assert status in (403, 404), f"B скачал чужое вложение: HTTP {status} (ожидали 403/404)"
+        status, _ = bob.request(f"/api/attachment/{att_id}/info", method="GET")
+        assert status in (403, 404), f"B получил метаданные чужого вложения: HTTP {status}"
+        state["carol"] = carol
+    await report.step("u", "IDOR: вложение из чужого диалога недоступно (403/404)", scenario_u)
+
+    # ---------------- v) CSRF: без токена 403, с токеном 200 ----------------
+    def scenario_v():
+        token = alice.csrf_cookie()
+        assert token, "у A нет cookie csrftoken — сервер её не выставил"
+
+        # 1) изменяющий POST без токена → 403
+        status, raw = alice.request("/api/profile", data={"name": alice.name, "bio": "без токена"}, csrf=False)
+        assert status == 403, f"POST без CSRF-токена прошёл: HTTP {status}: {raw[:160]!r}"
+
+        # 2) токен полем формы (HTML-форма / multipart) → 200
+        alice.json(
+            "/api/profile",
+            data={"name": alice.name, "bio": "csrf-ok-form", "csrf_token": token},
+            csrf=False,
+        )
+        profile = alice.json("/api/profile", method="GET")
+        assert profile.get("bio") == "csrf-ok-form", f"bio не применилось (форма): {profile}"
+
+        # 3) токен заголовком X-CSRF-Token → 200
+        alice.json("/api/profile", data={"name": alice.name, "bio": "csrf-ok-header"})
+        profile = alice.json("/api/profile", method="GET")
+        assert profile.get("bio") == "csrf-ok-header", f"bio не применилось (заголовок): {profile}"
+    await report.step("v", "CSRF: без токена 403, токен в поле формы и в заголовке — 200", scenario_v)
+
+    # ---------------- w) админ-эндпоинты закрыты от не-админа ----------------
+    def scenario_w():
+        endpoints = (
+            ("/api/admin/invites", "GET"),
+            ("/api/admin/audit", "GET"),
+            ("/api/admin/pulse", "GET"),
+            ("/api/admin/cleanup-orphans", "POST"),
+        )
+        for path, method in endpoints:
+            status, raw = bob.request(path, method=method)
+            assert status == 403, \
+                f"B (не админ) → {method} {path}: HTTP {status} (ожидали 403): {raw[:160]!r}"
+        # контроль: админ видит те же эндпоинты
+        for path, method in (("/api/admin/invites", "GET"), ("/api/admin/audit", "GET")):
+            status, _ = alice.request(path, method=method)
+            assert status == 200, f"A (админ) → {method} {path}: HTTP {status} (ожидали 200)"
+    await report.step("w", "админ-эндпоинты недоступны не-админу (403)", scenario_w)
 
     # ---------------- закрытие WS ----------------
     for ws in (state.get("ws_a"), state.get("ws_b")):
