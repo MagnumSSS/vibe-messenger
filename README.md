@@ -22,6 +22,29 @@ A lightweight private web messenger for small groups, designed for Raspberry Pi 
 - Health check endpoint `/health`
 - Database migrations on startup
 
+## Стартовый контакт: канал «ВайбБункер» (Phase 7.6d)
+
+Системный контакт `username=start` создаётся в `ensure_schema()` (`is_system=1`, подпись
+«ВайбБункер»). Он не входит в счётчик живых пользователей, поэтому **первый зарегистрированный
+по-прежнему становится админом**. Первый зарегистрированный получает `is_creator=1`.
+
+| Поведение | Правило |
+|---|---|
+| Онбординг | При каждой регистрации — приветствие от канала (темы, жесты, режимы, группы, почта-коды, PWA) |
+| Место в списке | Всегда сверху (`ORDER BY u.is_system DESC, pinned DESC, id ASC`), с бейджем 📢 и подписью «канал объявлений» |
+| Удаление | Нельзя: `POST /api/delete-chat` с `recipient_id=start` → **403**, кнопка «занавеса» у канала не渲染ится |
+| Рендер | Сообщения канала идут по центру (`.system-announcement`), свайп-ответ и цитирование на них отключены |
+| Кто пишет | Только creator: `POST /api/send` с `recipient_id=start` → **403** всем остальным, включая админов |
+| Рассылка | Сообщение creator уходит ВСЕМ пользователям от лица канала (broadcast, по строке на получателя) |
+| Инпут | У creator — обычный (канал как средство объявлений), у остальных — плашка «канал объявлений — ответы отключены» |
+| Профиль канала | Смотрят все; редактируют (имя/аватар/баннер/bio) только creator — кнопка «Оформить канал» видна только ему |
+| Прочее | Непрочитанные бейджи работают; `typing` в канал не шлётся; в поиске контактов канал не участвует |
+
+Серверные точки входа: `ensure_system_user()`, `system_user_id()`, `is_system_peer()`,
+`broadcast_from_start()`, `send_welcome_message()`, `resolve_profile_target()`.
+Фронт: `templates/chat.html` (`data-system`, `applyChannelMode()`, `profileTargetUserId`) и
+`static/style.css` (`.system-announcement`, `.channel-notice`, `.profile-channel-mode`).
+
 ## Почта и коды подтверждения (Phase R7)
 
 Смена пароля, смена почты и верификация адреса подтверждаются 6-значным кодом из письма.
@@ -579,3 +602,5 @@ Private use only.
 - phase R6 complete
 
 - phase R7 complete
+
+- phase 7.6d complete

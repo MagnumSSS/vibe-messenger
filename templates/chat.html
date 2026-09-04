@@ -84,17 +84,19 @@
             </div>
             <ul class="user-list" id="userList">
                 {% for u in users %}
-                <li class="user-item" data-id="{{ u.id }}" data-name="{{ u.name }}" data-username="{{ u.username }}" data-avatar="{{ u.avatar_uuid or '' }}" data-pinned="{{ u.pinned or 0 }}">
+                <li class="user-item{% if u.is_system %} user-item-system{% endif %}" data-id="{{ u.id }}" data-name="{{ u.name }}" data-username="{{ u.username }}" data-avatar="{{ u.avatar_uuid or '' }}" data-pinned="{{ u.pinned or 0 }}" data-system="{{ u.is_system or 0 }}">
                     <div class="curtain-actions">
+                        {% if not u.is_system %}
                         <button type="button" class="curtain-del-btn" title="Удалить чат" aria-label="Удалить чат">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
                         </button>
+                        {% endif %}
                     </div>
                     <div class="curtain-slide">
                         <img class="user-avatar" src="/static/default-avatar.png" alt="" data-avatar="{{ u.avatar_uuid or '' }}">
                         <div class="user-info">
-                            <div class="user-name">{% if u.pinned %}<span class="pin-marker" title="Закреплён"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 17v5"/><path d="M9 3h6l-1 7 3 2v2H7v-2l3-2-1-7z"/></svg></span>{% endif %}{{ u.name }}</div>
-                            <div class="user-username">@{{ u.username }}</div>
+                            <div class="user-name">{% if u.is_system %}<span class="channel-marker" title="Канал объявлений">📢</span>{% endif %}{% if u.pinned %}<span class="pin-marker" title="Закреплён"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 17v5"/><path d="M9 3h6l-1 7 3 2v2H7v-2l3-2-1-7z"/></svg></span>{% endif %}{{ u.name }}</div>
+                            <div class="user-username">{% if u.is_system %}канал объявлений{% else %}@{{ u.username }}{% endif %}</div>
                         </div>
                         <span class="unread-badge" id="unread-user-{{ u.id }}"></span>
                         <button type="button" class="curtain-toggle-btn" title="Действия" aria-label="Действия">
@@ -171,6 +173,11 @@
                     <button id="sendBtn" class="send-btn" title="Отправить" aria-label="Отправить">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
                     </button>
+                </div>
+                <!-- Phase 7.6d: канал «start» — вместо инпута плашка (писать может только creator) -->
+                <div class="channel-notice" id="channelNotice" style="display: none;">
+                    <span class="channel-notice-icon">📢</span>
+                    <span>канал объявлений — ответы отключены</span>
                 </div>
             </div>
             <!-- Phase 7.4a-fix: mobile accessory island (emoji + chips panel below input) -->
@@ -394,6 +401,8 @@
                 <p id="otherProfileUsername" style="color: var(--text-secondary, #666); margin: 0.25rem 0;"></p>
                 <p id="otherProfileBio" style="color: var(--text-secondary, #444); margin-top: 0.75rem; font-style: italic;"></p>
             </div>
+            <!-- Phase 7.6d: оформить канал может только creator -->
+            <button class="glass-chip" id="decorateChannelBtn" style="width: 100%; margin-top: 0.75rem; display: none;">Оформить канал</button>
             <button class="glass-chip" id="closeOtherProfileBtn" style="width: 100%; margin-top: 1rem;">Закрыть</button>
         </div>
     </div>
@@ -455,6 +464,11 @@
         const currentUsername = {{ user.username | tojson }};
         const currentName = {{ (user.name or user.username) | tojson }}; // Phase 6.6: for reply labels
         const currentIsAdmin = {{ user.is_admin | tojson }}; // Phase 6.1b: for group member management
+        // Phase 7.6d: канал объявлений «start»
+        const startUserId = {{ (system_user_id or 0) | tojson }};
+        const currentIsCreator = {{ (is_creator or 0) | tojson }};
+        // Phase 7.6d: профиль, который сейчас редактируем (0 = свой, id канала = оформление канала)
+        let profileTargetUserId = 0;
         const userThemeJson = {{ user.theme_json | tojson }} || '{}';
         let selectedUserId = null;
         let selectedGroupId = null; // Phase 6.1: active group chat (null = 1-on-1 mode)
@@ -520,6 +534,9 @@
         }
         const messagesDiv = document.getElementById('messages');
         const inputArea = document.getElementById('inputArea');
+        const channelNotice = document.getElementById('channelNotice');
+        const decorateChannelBtn = document.getElementById('decorateChannelBtn');
+        const inputRow = document.querySelector('.input-row');
         const messageInput = document.getElementById('messageInput');
         const sendBtn = document.getElementById('sendBtn');
         const attachBtn = document.getElementById('attachBtn');
@@ -873,7 +890,10 @@
         let loadedProfileData = null;
         async function loadProfile() {
             try {
-                const res = await fetch('/api/profile');
+                const url = profileTargetUserId
+                    ? `/api/user/${profileTargetUserId}/profile`
+                    : '/api/profile';
+                const res = await fetch(url);
                 if (res.ok) {
                     const data = await res.json();
                     loadedProfileData = data;
@@ -1426,6 +1446,8 @@
 
             document.getElementById('profileDrawerClose').addEventListener('click', () => {
                 profileDrawer.classList.remove('open');
+                // Phase 7.6d: выходим из режима оформления канала — ящик снова про свой профиль
+                exitChannelEditMode();
             });
             
             // Change avatar button
@@ -1440,6 +1462,7 @@
                 
                 const formData = new FormData();
                 formData.append('avatar', file);
+                if (profileTargetUserId) formData.append('target_user_id', profileTargetUserId);
                 
                 try {
                     const res = await fetch('/api/profile/avatar', { method: 'POST', body: formData });
@@ -1468,6 +1491,7 @@
                 if (!file) return;
                 const formData = new FormData();
                 formData.append('banner', file);
+                if (profileTargetUserId) formData.append('target_user_id', profileTargetUserId);
                 try {
                     const res = await fetch('/api/profile/banner', { method: 'POST', body: formData });
                     if (res.ok) {
@@ -1492,6 +1516,7 @@
                 const formData = new FormData();
                 formData.append('name', name);
                 formData.append('bio', bio);
+                if (profileTargetUserId) formData.append('target_user_id', profileTargetUserId);
                 
                 try {
                     const res = await fetch('/api/profile', { method: 'POST', body: formData });
@@ -1847,11 +1872,24 @@
             });
         });
 
+        // Phase 7.6d: режим канала объявлений — инпут только у creator
+        function applyChannelMode(isStartChannel) {
+            if (!inputRow || !channelNotice) return;
+            const readOnly = isStartChannel && !currentIsCreator;
+            inputRow.style.display = readOnly ? 'none' : '';
+            channelNotice.style.display = readOnly ? '' : 'none';
+        }
+
         // Search functionality
         searchInput.addEventListener('input', (e) => {
             const query = e.target.value.toLowerCase().trim();
             const users = document.querySelectorAll('.user-item');
             users.forEach(item => {
+                // Phase 7.6d: канал объявлений в поиске не участвует
+                if (item.dataset.system === '1') {
+                    item.style.display = query ? 'none' : '';
+                    return;
+                }
                 const name = item.dataset.name.toLowerCase();
                 const username = item.dataset.username.toLowerCase();
                 // Search by display name or @username (with or without @)
@@ -2130,7 +2168,10 @@
                 // Phase 6.5: 1-on-1 shows the "Удалить чат" trash chip (members btn stays group-only)
                 chatHeaderActions.style.display = 'flex';
                 groupMembersBtn.style.display = 'none';
-                deleteChatBtn.style.display = '';
+                // Phase 7.6d: канал «start» — удалять нельзя, писать может только creator
+                const isStartChannel = (startUserId && selectedUserId === startUserId);
+                deleteChatBtn.style.display = isStartChannel ? 'none' : '';
+                applyChannelMode(isStartChannel);
                 inputArea.style.display = 'flex';
                 renderBlockMode(); // Phase 7.4a-fix3: check block state on dialog open
                 cancelReply();          // Phase 6.6: never carry a reply across chats
@@ -2230,6 +2271,7 @@
             chatHeaderActions.style.display = 'flex';
             deleteChatBtn.style.display = 'none';    // dialog deletion is 1-on-1 only for now
             groupMembersBtn.style.display = '';
+            applyChannelMode(false);                 // Phase 7.6d: в группе инпут всегда обычный
             inputArea.style.display = 'flex';
             cancelReply();          // Phase 6.6: reply is dialog-scoped
             closeAllCurtains();     // Phase 6.6: nor curtains across modes
@@ -2861,7 +2903,10 @@
 
             const div = document.createElement('div');
             const mine = msg.sender_id === currentUser;
-            div.className = `message ${mine ? 'sent' : 'received'}`;
+            const isSystemMsg = Number(msg.is_system || 0) === 1; // Phase 7.6d: сообщение канала
+            div.className = isSystemMsg
+                ? 'message system-announcement'
+                : `message ${mine ? 'sent' : 'received'}`;
             const isGroupMsg = !!msg.group_id;
             
             // Build avatar URL for received messages
@@ -2910,7 +2955,10 @@
             
             // Phase 6.1: in groups other people's bubbles show sender name above the text;
             // messages WITHOUT a reply keep the legacy structure byte-for-byte (regression safety)
-            if (isGroupMsg && !mine) {
+            if (isSystemMsg) {
+                // Phase 7.6d: объявление канала — по центру, без аватара и без цитаты
+                div.innerHTML = `<div class="message-body">${escapeHtml(msg.text)}${timeHtml}</div>`;
+            } else if (isGroupMsg && !mine) {
                 const nameHtml = msg.sender_name
                     ? `<div class="message-sender-name">${escapeHtml(msg.sender_name)}</div>`
                     : '';
@@ -2937,7 +2985,10 @@
             });
             
             // Phase 6.6: swipe gestures (light left = reply, snap = delete panel)
-            attachBubbleGestures(div, msg);
+            // Phase 7.6d: объявления канала не свайпаются и не цитируются
+            if (!isSystemMsg) {
+                attachBubbleGestures(div, msg);
+            }
         }
         
         // ===== Phase 6.6c: bubble gestures - Pointer Events (mouse + touch) =====
@@ -3837,12 +3888,36 @@
                     } catch(e) {}
                 }
 
+                // Phase 7.6d: «Оформить канал» — только creator и только на профиле канала
+                if (decorateChannelBtn) {
+                    decorateChannelBtn.style.display =
+                        (data.is_system && currentIsCreator) ? '' : 'none';
+                }
+
                 otherProfileModal.classList.add('active');
             } catch (err) {
                 console.error('Error loading profile:', err);
             }
         }
         
+        // Phase 7.6d: creator оформляет канал — тот же ящик профиля, но цель = канал start
+        function exitChannelEditMode() {
+            if (!profileTargetUserId) return;
+            profileTargetUserId = 0;
+            profileDrawer.classList.remove('profile-channel-mode');
+            loadProfile();   // вернули ящик к своему профилю
+        }
+
+        if (decorateChannelBtn) {
+            decorateChannelBtn.addEventListener('click', async () => {
+                otherProfileModal.classList.remove('active');
+                profileTargetUserId = startUserId;
+                profileDrawer.classList.add('profile-channel-mode');
+                await loadProfile();
+                profileDrawer.classList.add('open');
+            });
+        }
+
         // Close other profile modal
         closeOtherProfileBtn.addEventListener('click', () => {
             otherProfileModal.classList.remove('active');

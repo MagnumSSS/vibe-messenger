@@ -1033,6 +1033,111 @@ async def run_scenarios(report: Report, data_dir: str) -> None:
         assert status == 303, f"логин по новой почте: HTTP {status}"
     await report.step("z", "смена почты по коду: адрес обновлён, email_verified=1", scenario_z)
 
+    # ---------------- aa) онбординг: приветствие от канала start ----------------
+    def scenario_aa():
+        # C — свежий пользователь: приветствие от «start» приходит само
+        carol = state.get("carol")
+        assert carol is not None, "нет третьего пользователя из сценария u"
+        start_id = carol.json("/api/profile", method="GET")["system_user_id"]
+        assert start_id, "сервер не сообщил id системного канала"
+
+        history = dialog_history(carol, start_id)
+        assert history, f"у нового пользователя нет сообщений от канала start: {history}"
+        welcome = history[0]
+        assert welcome.get("is_system") == 1, f"нет флага центрирования is_system: {welcome}"
+        assert "ВайбБункер" in (welcome.get("text") or ""), f"текст не похож на приветствие: {welcome}"[:200]
+
+        # канал сверху списка контактов и помечен системным
+        contacts = carol.json("/api/users", method="GET")
+        assert contacts and contacts[0].get("is_system") == 1, \
+            f"канал start не первый в списке контактов: {[c.get('name') for c in contacts]}"
+        state["start_id"] = start_id
+    await report.step("aa", "онбординг: приветствие от канала start, флаг центрирования", scenario_aa)
+
+    # ---------------- bb) писать в канал может только creator ----------------
+    async def scenario_bb():
+        start_id = need("start_id", "нет id канала start")
+        # обычный пользователь → 403
+        status, raw = bob.request("/api/send", data={
+            "recipient_id": start_id, "group_id": 0, "text": "привет, канал", "reply_to_id": 0,
+        })
+        assert status == 403, f"B (не creator) пишет в канал: HTTP {status} (ожидали 403): {raw[:160]!r}"
+
+        # админ, но не creator → тоже 403
+        eve = Client("Eve", "eve@selftest.local", "selftest-pass")
+        invite = alice.json("/admin/invite")
+        status, raw = eve.request("/register", data={
+            "name": eve.name, "email": eve.email,
+            "password": eve.password, "invite_code": invite["invite_code"],
+        })
+        assert status == 303, f"регистрация E: HTTP {status}: {raw[:160]!r}"
+        assert eve.request("/login", data={"username": eve.email, "password": eve.password})[0] == 303
+        alice.json("/admin/grant-admin", data={"target_user_id": eve.json("/api/profile", method="GET")["id"]})
+        status, raw = eve.request("/api/send", data={
+            "recipient_id": start_id, "group_id": 0, "text": "я админ, пусти", "reply_to_id": 0,
+        })
+        assert status == 403, f"админ-не-creator пишет в канал: HTTP {status} (ожидали 403): {raw[:160]!r}"
+
+        # creator → 200, и это уходит всем (broadcast)
+        carol = need("carol", "нет третьего пользователя")
+        ws_c = await ws_open(carol)
+        try:
+            sent = alice.json("/api/send", data={
+                "recipient_id": start_id, "group_id": 0,
+                "text": "ОБЪЯВЛЕНИЕ: вечером деплой", "reply_to_id": 0,
+            })
+            assert sent.get("broadcast", 0) >= 2, f"объявление не разослано: {sent}"
+            assert sent.get("is_system") is True, f"объявление не помечено системным: {sent}"
+
+            event = await expect_event(
+                ws_c,
+                lambda ev: ev.get("type") == "message" and ev.get("text") == "ОБЪЯВЛЕНИЕ: вечером деплой",
+                "объявление канала пришло слушателю",
+            )
+            assert event.get("is_system") is True, f"событие без флага центрирования: {event}"
+
+            history = dialog_history(carol, start_id)
+            assert any(m.get("text") == "ОБЪЯВЛЕНИЕ: вечером деплой" and m.get("is_system") == 1
+                       for m in history), f"объявления нет в истории слушателя: {history}"
+        finally:
+            await ws_c.close()
+        state["eve"] = eve
+    await report.step("bb", "канал start: не-creator → 403, creator → объявление всем", scenario_bb)
+
+    # ---------------- cc) канал нельзя удалить, профиль — только creator ----------------
+    def scenario_cc():
+        start_id = need("start_id", "нет id канала start")
+        # delete-chat для канала запрещён
+        status, raw = bob.request("/api/delete-chat", data={"recipient_id": start_id})
+        assert status == 403, f"delete-chat канала: HTTP {status} (ожидали 403): {raw[:160]!r}"
+        status, raw = alice.request("/api/delete-chat", data={"recipient_id": start_id})
+        assert status == 403, f"delete-chat канала от creator: HTTP {status} (ожидали 403)"
+
+        # приветствие всё ещё на месте — «занавес» ничего не стёр
+        history = dialog_history(bob, start_id)
+        assert history, "чат с каналом опустел — удаление прошло"
+
+        # профиль канала: creator правит, остальные — нет
+        edited = alice.json("/api/profile", data={"name": "ВайбБункер", "bio": "канал объявлений",
+                                                  "target_user_id": start_id})
+        assert edited.get("success") is True, f"creator не смог оформить канал: {edited}"
+
+        status, raw = bob.request("/api/profile", data={"name": "Чужой канал", "bio": "взлом",
+                                                       "target_user_id": start_id})
+        assert status == 403, f"не-creator правит канал: HTTP {status} (ожидали 403): {raw[:160]!r}"
+
+        eve = state.get("eve")
+        if eve is not None:
+            status, raw = eve.request("/api/profile", data={"name": "Админский канал", "bio": "взлом",
+                                                            "target_user_id": start_id})
+            assert status == 403, f"админ-не-creator правит канал: HTTP {status} (ожидали 403): {raw[:160]!r}"
+
+        # оформление применилось
+        channel = bob.json(f"/api/user/{start_id}/profile", method="GET")
+        assert channel.get("is_system") == 1, f"профиль канала без флага is_system: {channel}"
+        assert channel.get("bio") == "канал объявлений", f"описание канала не обновилось: {channel}"
+    await report.step("cc", "канал: удаление запрещено, профиль правит только creator", scenario_cc)
+
     # ---------------- закрытие WS ----------------
     for ws in (state.get("ws_a"), state.get("ws_b")):
         if ws is not None:

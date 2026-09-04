@@ -820,6 +820,113 @@ def get_db():
 
 
 
+# ===================================================================== #
+# Phase 7.6d: системный контакт «start» (канал объявлений)
+# ===================================================================== #
+
+START_USERNAME = "start"          # служебный username системного канала
+START_DISPLAY_NAME = "ВайбБункер"  # как канал подписан в списке контактов
+START_PASSWORD_HASH = "!system-account-no-login!"
+START_WELCOME_TEXT = (
+    "Добро пожаловать в ВайбБункер! 👋\n\n"
+    "• Темы: свой аватар, баннер, био, шрифт — в профиле (шестерёнка сверху).\n"
+    "• Жесты: свайп по сообщению влево — ответ, вправо — удаление, долгое нажатие — меню.\n"
+    "• Режимы: закрепить контакт, мьют, удалить чат — через «занавес» у контакта.\n"
+    "• Группы: кнопка «+» в разделе Группы, команды начинаются с «/».\n"
+    "• Почта и коды: в профиле можно подтвердить почту и сменить пароль по коду из письма.\n"
+    "• PWA: «Установить» в меню браузера — приложение откроется без вкладок.\n\n"
+    "Этот канал — объявления: сообщения по центру, отвечать в него нельзя."
+)
+
+# кэш: id системного пользователя не меняется в течение жизни процесса
+SYSTEM_USER_ID: int | None = None
+
+
+def ensure_system_user(conn) -> int:
+    """Создать (или найти) системного пользователя «start». Возвращает его id."""
+    global SYSTEM_USER_ID
+    row = conn.execute(
+        "SELECT id FROM users WHERE username = ? AND is_system = 1", (START_USERNAME,)
+    ).fetchone()
+    if not row:
+        conn.execute(
+            """
+            INSERT INTO users (name, username, password_hash, is_admin, email, is_system)
+            VALUES (?, ?, ?, 0, NULL, 1)
+            """,
+            (START_DISPLAY_NAME, START_USERNAME, START_PASSWORD_HASH),
+        )
+        row = conn.execute(
+            "SELECT id FROM users WHERE username = ? AND is_system = 1", (START_USERNAME,)
+        ).fetchone()
+        app_logger.info("системный канал создан: username=%s id=%s", START_USERNAME, row["id"])
+    SYSTEM_USER_ID = row["id"]
+    return SYSTEM_USER_ID
+
+
+def system_user_id() -> int | None:
+    """id системного канала «start» (None, если schema ещё не создана)."""
+    global SYSTEM_USER_ID
+    if SYSTEM_USER_ID:
+        return SYSTEM_USER_ID
+    try:
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT id FROM users WHERE is_system = 1 ORDER BY id LIMIT 1"
+            ).fetchone()
+    except Exception:
+        return None
+    if row:
+        SYSTEM_USER_ID = row["id"]
+    return SYSTEM_USER_ID
+
+
+def is_system_peer(peer_id) -> bool:
+    start_id = system_user_id()
+    return bool(start_id) and int(peer_id or 0) == int(start_id)
+
+
+def deliver_start_message(conn, text: str, skip_user_id: int | None = None) -> list[int]:
+    """
+    Сообщение от лица канала «start»: отдельная строка каждому живому пользователю
+    (1-на-1 модель данных), системные аккаунты пропускаем. Возвращает id сообщений.
+    """
+    start_id = system_user_id()
+    if not start_id:
+        return []
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    recipients = conn.execute(
+        "SELECT id FROM users WHERE is_system = 0 AND id != ?"
+        + (" AND id != ?" if skip_user_id else ""),
+        (start_id, skip_user_id) if skip_user_id else (start_id,),
+    ).fetchall()
+    ids = []
+    for recipient in recipients:
+        cur = conn.execute(
+            "INSERT INTO messages (sender_id, recipient_id, text, created_at) VALUES (?, ?, ?, ?)",
+            (start_id, recipient["id"], text, now),
+        )
+        ids.append(cur.lastrowid)
+    conn.commit()
+    return ids
+
+
+def send_welcome_message(user_id: int) -> int | None:
+    """Приветствие от канала «start» новому пользователю."""
+    start_id = system_user_id()
+    if not start_id:
+        return None
+    with get_db() as conn:
+        cur = conn.execute(
+            "INSERT INTO messages (sender_id, recipient_id, text, created_at) VALUES (?, ?, ?, ?)",
+            (start_id, user_id, START_WELCOME_TEXT, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+        )
+        conn.commit()
+        message_id = cur.lastrowid
+    app_logger.info("приветствие от start отправлено: user_id=%s message_id=%s", user_id, message_id)
+    return message_id
+
+
 def ensure_schema():
     """
     Ensure database schema is up-to-date by adding missing tables and columns.
@@ -852,6 +959,8 @@ def ensure_schema():
             ("banner_uuid", "TEXT NULL"),            # Phase 7.6a: profile banner
             ("session_epoch", "INTEGER NOT NULL DEFAULT 0"),  # Phase R6: смена пароля рвёт чужие сессии
             ("email_verified", "INTEGER NOT NULL DEFAULT 0"),  # Phase R7: почта подтверждена кодом
+            ("is_system", "INTEGER NOT NULL DEFAULT 0"),   # Phase 7.6d: системный канал «start»
+            ("is_creator", "INTEGER NOT NULL DEFAULT 0"),  # Phase 7.6d: первый зарегистрированный
         ]
         for col_name, col_type in user_column_additions:
             if col_name not in user_columns:
@@ -1083,6 +1192,9 @@ def ensure_schema():
         # Phase R2: foreign_keys=ON ломает групповые сообщения, если recipient_id
         # ссылается на users(id) — в группах это служебный sentinel 0.
         _migrate_messages_recipient_fk(conn)
+
+        # Phase 7.6d: системный контакт «start» — канал объявлений, создаётся один раз
+        ensure_system_user(conn)
 
         conn.commit()
 
@@ -1412,7 +1524,9 @@ async def register(request: Request, name: str = Form(...), email: str = Form(..
                 "email": email,
             })
         
-        count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        # Phase 7.6d: системный канал «start» в счёт живых пользователей не идёт,
+        # иначе первый настоящий юзер не стал бы админом и не прошёл бы без инвайта
+        count = conn.execute("SELECT COUNT(*) FROM users WHERE is_system = 0").fetchone()[0]
         is_admin = 1 if (count == 0 and FIRST_USER_ADMIN) else 0
         
         if count > 0 or not FIRST_USER_ADMIN:
@@ -1456,9 +1570,21 @@ async def register(request: Request, name: str = Form(...), email: str = Form(..
         if invite_code and count > 0:
             conn.execute("UPDATE invites SET used_by = ? WHERE code = ?", (new_user_id, invite_code))
         
+        # Phase 7.6d: первый зарегистрированный (не системный) пользователь — creator:
+        # только он пишет в канал «start» и оформляет его профиль
+        alive = conn.execute("SELECT COUNT(*) AS n FROM users WHERE is_system = 0").fetchone()["n"]
+        if alive == 1:
+            conn.execute("UPDATE users SET is_creator = 1 WHERE id = ?", (new_user_id,))
+            app_logger.info("creator назначен: user_id=%s", new_user_id)
+        
         conn.commit()
     
     _clear_failures(ip)
+    # Phase 7.6d: онбординг — приветствие от канала «start» при каждой регистрации
+    try:
+        send_welcome_message(new_user_id)
+    except Exception:
+        app_logger.exception("приветствие от start не отправлено: user_id=%s", new_user_id)
     return RedirectResponse(url="/", status_code=303)
 
 
@@ -1508,12 +1634,13 @@ async def chat_page(request: Request):
     with get_db() as conn:
         # Phase 6.6: pinned contacts float to the top (marker flag for the template)
         users = conn.execute("""
-            SELECT u.id, u.name, u.username, u.avatar_uuid,
+            SELECT u.id, u.name, u.username, u.avatar_uuid, u.is_system,
                    CASE WHEN p.contact_id IS NULL THEN 0 ELSE 1 END AS pinned
             FROM users u
             LEFT JOIN pins p ON p.contact_id = u.id AND p.user_id = ?
             WHERE u.id != ?
-            ORDER BY pinned DESC, u.id ASC
+            -- Phase 7.6d: канал «start» всегда сверху, дальше закреплённые
+            ORDER BY u.is_system DESC, pinned DESC, u.id ASC
         """, (user["id"], user["id"])).fetchall()
     
     # Ensure theme_json is never None - default to '{}'
@@ -1523,7 +1650,10 @@ async def chat_page(request: Request):
     return templates.TemplateResponse(request, "chat.html", {
         "user": user,
         "users": [dict(u) for u in users],
-        "max_upload_bytes": MAX_UPLOAD_BYTES
+        "max_upload_bytes": MAX_UPLOAD_BYTES,
+        # Phase 7.6d: фронту нужен id канала и флаг creator (оформление канала, плашка вместо инпута)
+        "system_user_id": system_user_id(),
+        "is_creator": int(user.get("is_creator") or 0),
     })
 
 
@@ -1534,7 +1664,10 @@ async def api_users(request: Request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
     with get_db() as conn:
-        users = conn.execute("SELECT id, name, username, avatar_uuid, bio FROM users WHERE id != ?", (user["id"],)).fetchall()
+        users = conn.execute(
+            "SELECT id, name, username, avatar_uuid, bio, is_system FROM users WHERE id != ?",
+            (user["id"],),
+        ).fetchall()
     
     return JSONResponse([dict(u) for u in users])
 
@@ -1547,7 +1680,11 @@ async def api_user_profile(request: Request, user_id: int):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
     with get_db() as conn:
-        row = conn.execute("SELECT id, name, username, avatar_uuid, bio, banner_uuid, theme_json FROM users WHERE id = ?", (user_id,)).fetchone()
+        row = conn.execute(
+            "SELECT id, name, username, avatar_uuid, bio, banner_uuid, theme_json, is_system "
+            "FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
     
     if not row:
         raise HTTPException(status_code=404, detail="User not found")
@@ -1565,6 +1702,7 @@ async def api_messages(request: Request, recipient_id: int):
         messages = conn.execute("""
             SELECT m.id, m.sender_id, m.recipient_id, m.text, m.created_at, m.edited_at,
                    sender.avatar_uuid as sender_avatar_uuid,
+                   sender.is_system AS is_system,
                    m.reply_to_id,
                    r.text AS reply_to_text, ru.name AS reply_to_name
             FROM messages m
@@ -2263,6 +2401,9 @@ async def websocket_endpoint(websocket: WebSocket):
                             except: pass
                 else:
                     peer_id = data.get("peer_id")
+                    # Phase 7.6d: «канал печатает» — бессмыслица, start не получает typing
+                    if peer_id and is_system_peer(peer_id):
+                        continue
                     if peer_id:
                         ws_conn = app.state.connections.get(peer_id)
                         if ws_conn:
@@ -2491,6 +2632,58 @@ def reply_payload(reply_to_id):
     return {"reply_to_id": int(reply_to_id), "reply_to_text": clip_reply_snippet(row["text"]), "reply_to_name": row["name"] or ""}
 
 
+async def broadcast_from_start(request: Request, user, text: str, files) -> JSONResponse:
+    """
+    Phase 7.6d: creator пишет в канал «start» → объявление уходит ВСЕМ пользователям
+    от лица канала (по строке на получателя: модель сообщений у нас 1-на-1).
+    """
+    if not text.strip() and not files:
+        raise HTTPException(status_code=400, detail="Empty message")
+    if len(text) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=400, detail="Message too long")
+    if files:
+        # вложения в объявлениях не поддерживаем: канал — текстовый
+        raise HTTPException(status_code=400, detail="Канал объявлений принимает только текст")
+
+    start_id = system_user_id()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db() as conn:
+        recipients = conn.execute(
+            "SELECT id FROM users WHERE is_system = 0 ORDER BY id ASC"
+        ).fetchall()
+        ids = []
+        for recipient in recipients:
+            cur = conn.execute(
+                "INSERT INTO messages (sender_id, recipient_id, text, created_at) VALUES (?, ?, ?, ?)",
+                (start_id, recipient["id"], text, now),
+            )
+            ids.append(cur.lastrowid)
+        conn.commit()
+
+    app_logger.info(
+        "объявление в канале start: creator_id=%s, получателей=%s", user["id"], len(ids)
+    )
+    for recipient, message_id in zip(recipients, ids):
+        ws_conn = app.state.connections.get(recipient["id"])
+        if ws_conn:
+            try:
+                await ws_conn.send_json({
+                    "type": "message",
+                    "id": message_id,
+                    "sender_id": start_id,
+                    "recipient_id": recipient["id"],
+                    "text": text,
+                    "created_at": now,
+                    "edited_at": None,
+                    "sender_name": START_DISPLAY_NAME,
+                    "attachments": [],
+                    "is_system": True,
+                })
+            except Exception:
+                pass
+    return JSONResponse({"id": ids[0], "broadcast": len(ids), "is_system": True, "success": True})
+
+
 @app.post("/api/send")
 async def send_message(
     request: Request,
@@ -2503,6 +2696,13 @@ async def send_message(
     user = get_current_user_fresh(request)  # Use fresh data to catch ban status
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    # Phase 7.6d: канал «start» — вещание только для creator, остальным 403
+    # (проверяем ДО всех остальных веток: админы тут не имеют привилегий)
+    if not group_id and is_system_peer(recipient_id):
+        if not user.get("is_creator"):
+            raise HTTPException(status_code=403, detail="Канал объявлений: писать может только создатель")
+        return await broadcast_from_start(request, user, text, files)
     
     # Check if user is banned
     if is_banned(user):
@@ -3336,26 +3536,45 @@ async def get_profile(request: Request):
     
     with get_db() as conn:
         row = conn.execute(
-            "SELECT id, name, username, email, email_verified, avatar_uuid, bio, font_scale, banner_uuid "
-            "FROM users WHERE id = ?",
+            "SELECT id, name, username, email, email_verified, avatar_uuid, bio, font_scale, banner_uuid, "
+            "is_creator, is_system FROM users WHERE id = ?",
             (user["id"],),
         ).fetchone()
 
     payload = dict(row)
     # Phase R7: фронту нужны и статус верификации, и доступность почты как таковой
     payload["mail_backend"] = MAIL_BACKEND
+    # Phase 7.6d: фронту нужны роли (creator оформляет канал) и id самого канала
+    payload["is_creator"] = int(user.get("is_creator") or 0)
+    payload["is_system"] = int(user.get("is_system") or 0)
+    payload["system_user_id"] = system_user_id()
     return JSONResponse(payload)
 
 
+def resolve_profile_target(user, target_user_id: int) -> int:
+    """
+    Phase 7.6d: чей профиль правим. Свой — всегда можно; чужой — только канал
+    «start» и только руками creator (админы-не-creator тут обычные читатели).
+    """
+    if not target_user_id or int(target_user_id) == int(user["id"]):
+        return int(user["id"])
+    if not is_system_peer(target_user_id):
+        raise HTTPException(status_code=403, detail="Чужой профиль редактировать нельзя")
+    if not user.get("is_creator"):
+        raise HTTPException(status_code=403, detail="Канал может оформлять только создатель")
+    return int(system_user_id())
+
+
 @app.post("/api/profile")
-async def update_profile(request: Request, name: str = Form(...), bio: str = Form("")):
-    """Update current user's profile (name and bio)"""
+async def update_profile(request: Request, name: str = Form(...), bio: str = Form(""), target_user_id: int = Form(0)):
+    """Update current user's profile (name and bio). target_user_id — оформление канала start (creator only)."""
     user = get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
+    target_id = resolve_profile_target(user, target_user_id)
     
     with get_db() as conn:
-        conn.execute("UPDATE users SET name = ?, bio = ? WHERE id = ?", (name, bio, user["id"]))
+        conn.execute("UPDATE users SET name = ?, bio = ? WHERE id = ?", (name, bio, target_id))
         conn.commit()
     
     return JSONResponse({"success": True})
@@ -3607,11 +3826,12 @@ async def save_theme_put(request: Request, theme_json: str = Form(...)):
 
 
 @app.post("/api/profile/avatar")
-async def upload_avatar(request: Request, avatar: UploadFile = File(...)):
-    """Upload avatar for current user"""
+async def upload_avatar(request: Request, avatar: UploadFile = File(...), target_user_id: int = Form(0)):
+    """Upload avatar for current user (или для канала start, если это creator)"""
     user = get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
+    target_id = resolve_profile_target(user, target_user_id)
     
     # Validate file
     if not avatar.filename:
@@ -3644,9 +3864,9 @@ async def upload_avatar(request: Request, avatar: UploadFile = File(...)):
             pass
         raise
     
-    # Update user record
+    # Update user record (Phase 7.6d: target_id — свой профиль или канал start для creator)
     with get_db() as conn:
-        conn.execute("UPDATE users SET avatar_uuid = ? WHERE id = ?", (uuid_name, user["id"]))
+        conn.execute("UPDATE users SET avatar_uuid = ? WHERE id = ?", (uuid_name, target_id))
         conn.commit()
     
     return JSONResponse({"avatar_uuid": uuid_name})
@@ -3666,11 +3886,12 @@ async def get_avatar(avatar_uuid: str):
 
 
 @app.post("/api/profile/banner")
-async def upload_banner(request: Request, banner: UploadFile = File(...)):
-    """Upload banner for current user"""
+async def upload_banner(request: Request, banner: UploadFile = File(...), target_user_id: int = Form(0)):
+    """Upload banner for current user (или для канала start, если это creator)"""
     user = get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
+    target_id = resolve_profile_target(user, target_user_id)
     if not banner.filename:
         raise HTTPException(status_code=400, detail="No file provided")
     mime_type = banner.content_type or mimetypes.guess_type(banner.filename)[0]
@@ -3694,7 +3915,7 @@ async def upload_banner(request: Request, banner: UploadFile = File(...)):
             pass
         raise
     with get_db() as conn:
-        conn.execute("UPDATE users SET banner_uuid = ? WHERE id = ?", (uuid_name, user["id"]))
+        conn.execute("UPDATE users SET banner_uuid = ? WHERE id = ?", (uuid_name, target_id))
         conn.commit()
     return JSONResponse({"banner_uuid": uuid_name})
 
@@ -4012,6 +4233,10 @@ async def delete_chat_endpoint(request: Request, recipient_id: int = Form(...)):
     user = get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # Phase 7.6d: чат с каналом «start» удалять нельзя — онбординг должен остаться
+    if is_system_peer(recipient_id):
+        raise HTTPException(status_code=403, detail="Чат с каналом объявлений удалить нельзя")
     
     with get_db() as conn:
         conn.execute("""

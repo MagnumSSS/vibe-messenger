@@ -2678,3 +2678,60 @@ header h1 {
         max-height: min(40vh, 300px);
     }
 }
+
+/* ===== Phase 7.6d: системный канал «start» ===== */
+.message.system-announcement {
+    align-self: center;
+    margin: 0.6rem auto;
+    max-width: min(92%, 620px);
+    text-align: center;
+}
+
+.message.system-announcement .message-body {
+    background: var(--chip-bg, rgba(128, 128, 128, 0.16));
+    border: 1px solid var(--border-color, rgba(128, 128, 128, 0.25));
+    border-radius: 16px;
+    padding: 0.7rem 1rem;
+    color: var(--text-primary);
+    font-size: 0.92rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.message.system-announcement .message-time {
+    justify-content: center;
+    opacity: 0.7;
+}
+
+.channel-marker {
+    margin-right: 0.3rem;
+    font-size: 0.9rem;
+}
+
+.user-item-system .user-username {
+    font-style: italic;
+    opacity: 0.75;
+}
+
+.channel-notice {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.9rem 1rem;
+    margin: 0.5rem 0;
+    border-radius: 14px;
+    background: var(--chip-bg, rgba(128, 128, 128, 0.14));
+    color: var(--text-secondary, #666);
+    font-size: 0.9rem;
+    text-align: center;
+}
+
+.channel-notice-icon {
+    font-size: 1.05rem;
+}
+
+/* режим оформления канала: скрываем разделы, которые к каналу не относятся */
+.profile-channel-mode .settings-section {
+    display: none;
+}
