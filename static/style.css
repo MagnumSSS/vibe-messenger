@@ -3106,18 +3106,53 @@ header h1 {
    Phase 7.8: мобила (390×844) — компактная шапка-остров
    ===================================================================== */
 @media (max-width: 768px) {
-    /* 7.8-fix2 [2]: профиль на мобиле — НЕ лист во весь экран, а компактный
-       пузырь по контенту (растёт только когда растёт информация) */
+    /* =================================================================
+       7.8-fix3: геометрия пузыря профиля на мобиле (свой / чужой / канал)
+       ================================================================= */
     .profile-modal-content {
-        width: auto;
-        max-width: min(92%, 420px);
+        /* ШИРИНА как на desktop — не узкая колонка по контенту */
+        width: min(92vw, 420px);
+        max-width: min(92vw, 420px);
+        /* ВЫСОТА по контенту — не растянута во весь экран */
         height: auto;
         max-height: 85vh;
         max-height: 85dvh;
         overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        /* ЦЕНТР по обеим осям: оверлей .modal на мобиле стоит
+           align-items/justify-content: stretch — auto-поля перебивают stretch */
+        margin: auto;
+        align-self: center;
         border-radius: 20px;
-        box-shadow: 0 8px 32px var(--shadow-2, rgba(0, 0, 0, 0.2));
+        box-shadow: 0 12px 40px var(--shadow-2, rgba(0, 0, 0, 0.3));
         animation: none;
+    }
+
+    /* свой профиль (и канал в режиме профиля) — ящик .profile-drawer:
+       на мобиле он был листом во весь экран, теперь такой же пузырь */
+    .profile-drawer {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        right: auto;
+        bottom: auto;
+        width: min(92vw, 420px) !important;
+        height: auto;
+        max-height: 85vh;
+        max-height: 85dvh;
+        margin: 0;
+        transform: translate(-50%, -50%);
+        border-radius: 20px;
+        box-shadow: 0 12px 40px var(--shadow-2, rgba(0, 0, 0, 0.3));
+        z-index: 1100;
+    }
+    .profile-drawer.open {
+        display: flex;
+        transform: translate(-50%, -50%);
+    }
+    /* внутри пузыря скроллится тело, шапка с крестиком остаётся на месте */
+    .profile-drawer .theme-drawer-body {
+        min-height: 0;
     }
 
     .chat-header {

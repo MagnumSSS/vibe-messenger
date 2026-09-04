@@ -82,6 +82,20 @@ A lightweight private web messenger for small groups, designed for Raspberry Pi 
 | [4] | Цитата в чужом пузыре — та же компоновка, что в своём: содержимое обёрнуто в `.message-body` (колонка), цитата **сверху**, текст ниже, время внизу | `appendMessage()` |
 | [5] | Приватность присутствия: `users.hide_presence` (default 0), переключатель «Показывать, когда я был(а) в сети» в профиле, `POST /api/profile/presence`. Приватность **взаимная**: если скрывает кто-то один — обе стороны получают `online=false`, `last_seen=null`, `hidden=true` (и в `/api/users`, и в `/api/user/{id}/profile`, и в WS-событии `presence`). Клиент показывает островок «статус скрыт» и серую границу авы без last-seen | `presence_visible()`, `presence_flags()`, `push_presence()`, `hidePresenceToggle` |
 
+### 7.8-fix3: геометрия мобила-профиля
+
+Пузырь профиля (**свой** — ящик `.profile-drawer`, **чужой/канал/группа** — `.profile-modal-content`)
+на мобиле (`max-width: 768px`):
+
+| Ось | Правило |
+|---|---|
+| Ширина | `width: min(92vw, 420px); max-width: min(92vw, 420px)` — как на desktop, не узкая колонка по контенту |
+| Высота | `height: auto; max-height: 85dvh` (fallback `85vh`) + `overflow-y: auto` — не растянута во весь экран |
+| Центр | модалки: `margin: auto; align-self: center` (оверлей `.modal` на мобиле стоит `align-items/justify-content: stretch` — auto-поля перебивают stretch); ящик профиля: `position: fixed; top/left: 50%; transform: translate(-50%, -50%)` |
+
+У профильного ящика внутри скроллится только тело (`.profile-drawer .theme-drawer-body { min-height: 0 }`),
+шапка с крестиком остаётся на месте. Desktop не затронут: все правила лежат внутри media-запроса.
+
 ### Важно: инвалидация кэша браузера (7.8-fix)
 
 PWA-сервис-воркер (`static/sw.js`) отдаёт `/static/style.css?v=…` **cache-first**, а HTML —
@@ -708,3 +722,4 @@ Private use only.
 - 7.8-fix complete
 - 7.8-fix complete
 - 7.8-fix2 complete
+- 7.8-fix3 complete
