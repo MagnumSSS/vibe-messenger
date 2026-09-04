@@ -72,6 +72,16 @@ A lightweight private web messenger for small groups, designed for Raspberry Pi 
 | [4] | Токен `header_color` ставится переменной **на элемент** `#chatHeader` (`style.setProperty('--header-island-color')`), а не на root/body; он исключён из `TOKEN_CSS_VARS`, поэтому цикл по токенам его не трогает. Верхняя панель мессенджера использует только `--header-color` / `--panel-color` | `applyThemeDirect()` + `header` в `static/style.css` |
 | [5] | Объявления канала: фон из токена `broadcast_bg` (`--broadcast-bg`, манифест + оба пресета; тёмная `#2d3436`), текст — YIQ-автоконтраст `--broadcast-text` из `applyContrast()`. Центрирование и md-рендер сохранены | `THEME_TOKENS`, `THEME_PRESETS`, `applyContrast()`, `.message.system-announcement` |
 
+### 7.8-fix2: последние штрихи
+
+| # | Что сделано | Где |
+|---|---|---|
+| [1] | Крестик — `position: absolute` во всех модалках/drawer; **никаких отступов под кнопку** (убран `padding-right: 52px`), контент центрируется независимо: `.theme-drawer-header { justify-content: center }`, в админ-модалках заголовок по центру | `.island-close`, `.theme-drawer-header`, `templates/admin.html` |
+| [2] | Профиль на мобиле — компактный пузырь по контенту: `height: auto; max-height: 85dvh; overflow-y: auto; width: auto; max-width: min(92%, 420px)`; растёт только вместе с информацией (не лист во весь экран) | `@media (max-width: 768px) .profile-modal-content` |
+| [3] | Тумблеры без рамок: `applyEditorContrast()` больше не вешает инлайновый `border` на `.glass-toggle`; у самой кнопки `border: none; outline: none`, у дорожки — `border-radius: 999px` + `backdrop-filter` (чистая пилюля) | `applyEditorContrast()`, `.glass-toggle*` |
+| [4] | Цитата в чужом пузыре — та же компоновка, что в своём: содержимое обёрнуто в `.message-body` (колонка), цитата **сверху**, текст ниже, время внизу | `appendMessage()` |
+| [5] | Приватность присутствия: `users.hide_presence` (default 0), переключатель «Показывать, когда я был(а) в сети» в профиле, `POST /api/profile/presence`. Приватность **взаимная**: если скрывает кто-то один — обе стороны получают `online=false`, `last_seen=null`, `hidden=true` (и в `/api/users`, и в `/api/user/{id}/profile`, и в WS-событии `presence`). Клиент показывает островок «статус скрыт» и серую границу авы без last-seen | `presence_visible()`, `presence_flags()`, `push_presence()`, `hidePresenceToggle` |
+
 ### Важно: инвалидация кэша браузера (7.8-fix)
 
 PWA-сервис-воркер (`static/sw.js`) отдаёт `/static/style.css?v=…` **cache-first**, а HTML —
@@ -697,3 +707,4 @@ Private use only.
 - phase 7.8 complete
 - 7.8-fix complete
 - 7.8-fix complete
+- 7.8-fix2 complete

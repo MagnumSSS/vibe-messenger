@@ -1093,6 +1093,7 @@ def ensure_schema():
             ("is_system", "INTEGER NOT NULL DEFAULT 0"),   # Phase 7.6d: системный канал «start»
             ("is_creator", "INTEGER NOT NULL DEFAULT 0"),  # Phase 7.6d: первый зарегистрированный
             ("last_seen", "TIMESTAMP NULL"),           # Phase 7.8: присутствие
+            ("hide_presence", "INTEGER NOT NULL DEFAULT 0"),  # 7.8-fix2: приватность присутствия
         ]
         for col_name, col_type in user_column_additions:
             if col_name not in user_columns:
@@ -1800,16 +1801,24 @@ async def api_users(request: Request):
     
     with get_db() as conn:
         users = conn.execute(
-            "SELECT id, name, username, avatar_uuid, bio, last_seen FROM users WHERE id != ?",
+            "SELECT id, name, username, avatar_uuid, bio, last_seen, hide_presence "
+            "FROM users WHERE id != ?",
             (user["id"],),
         ).fetchall()
-    
+        viewer_hidden = int((conn.execute(
+            "SELECT hide_presence FROM users WHERE id = ?", (user["id"],)
+        ).fetchone() or {"hide_presence": 0})["hide_presence"] or 0)
+
     # Phase 7.8: присутствие — online берём из живых WS-подключений (БД не хранит статус)
+    # 7.8-fix2 [5]: приватность взаимная — скрываю я или собеседник, статус = null
     online_ids = set(app.state.connections.keys())
     rows = []
     for u in users:
         item = dict(u)
-        item["online"] = int(u["id"]) in online_ids
+        hidden = bool(viewer_hidden or int(u["hide_presence"] or 0))
+        item["online"] = False if hidden else (int(u["id"]) in online_ids)
+        item["last_seen"] = None if hidden else u["last_seen"]
+        item["hidden"] = hidden
         rows.append(item)
     return JSONResponse(rows)
 
@@ -1823,17 +1832,20 @@ async def api_user_profile(request: Request, user_id: int):
     
     with get_db() as conn:
         row = conn.execute(
-            "SELECT id, name, username, avatar_uuid, bio, banner_uuid, theme_json, last_seen "
-            "FROM users WHERE id = ?",
+            "SELECT id, name, username, avatar_uuid, bio, banner_uuid, theme_json, last_seen, "
+            "hide_presence FROM users WHERE id = ?",
             (user_id,),
         ).fetchone()
-    
+        visible = presence_visible(conn, current_user["id"], user_id)
+
     if not row:
         raise HTTPException(status_code=404, detail="User not found")
     
     payload = dict(row)
-    # Phase 7.8: присутствие собеседника (для островка «был(а) в сети …»)
-    payload["online"] = int(user_id) in app.state.connections
+    # 7.8-fix2 [5]: приватность взаимная — скрыт статус у цели или у смотрящего
+    payload["online"] = (int(user_id) in app.state.connections) if visible else False
+    payload["last_seen"] = row["last_seen"] if visible else None
+    payload["hidden"] = not visible
     return JSONResponse(payload)
 
 
@@ -2724,14 +2736,57 @@ def touch_last_seen(user_id: int) -> str:
     return now
 
 
+def presence_visible(conn, viewer_id: int, target_id: int) -> bool:
+    """7.8-fix2 [5]: присутствие взаимное — если хотя бы один из двоих скрывает
+    свой статус, ни один не видит чужой (логика как в Telegram). Себе — всегда видно."""
+    if not viewer_id or not target_id or int(viewer_id) == int(target_id):
+        return True
+    rows = conn.execute(
+        "SELECT id, hide_presence FROM users WHERE id IN (?, ?)", (int(viewer_id), int(target_id))
+    ).fetchall()
+    flags = {int(r["id"]): int(r["hide_presence"] or 0) for r in rows}
+    return not (flags.get(int(viewer_id), 0) or flags.get(int(target_id), 0))
+
+
+def presence_flags(conn, user_ids) -> dict:
+    """Кто из переданных пользователей скрывает присутствие."""
+    ids = [int(i) for i in user_ids if i]
+    if not ids:
+        return {}
+    marks = ", ".join("?" * len(ids))
+    rows = conn.execute(
+        f"SELECT id, hide_presence FROM users WHERE id IN ({marks})", ids
+    ).fetchall()
+    return {int(r["id"]): int(r["hide_presence"] or 0) for r in rows}
+
+
 async def push_presence(user_id: int, online: bool, last_seen: str | None = None) -> None:
-    """Разослать событие присутствия всем, кроме самого пользователя."""
-    await push_to_all({
-        "type": "presence",
-        "user_id": int(user_id),
-        "online": bool(online),
-        "last_seen": last_seen or "",
-    }, exclude_uid=user_id)
+    """Разослать событие присутствия всем, кроме самого пользователя.
+
+    7.8-fix2 [5]: payload считается ПЕРСОНАЛЬНО — если субъект или получатель
+    скрывает присутствие, получателю уходят online=false, last_seen=null, hidden=true.
+    """
+    try:
+        with get_db() as conn:
+            flags = presence_flags(conn, [user_id, *app.state.connections.keys()])
+    except Exception:
+        app_logger.exception("presence: не прочитаны флаги приватности")
+        flags = {}
+    subject_hidden = bool(flags.get(int(user_id), 0))
+    for uid, ws_conn in list(app.state.connections.items()):
+        if int(uid) == int(user_id):
+            continue
+        masked = subject_hidden or bool(flags.get(int(uid), 0))
+        try:
+            await ws_conn.send_json({
+                "type": "presence",
+                "user_id": int(user_id),
+                "online": False if masked else bool(online),
+                "last_seen": "" if masked else (last_seen or ""),
+                "hidden": bool(masked),
+            })
+        except Exception:
+            pass
 
 
 async def presence_heartbeat() -> None:
@@ -3932,7 +3987,7 @@ async def get_profile(request: Request):
     with get_db() as conn:
         row = conn.execute(
             "SELECT id, name, username, email, email_verified, avatar_uuid, bio, font_scale, banner_uuid, "
-            "is_creator FROM users WHERE id = ?",
+            "is_creator, hide_presence FROM users WHERE id = ?",
             (user["id"],),
         ).fetchone()
 
@@ -3970,6 +4025,28 @@ async def update_profile_put(request: Request, name: str = Form(...), bio: str =
         conn.commit()
     
     return JSONResponse({"success": True})
+
+
+@app.post("/api/profile/presence")
+async def update_presence_privacy(request: Request, hide: int = Form(...)):
+    """7.8-fix2 [5]: «Показывать, когда я был(а) в сети» (hide_presence).
+
+    Взаимность: выключив показ, я перестаю видеть чужие статусы тоже.
+    После смены рассылаем presence — собеседники сразу увидят «статус скрыт».
+    """
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    hide_flag = 1 if int(hide) else 0
+    with get_db() as conn:
+        conn.execute("UPDATE users SET hide_presence = ? WHERE id = ?", (hide_flag, user["id"]))
+        conn.commit()
+
+    # обновляем присутствие: флаг учитывается внутри push_presence
+    await push_presence(user["id"], int(user["id"]) in app.state.connections,
+                        touch_last_seen(user["id"]))
+    return JSONResponse({"success": True, "hide_presence": hide_flag})
 
 
 @app.post("/api/profile/font")

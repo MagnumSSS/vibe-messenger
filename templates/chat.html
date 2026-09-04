@@ -9,7 +9,7 @@
     <link rel="manifest" href="/static/manifest.webmanifest">
     <link rel="apple-touch-icon" href="/static/icon-192.png">
     <meta name="mobile-web-app-capable" content="yes">
-    <link rel="stylesheet" href="/static/style.css?v=7.8">
+    <link rel="stylesheet" href="/static/style.css?v=7.8b">
     <script>
       if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => {});
@@ -299,6 +299,19 @@
                         <textarea id="profileBio" maxlength="200" placeholder="Расскажите о себе..." rows="3"></textarea>
                     </div>
                     <button class="slot-btn" id="saveProfileBtn" style="width: 100%;">Сохранить</button>
+                </div>
+
+                <!-- 7.8-fix2 [5]: приватность присутствия -->
+                <div class="settings-section">
+                    <h3>Присутствие</h3>
+                    <div class="theme-toggle-row">
+                        <label for="hidePresenceToggle">Показывать, когда я был(а) в сети</label>
+                        <button type="button" id="hidePresenceToggle" class="glass-toggle" aria-pressed="true"
+                                title="Выкл — вы не видите чужие статусы и не показываете свой">
+                            <span class="glass-toggle-track"><span class="glass-toggle-thumb"></span></span>
+                        </button>
+                    </div>
+                    <p class="profile-hint">Выключите — и вы тоже перестанете видеть, когда были в сети другие.</p>
                 </div>
 
                 <div class="settings-section">
@@ -635,6 +648,7 @@
         const profileName = document.getElementById('profileName');
         const profileBio = document.getElementById('profileBio');
         const saveProfileBtn = document.getElementById('saveProfileBtn');
+        const hidePresenceToggle = document.getElementById('hidePresenceToggle');   // 7.8-fix2 [5]
         const deleteAccountBtn = document.getElementById('deleteAccountBtn');
         
         // Other user profile modal elements
@@ -1008,6 +1022,12 @@
                     } else {
                         profileBannerPreview.style.display = 'none';
                         profileBannerPlaceholder.style.display = '';
+                    }
+                    // 7.8-fix2 [5]: приватность присутствия (по умолчанию — показывать)
+                    if (hidePresenceToggle) {
+                        const show = !data.hide_presence;
+                        hidePresenceToggle.classList.toggle('on', show);
+                        hidePresenceToggle.setAttribute('aria-pressed', show ? 'true' : 'false');
                     }
                     if (profileMode === 'channel') return;   // дальше — поля пользователя
                     // Phase 7.1a: populate username/email fields
@@ -1563,7 +1583,8 @@
         // Self-defense: autocontrast text + visible border on every button in the theme drawer
         // (.preset-del-btn excluded: transparent by design, CSS drives its danger colors)
         function applyEditorContrast() {
-            themeDrawer.querySelectorAll('button:not(.preset-del-btn)').forEach(btn => {
+            // 7.8-fix2 [3]: тумблеры — чистая пилюля, рамку им не рисуем
+            themeDrawer.querySelectorAll('button:not(.preset-del-btn):not(.glass-toggle)').forEach(btn => {
                 if (btn.disabled) return;
                 const bg = getComputedStyle(btn).backgroundColor;
                 btn.style.color = contrastText(rgbToHex(bg));
@@ -1662,6 +1683,30 @@
             });
 
             // Save profile
+            // 7.8-fix2 [5]: «Показывать, когда я был(а) в сети» — переключатель
+            // пишет hide_presence сразу; приватность взаимная, поэтому после
+            // смены перечитываем присутствие всех контактов
+            if (hidePresenceToggle) {
+                hidePresenceToggle.addEventListener('click', async () => {
+                    const show = !hidePresenceToggle.classList.contains('on');
+                    hidePresenceToggle.classList.toggle('on', show);
+                    hidePresenceToggle.setAttribute('aria-pressed', show ? 'true' : 'false');
+                    try {
+                        const body = new URLSearchParams({ hide: show ? '0' : '1' }).toString();
+                        await fetchJson('/api/profile/presence', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                            body: body
+                        });
+                        await loadPresence();
+                    } catch (err) {
+                        console.error('Presence privacy save failed:', err);
+                        hidePresenceToggle.classList.toggle('on', !show);
+                        hidePresenceToggle.setAttribute('aria-pressed', !show ? 'true' : 'false');
+                    }
+                });
+            }
+
             saveProfileBtn.addEventListener('click', async () => {
                 const name = profileName.value.trim();
                 const bio = profileBio.value.trim();
@@ -2296,7 +2341,8 @@
                 if (msg.type === 'presence' && msg.user_id) {
                     presenceMap[msg.user_id] = {
                         online: !!msg.online,
-                        last_seen: msg.last_seen || (presenceMap[msg.user_id] || {}).last_seen || null
+                        last_seen: msg.last_seen || (presenceMap[msg.user_id] || {}).last_seen || null,
+                        hidden: !!msg.hidden   // 7.8-fix2 [5]: статус закрыт (взаимно)
                     };
                     renderPresenceRings();
                     renderPresenceIsland();
@@ -3334,7 +3380,10 @@
                     : '';
                 div.innerHTML = avatarHtml + `<div class="message-body">${nameHtml}${quoteHtml}${textHtml}${attsHtml}${timeHtml}</div>`;
             } else {
-                div.innerHTML = avatarHtml + quoteHtml + textHtml + attsHtml + timeHtml;
+                // 7.8-fix2 [4]: как в своём пузыре — одна колонка: цитата СВЕРХУ,
+                // текст ниже. Раньше quote и text были соседями flex-строки (бок-о-бок).
+                div.innerHTML = avatarHtml +
+                    `<div class="message-body">${quoteHtml}${textHtml}${attsHtml}${timeHtml}</div>`;
             }
             
             // Phase 6.1b FIX: the div was built but never attached to the DOM
@@ -3924,7 +3973,9 @@
                 if (!res.ok) return;
                 const users = await res.json();
                 users.forEach(u => {
-                    presenceMap[u.id] = { online: !!u.online, last_seen: u.last_seen || null };
+                    presenceMap[u.id] = {
+                        online: !!u.online, last_seen: u.last_seen || null, hidden: !!u.hidden
+                    };
                 });
                 renderPresenceRings();
                 renderPresenceIsland();
@@ -3939,13 +3990,16 @@
                 if (!img || !uid) return;
                 const state = presenceMap[uid];
                 if (!state) { img.removeAttribute('data-presence'); return; }
-                img.dataset.presence = state.online ? 'online' : 'offline';
+                // 7.8-fix2 [5]: скрытый статус = серая граница без last-seen
+                img.dataset.presence = (state.online && !state.hidden) ? 'online' : 'offline';
             });
         }
 
         function peerPresenceText(uid) {
             const state = presenceMap[uid];
             if (!state) return '';
+            // 7.8-fix2 [5]: кто-то из двоих скрывает присутствие — статус не показываем
+            if (state.hidden) return 'статус скрыт';
             if (state.online) return '';
             if (!state.last_seen) return 'был(а) в сети давно';
             const when = formatLastSeen(state.last_seen);
@@ -3974,7 +4028,9 @@
                 const res = await fetch(`/api/user/${uid}/profile`);
                 if (!res.ok) return;
                 const data = await res.json();
-                presenceMap[uid] = { online: !!data.online, last_seen: data.last_seen || null };
+                presenceMap[uid] = {
+                    online: !!data.online, last_seen: data.last_seen || null, hidden: !!data.hidden
+                };
                 bannerByUser[uid] = data.banner_uuid || '';
                 peerBannerUuid = bannerByUser[uid];
                 renderPresenceRings();

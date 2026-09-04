@@ -2,7 +2,7 @@
 // Phase 7.8: имя кэша = версия фазы. Меняем его КАЖДУЮ фазу: иначе браузер
 // продолжает отдавать старый style.css (cache-first по ключу /static/style.css?v=...)
 // и новый CSS до пользователя не доходит вообще.
-const CACHE = 'vb-7.8';
+const CACHE = 'vb-7.8b';
 const STATIC_RE = /^\/static\//;
 
 self.addEventListener('install', e => {

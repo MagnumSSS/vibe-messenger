@@ -1249,6 +1249,83 @@ async def run_scenarios(report: Report, data_dir: str) -> None:
 
     await report.step("dd", "presence: online по WS-коннекту, last_seen на выходе, событие presence", scenario_dd)
 
+    # ---------------- ee) приватность присутствия: взаимность ----------------
+    async def scenario_ee():
+        a_id, b_id = need("a_id", "нет id A"), need("b_id", "нет id B")
+        ws_a = need("ws_a", "нет WS-соединения A")
+
+        def row_about(viewer, target_id):
+            for u in viewer.json("/api/users", method="GET"):
+                if int(u["id"]) == target_id:
+                    return u
+            raise AssertionError(f"пользователь {target_id} пропал из /api/users")
+
+        def profile_about(viewer, target_id):
+            return viewer.json(f"/api/user/{target_id}/profile", method="GET")
+
+        # 0) до выключения: A онлайн, и B видит его статус
+        deadline = time.monotonic() + 5.0
+        while True:
+            row = row_about(bob, a_id)
+            if row.get("online") is True:
+                break
+            if time.monotonic() >= deadline:
+                raise AssertionError(f"до выключения: A онлайн, но B видит online={row.get('online')}")
+            time.sleep(0.2)
+        assert not row.get("hidden"), f"до выключения hidden=true: {row}"
+        assert row.get("last_seen"), f"до выключения у A пустой last_seen: {row}"
+        assert profile_about(bob, a_id).get("last_seen"), "профиль A: last_seen пуст до выключения"
+
+        # 1) B скрывает присутствие → обе стороны видят null (взаимность, как в TG)
+        res = bob.json("/api/profile/presence", data={"hide": 1})
+        assert res.get("hide_presence") == 1, f"hide_presence не включился: {res}"
+        mine = bob.json("/api/profile", method="GET")
+        assert int(mine.get("hide_presence") or 0) == 1, f"в профиле B hide_presence={mine.get('hide_presence')}"
+
+        row = row_about(bob, a_id)          # B смотрит на A (A открыт,}B скрыт)
+        assert row.get("online") is False, f"B скрыл статус, но видит A: online={row.get('online')}"
+        assert row.get("last_seen") is None, f"B скрыл статус, но видит last_seen A: {row.get('last_seen')}"
+        assert row.get("hidden") is True, f"B скрыл статус, но hidden != true: {row}"
+
+        prof = profile_about(bob, a_id)
+        assert prof.get("last_seen") is None, f"профиль A: last_seen не скрыт: {prof}"
+        assert prof.get("hidden") is True, f"профиль A: hidden != true: {prof}"
+
+        row = row_about(alice, b_id)        # A смотрит на B (B скрыл себя)
+        assert row.get("online") is False, f"A видит online B при скрытом статусе: {row.get('online')}"
+        assert row.get("last_seen") is None, f"A видит last_seen B при скрытом статусе: {row.get('last_seen')}"
+        assert row.get("hidden") is True, f"A: hidden != true: {row}"
+
+        # 1.1) WS-событие presence о B приходит A замаскированным
+        # (в очереди A лежат и старые события из dd — берём именно скрытое)
+        ev = await expect_event(
+            ws_a,
+            lambda e: (e.get("type") == "presence" and int(e.get("user_id") or 0) == b_id
+                       and e.get("hidden") is True),
+            "presence: B сменил приватность (hidden=true)",
+        )
+        assert ev.get("online") is False and not ev.get("last_seen"), \
+            f"A получил не замаскированное presence-событие: {ev}"
+        assert ev.get("hidden") is True, f"в presence-событии нет hidden=true: {ev}"
+
+        # 2) сняли тумблер — поля снова живые
+        res = bob.json("/api/profile/presence", data={"hide": 0})
+        assert res.get("hide_presence") == 0, f"hide_presence не выключился: {res}"
+
+        deadline = time.monotonic() + 5.0
+        while True:
+            row = row_about(alice, b_id)
+            if row.get("last_seen"):
+                break
+            if time.monotonic() >= deadline:
+                raise AssertionError(f"после снятия тумблера last_seen у B так и пуст: {row}")
+            time.sleep(0.2)
+        assert row.get("hidden") is False, f"после снятия тумблера hidden=true: {row}"
+        assert row_about(bob, a_id).get("online") is True, "B снова не видит A онлайн"
+        assert profile_about(alice, b_id).get("last_seen"), "профиль B: last_seen не вернулся"
+
+    await report.step("ee", "приватность присутствия: hide_presence скрывает статус взаимно (обе стороны null)", scenario_ee)
+
     # ---------------- закрытие WS ----------------
     for ws in (state.get("ws_a"), state.get("ws_b")):
         if ws is not None:

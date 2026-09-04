@@ -715,16 +715,25 @@ header h1 {
     transition: width 0.15s linear;
 }
 
-/* Phase micro: glass toggle switch */
+/* Phase micro: glass toggle switch
+   7.8-fix2 [3]: только пилюля — ни border, ни outline, ни подложки-прямоугольника
+   (applyEditorContrast больше не вешает на .glass-toggle инлайновую рамку) */
 .glass-toggle {
-    background: none; border: none; padding: 0; cursor: pointer; outline: none;
+    background: none; border: none; outline: none; padding: 0; margin: 0;
+    cursor: pointer; line-height: 0; border-radius: 999px;
+}
+.glass-toggle:focus-visible {
+    outline: 2px solid var(--accent-color, #0084ff);
+    outline-offset: 3px;
 }
 .glass-toggle-track {
-    display: block; width: 44px; height: 24px; border-radius: 12px;
+    display: block; width: 44px; height: 24px; border-radius: 999px;
     background: rgba(0,0,0,0.18);
     box-shadow: inset 0 1px 3px rgba(0,0,0,0.15);
     transition: background 0.25s;
     position: relative;
+    -webkit-backdrop-filter: blur(6px) saturate(1.4);
+    backdrop-filter: blur(6px) saturate(1.4);
 }
 .glass-toggle-thumb {
     display: block; width: 20px; height: 20px; border-radius: 50%;
@@ -3055,17 +3064,23 @@ header h1 {
     border-color: var(--btn-danger-bg, #dc3545);
 }
 
-/* ящики/модалки, где появилась круглая кнопка, получают место под неё */
+/* 7.8-fix2 [1]: крестик ВНЕ ПОТОКА — position:absolute, контент центрируется
+   НЕЗАВИСИМО от него. Никаких padding-отступов под кнопку: баннер/имя/bio
+   стоят строго по центру, как будто кнопки нет. */
 .theme-drawer-header,
 .profile-modal-content,
-.delete-account-modal-content {
-    position: relative;
-    padding-right: 52px;
+.delete-account-modal-content,
+.settings-modal-content {
+    position: relative;   /* только якорь для .island-close */
 }
 
-.profile-modal-content h2,
-.profile-modal-content h3 {
-    padding-right: 4px;
+.theme-drawer-header {
+    justify-content: center;
+}
+
+.theme-drawer-header h2 {
+    flex: 1;
+    text-align: center;
 }
 
 /* модалка картинки: кнопка живёт сверху над контентом */
@@ -3074,7 +3089,7 @@ header h1 {
     right: 0;
 }
 
-/* ---- тумблеры темы в редакторе ---- */
+/* ---- тумблеры темы в редакторе (7.8-fix2 [3]: чистая пилюля, без рамок) ---- */
 .theme-toggle-row {
     display: flex;
     align-items: center;
@@ -3091,6 +3106,20 @@ header h1 {
    Phase 7.8: мобила (390×844) — компактная шапка-остров
    ===================================================================== */
 @media (max-width: 768px) {
+    /* 7.8-fix2 [2]: профиль на мобиле — НЕ лист во весь экран, а компактный
+       пузырь по контенту (растёт только когда растёт информация) */
+    .profile-modal-content {
+        width: auto;
+        max-width: min(92%, 420px);
+        height: auto;
+        max-height: 85vh;
+        max-height: 85dvh;
+        overflow-y: auto;
+        border-radius: 20px;
+        box-shadow: 0 8px 32px var(--shadow-2, rgba(0, 0, 0, 0.2));
+        animation: none;
+    }
+
     .chat-header {
         margin: 6px 6px 0;
         padding: 0.4rem 0.5rem;
