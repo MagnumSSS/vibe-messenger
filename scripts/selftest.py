@@ -28,6 +28,7 @@ import base64
 import http.cookiejar
 import json
 import os
+import re
 import shutil
 import socket
 import sqlite3
@@ -208,6 +209,30 @@ async def ws_open(client: Client):
     # ping→pong: рукопожатие прошло, сессия валидна, соединение живое
     await asyncio.wait_for(ws.ping(), timeout=EVENT_TIMEOUT)
     return ws
+
+
+def last_email_code(data_dir: str, user_id: int | None = None, purpose: str | None = None) -> str:
+    """
+    Phase R7: console-бэкенд (dev без SMTP) пишет код в app.log строкой
+    «EMAIL CODE user_id=N purpose=... code=NNNNNN» — так тест и достаёт его,
+    не залезая в БД (там только sha256).
+    """
+    log_path = Path(data_dir) / "logs" / "app.log"
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if log_path.is_file():
+            matches = re.findall(
+                r"EMAIL CODE user_id=(\d+) purpose=(\S+) code=(\d{6})",
+                log_path.read_text(encoding="utf-8", errors="replace"),
+            )
+            for uid, purp, code in reversed(matches):
+                if user_id is not None and int(uid) != user_id:
+                    continue
+                if purpose is not None and purp != purpose:
+                    continue
+                return code
+        time.sleep(0.1)
+    raise AssertionError(f"код из письма не найден в {log_path}")
 
 
 def dialog_history(client: Client, peer_id: int) -> list:
@@ -912,6 +937,101 @@ async def run_scenarios(report: Report, data_dir: str) -> None:
             status, _ = alice.request(path, method=method)
             assert status == 200, f"A (админ) → {method} {path}: HTTP {status} (ожидали 200)"
     await report.step("w", "админ-эндпоинты недоступны не-админу (403)", scenario_w)
+
+    # ---------------- x) смена пароля по коду из письма ----------------
+    def scenario_x():
+        data_dir = need("data_dir", "нет DATA_DIR сервера")
+        # отдельный пользователь, чтобы не ломать пароли A и B
+        dave = Client("Dave", "dave@selftest.local", "dave-old-pass")
+        invite = alice.json("/admin/invite")
+        status, raw = dave.request("/register", data={
+            "name": dave.name, "email": dave.email,
+            "password": dave.password, "invite_code": invite["invite_code"],
+        })
+        assert status == 303, f"регистрация D: HTTP {status}: {raw[:160]!r}"
+        assert dave.request("/login", data={"username": dave.email, "password": dave.password})[0] == 303
+
+        # вторая сессия того же пользователя (второе «устройство»)
+        dave2 = Client(dave.name, dave.email, dave.password)
+        assert dave2.request("/login", data={"username": dave.email, "password": dave.password})[0] == 303
+        assert dave2.json("/api/profile", method="GET")["id"] == dave.json("/api/profile", method="GET")["id"]
+
+        # шаг 1: просим код (текущий пароль проверяется на сервере)
+        req = dave.json("/api/email/code/request", data={
+            "purpose": "password_change", "current_password": dave.password,
+        })
+        assert req.get("success") is True, f"запрос кода: {req}"
+        code = last_email_code(data_dir, purpose="password_change")
+
+        # шаг 2: код + новый пароль
+        new_password = "dave-new-pass"
+        changed = dave.json("/api/profile/password", data={
+            "current_password": dave.password, "new_password": new_password,
+            "confirm_password": new_password, "code": code,
+        })
+        assert changed.get("success") is True, f"смена пароля: {changed}"
+
+        # старый пароль больше не пускает, новый — пускает
+        assert dave2.request("/login", data={"username": dave.email, "password": dave.password})[0] == 200, \
+            "старый пароль всё ещё принимается"
+        fresh = Client(dave.name, dave.email, new_password)
+        assert fresh.request("/login", data={"username": dave.email, "password": new_password})[0] == 303, \
+            "новый пароль не принят"
+
+        # вторая сессия порвана (session_epoch++ из R6), текущая — жива
+        status, _ = dave2.request("/api/profile", method="GET")
+        assert status == 401, f"вторая сессия жива после смены пароля: HTTP {status}"
+        status, _ = dave.request("/api/profile", method="GET")
+        assert status == 200, f"текущая сессия умерла после смены пароля: HTTP {status}"
+        state["dave"] = dave
+    await report.step("x", "смена пароля по коду: старый пароль мёртв, вторая сессия порвана", scenario_x)
+
+    # ---------------- y) политика кодов: 5 попыток и 1 код/60с ----------------
+    def scenario_y():
+        data_dir = need("data_dir", "нет DATA_DIR сервера")
+        # цель verify на B: отдельный лимит на (user, purpose)
+        bob.json("/api/email/code/request", data={"purpose": "verify"})
+        code = last_email_code(data_dir, user_id=bob.id, purpose="verify")
+        wrong = "000000" if code != "000000" else "111111"
+
+        for attempt in range(1, 6):
+            status, raw = bob.request("/api/email/code/confirm",
+                                      data={"purpose": "verify", "code": wrong})
+            assert status == 400, f"неверный код #{attempt}: HTTP {status} (ожидали 400): {raw[:160]!r}"
+
+        # 6-я попытка — код уже заблокирован (инвалидирован)
+        status, raw = bob.request("/api/email/code/confirm", data={"purpose": "verify", "code": code})
+        assert status in (400, 429), f"код жив после 5 неверных попыток: HTTP {status}: {raw[:160]!r}"
+
+        # повторная отправка раньше 60с → 429
+        status, raw = bob.request("/api/email/code/request", data={"purpose": "verify"})
+        assert status == 429, f"повторная отправка кода: HTTP {status} (ожидали 429): {raw[:160]!r}"
+    await report.step("y", "политика кодов: 5 неверных → блок, повтор раньше 60с → 429", scenario_y)
+
+    # ---------------- z) смена почты по коду + email_verified ----------------
+    def scenario_z():
+        data_dir = need("data_dir", "нет DATA_DIR сервера")
+        new_email = "bob-new@selftest.local"
+        req = bob.json("/api/email/code/request", data={
+            "purpose": "email_change", "new_email": new_email, "current_password": bob.password,
+        })
+        assert req.get("success") is True, f"запрос кода на новую почту: {req}"
+        code = last_email_code(data_dir, user_id=bob.id, purpose="email_change")
+
+        before = bob.json("/api/profile", method="GET")
+        assert before.get("email_verified") == 0, f"почта уже верифицирована до подтверждения: {before}"
+
+        changed = bob.json("/api/profile/email", data={"email": new_email, "code": code})
+        assert changed.get("success") is True, f"смена почты: {changed}"
+
+        after = bob.json("/api/profile", method="GET")
+        assert after.get("email") == new_email, f"почта не обновилась: {after}"
+        assert after.get("email_verified") == 1, f"email_verified не выставлен: {after}"
+
+        # логин теперь по новой почте
+        status, _ = bob.request("/login", data={"username": new_email, "password": bob.password})
+        assert status == 303, f"логин по новой почте: HTTP {status}"
+    await report.step("z", "смена почты по коду: адрес обновлён, email_verified=1", scenario_z)
 
     # ---------------- закрытие WS ----------------
     for ws in (state.get("ws_a"), state.get("ws_b")):

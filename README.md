@@ -22,6 +22,50 @@ A lightweight private web messenger for small groups, designed for Raspberry Pi 
 - Health check endpoint `/health`
 - Database migrations on startup
 
+## Почта и коды подтверждения (Phase R7)
+
+Смена пароля, смена почты и верификация адреса подтверждаются 6-значным кодом из письма.
+
+**Настройка** (`SMTP_*` в `.env` или в окружении):
+
+```bash
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_USER=noreply@example.com
+SMTP_PASS=...
+SMTP_FROM="VibeBunker <noreply@example.com>"
+SMTP_STARTTLS=yes     # yes|no
+```
+
+Бэкенд выбирается автоматически:
+
+| `SMTP_HOST` | режим | поведение |
+|---|---|---|
+| задан | `smtp` | письмо уходит через `smtplib` (STARTTLS, при `SMTP_USER` — логин) |
+| пуст, `APP_MODE=dev` | `console` | письмо не нужно: код виден в `data/logs/app.log` строкой `EMAIL CODE user_id=… purpose=… code=NNNNNN` |
+| пуст, `APP_MODE=prod` | `none` | эндпоинты кодов отдают **503** «Почта не настроена: задайте SMTP_HOST» |
+
+Текущий бэкенд виден в `GET /api/profile` в поле `mail_backend`.
+
+**Политика кодов:** 6 цифр из `secrets` (не `random`), TTL 10 минут, 5 попыток ввода
+(после пятой код блокируется), отправка — не чаще одного кода в 60 секунд и не больше пяти
+в час на пользователя (429 + `Retry-After`). В БД — только `sha256(code)` в таблице
+`email_codes` (`user_id`, `purpose`, `target`, `code_hash`, `created_at`, `expires_at`,
+`attempts`, `used`): plaintext кода не хранится и в `prod` не логируется.
+
+**Флоу:**
+
+1. **Смена пароля** — `POST /api/email/code/request` (`purpose=password_change`, `current_password`)
+   → код на почту → `POST /api/profile/password` (`code`, новый пароль). Плюс `session_epoch++`:
+   остальные устройства разлогиниваются (R6).
+2. **Смена почты** — `POST /api/email/code/request` (`purpose=email_change`, `new_email`,
+   `current_password`) → код уходит на **новый** адрес → `POST /api/profile/email`
+   (`email`, `code`): адрес обновлён и сразу помечен верифицированным.
+3. **Верификация почты** — `POST /api/email/code/request` (`purpose=verify`) →
+   `POST /api/email/code/confirm` (`purpose=verify`, `code`) → `users.email_verified=1`,
+   в профиле появляется бейдж «✓ подтверждена». Регистрация верификацией **не** блокируется
+   (гейт — инвайты), верификация опциональна.
+
 ## Security-аудит R6 (OWASP Top 10)
 
 Аудит по OWASP Top 10 (2021). Статусы: **OK** — так и было, **FIXED** — усилено в фазе R6,
@@ -533,3 +577,5 @@ Private use only.
 - phase R5 complete
 
 - phase R6 complete
+
+- phase R7 complete

@@ -1245,6 +1245,33 @@ header h1 {
     font-size: 1rem;
 }
 
+/* Phase R7: бейдж верификации почты в профиле */
+.email-badge {
+    display: inline-block;
+    margin-left: 0.5rem;
+    padding: 0.1rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    vertical-align: middle;
+}
+
+.email-badge-yes {
+    background: var(--accent, #2f81f7);
+    color: #fff;
+}
+
+.email-badge-no {
+    background: rgba(220, 53, 69, 0.18);
+    color: var(--btn-danger-bg, #dc3545);
+}
+
+.email-badge-unknown {
+    background: rgba(128, 128, 128, 0.18);
+    color: var(--text-secondary, #888);
+}
+
 .color-picker-row {
     display: flex;
     align-items: center;

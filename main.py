@@ -5,7 +5,10 @@ import sqlite3
 import hashlib
 import hmac
 import secrets
+import smtplib
+import ssl
 import uuid
+from email.message import EmailMessage
 import json
 import base64
 import mimetypes
@@ -28,6 +31,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Stre
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.datastructures import MutableHeaders
+from starlette.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles 
 
 # ========== Phase R5: .env подхватывается ДО чтения любых настроек ==========
@@ -847,6 +851,7 @@ def ensure_schema():
             ("font_scale", "REAL DEFAULT 1.0"),      # Phase 7 micro: a11y font scale
             ("banner_uuid", "TEXT NULL"),            # Phase 7.6a: profile banner
             ("session_epoch", "INTEGER NOT NULL DEFAULT 0"),  # Phase R6: смена пароля рвёт чужие сессии
+            ("email_verified", "INTEGER NOT NULL DEFAULT 0"),  # Phase R7: почта подтверждена кодом
         ]
         for col_name, col_type in user_column_additions:
             if col_name not in user_columns:
@@ -1039,6 +1044,26 @@ def ensure_schema():
                 FOREIGN KEY (user_id) REFERENCES users(id),
                 FOREIGN KEY (contact_id) REFERENCES users(id)
             )
+        """)
+
+        # Phase R7: коды подтверждения по почте (plaintext кода не хранится — только sha256)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS email_codes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                purpose TEXT NOT NULL,
+                target TEXT NULL,
+                code_hash TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                used INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_email_codes_user
+            ON email_codes(user_id, purpose)
         """)
 
         # Phase 7.3: read receipts
@@ -3101,6 +3126,206 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 
+# ===================================================================== #
+# Phase R7: подтверждение действий кодами из письма
+# ===================================================================== #
+
+SMTP_HOST = (os.environ.get("SMTP_HOST") or "").strip()
+SMTP_PORT = int(os.environ.get("SMTP_PORT") or "587")
+SMTP_USER = (os.environ.get("SMTP_USER") or "").strip()
+SMTP_PASS = os.environ.get("SMTP_PASS") or ""
+SMTP_FROM = (os.environ.get("SMTP_FROM") or "").strip() or SMTP_USER or "noreply@localhost"
+SMTP_STARTTLS = (os.environ.get("SMTP_STARTTLS") or "yes").strip().lower() in ("1", "yes", "true", "on")
+SMTP_ENABLED = bool(SMTP_HOST)
+# Phase R7: без SMTP_host письма не уходят — в prod это 503, в dev коды видны в app.log
+MAIL_BACKEND = "smtp" if SMTP_ENABLED else ("console" if APP_MODE != "prod" else "none")
+
+CODE_TTL_SECONDS = 600        # TTL кода — 10 минут
+CODE_MAX_ATTEMPTS = 5         # попыток ввода на один код
+CODE_RESEND_INTERVAL = 60     # не чаще одного кода в минуту (на юзера + цель)
+CODE_MAX_PER_HOUR = 5         # и не больше пяти в час на юзера
+CODE_LENGTH = 6
+CODE_PURPOSES = ("verify", "email_change", "password_change")
+
+
+class EmailUnavailable(Exception):
+    """Почта не настроена: в prod это 503, в dev коды уходят в лог."""
+
+
+def _generate_code() -> str:
+    """6 цифр из криптографического ГСЧ (никаких random.randint)."""
+    return "".join(str(secrets.randbelow(10)) for _ in range(CODE_LENGTH))
+
+
+def _code_hash(code: str) -> str:
+    """Храним только sha256: plaintext кода в БД не живёт ни секунды."""
+    return hashlib.sha256(code.strip().encode("utf-8")).hexdigest()
+
+
+def _send_code_email(to_address: str, purpose: str, code: str, user_id: int) -> None:
+    """
+    Отправить код. Реальный SMTP, если задан SMTP_HOST; иначе в dev — console-бэкенд
+    (код виден в app.log), а в prod — 503 «почта не настроена».
+    """
+    if SMTP_ENABLED:
+        subject = "Код подтверждения VibeBunker"
+        body = (
+            f"Код подтверждения: {code}\n\n"
+            f"Действует {CODE_TTL_SECONDS // 60} минут, попыток ввода: {CODE_MAX_ATTEMPTS}.\n"
+            "Если вы это не запрашивали — просто проигнорируйте письмо."
+        )
+        message = EmailMessage()
+        message["Subject"] = subject
+        message["From"] = SMTP_FROM
+        message["To"] = to_address
+        message.set_content(body)
+        try:
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
+                server.ehlo()
+                if SMTP_STARTTLS:
+                    server.starttls(context=ssl.create_default_context())
+                    server.ehlo()
+                if SMTP_USER:
+                    server.login(SMTP_USER, SMTP_PASS)
+                server.send_message(message)
+        except Exception as exc:
+            # в лог — только факт и тип сбоя: ни пароля, ни кода
+            error_logger.error("почта: не удалось отправить код (%s): %s", purpose, type(exc).__name__)
+            raise HTTPException(status_code=502, detail="Не удалось отправить письмо") from exc
+        app_logger.info("код отправлен: purpose=%s user_id=%s (по адресу из профиля)", purpose, user_id)
+        return
+
+    if APP_MODE == "prod":
+        raise EmailUnavailable()
+
+    # console-бэкенд (только dev)
+    app_logger.info("EMAIL CODE user_id=%s purpose=%s code=%s", user_id, purpose, code)
+
+
+def _code_row(user_id: int, purpose: str, conn) -> sqlite3.Row | None:
+    """Актуальная (не использованная, не истёкшая) запись кода."""
+    return conn.execute(
+        """
+        SELECT * FROM email_codes
+        WHERE user_id = ? AND purpose = ? AND used = 0
+        ORDER BY id DESC LIMIT 1
+        """,
+        (user_id, purpose),
+    ).fetchone()
+
+
+def _check_code_rate_limit(user_id: int, purpose: str) -> None:
+    """1 код в 60 секунд и не больше CODE_MAX_PER_HOUR в час на пользователя."""
+    now = datetime.now()
+    with get_db() as conn:
+        last = conn.execute(
+            """
+            SELECT created_at FROM email_codes
+            WHERE user_id = ? AND purpose = ?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (user_id, purpose),
+        ).fetchone()
+        if last:
+            try:
+                created = datetime.fromisoformat(str(last["created_at"]).replace("Z", ""))
+            except ValueError:
+                created = None
+            if created:
+                elapsed = (now - created).total_seconds()
+                if elapsed < CODE_RESEND_INTERVAL:
+                    app_logger.warning(
+                        "код: слишком частая отправка (purpose=%s user_id=%s, %.0fс < %dс)",
+                        purpose, user_id, elapsed, CODE_RESEND_INTERVAL,
+                    )
+                    wait = int(CODE_RESEND_INTERVAL - elapsed)
+                    raise HTTPException(
+                        status_code=429,
+                        detail=f"Следующий код можно запросить через {wait} с",
+                        headers={"Retry-After": str(wait)},
+                    )
+        hour_ago = (now - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+        count = conn.execute(
+            "SELECT COUNT(*) AS n FROM email_codes WHERE user_id = ? AND created_at > ?",
+            (user_id, hour_ago),
+        ).fetchone()["n"]
+        if count >= CODE_MAX_PER_HOUR:
+            app_logger.warning("код: лимит отправок в час (user_id=%s, %s шт.)", user_id, count)
+            raise HTTPException(status_code=429, detail="Слишком много кодов за час, попробуйте позже")
+
+
+def issue_email_code(user_id: int, purpose: str, to_address: str, target: str | None = None) -> None:
+    """Выпустить код, инвалидировать предыдущие и отправить письмо."""
+    if purpose not in CODE_PURPOSES:
+        raise HTTPException(status_code=400, detail="Неизвестная цель кода")
+    _check_code_rate_limit(user_id, purpose)
+    code = _generate_code()
+    now = datetime.now()
+    with get_db() as conn:
+        # все прошлые коды по этой цели сразу гасим: валиден ровно один, последний
+        conn.execute(
+            "UPDATE email_codes SET used = 1 WHERE user_id = ? AND purpose = ? AND used = 0",
+            (user_id, purpose),
+        )
+        conn.execute(
+            """
+            INSERT INTO email_codes (user_id, purpose, target, code_hash, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id, purpose, target, _code_hash(code),
+                now.strftime("%Y-%m-%d %H:%M:%S"),
+                (now + timedelta(seconds=CODE_TTL_SECONDS)).strftime("%Y-%m-%d %H:%M:%S"),
+            ),
+        )
+        conn.commit()
+    _send_code_email(to_address, purpose, code, user_id)
+
+
+def consume_email_code(user_id: int, purpose: str, code: str):
+    """
+    Проверить код. Возвращает запись (нужен target) либо кидает HTTPException.
+    Счётчик попыток растёт, после CODE_MAX_ATTEMPTS код блокируется.
+    """
+    with get_db() as conn:
+        row = _code_row(user_id, purpose, conn)
+        if not row:
+            raise HTTPException(status_code=400, detail="Код не найден или истёк, запросите новый")
+        if row["attempts"] >= CODE_MAX_ATTEMPTS:
+            conn.execute("UPDATE email_codes SET used = 1 WHERE id = ?", (row["id"],))
+            conn.commit()
+            raise HTTPException(status_code=429, detail="Слишком много неверных попыток, запросите новый код")
+        try:
+            expired = datetime.fromisoformat(str(row["expires_at"])) < datetime.now()
+        except ValueError:
+            expired = True
+        if expired:
+            conn.execute("UPDATE email_codes SET used = 1 WHERE id = ?", (row["id"],))
+            conn.commit()
+            raise HTTPException(status_code=400, detail="Срок действия кода истёк, запросите новый")
+        if not hmac.compare_digest(str(row["code_hash"]), _code_hash(code)):
+            attempts = int(row["attempts"]) + 1
+            blocked = attempts >= CODE_MAX_ATTEMPTS
+            conn.execute(
+                "UPDATE email_codes SET attempts = ?, used = ? WHERE id = ?",
+                (attempts, 1 if blocked else 0, row["id"]),
+            )
+            conn.commit()
+            app_logger.warning(
+                "код: неверная попытка (purpose=%s user_id=%s, %d/%d%s)",
+                purpose, user_id, attempts, CODE_MAX_ATTEMPTS, " — код заблокирован" if blocked else "",
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=("Код заблокирован: слишком много попыток, запросите новый"
+                        if blocked else "Неверный код"),
+            )
+        conn.execute("UPDATE email_codes SET used = 1 WHERE id = ?", (row["id"],))
+        conn.commit()
+        app_logger.info("код принят: purpose=%s user_id=%s", purpose, user_id)
+        return dict(row)
+
+
 # ========== PROFILE ENDPOINTS ==========
 @app.get("/api/profile")
 async def get_profile(request: Request):
@@ -3110,9 +3335,16 @@ async def get_profile(request: Request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
     with get_db() as conn:
-        row = conn.execute("SELECT id, name, username, email, avatar_uuid, bio, font_scale, banner_uuid FROM users WHERE id = ?", (user["id"],)).fetchone()
-    
-    return JSONResponse(dict(row))
+        row = conn.execute(
+            "SELECT id, name, username, email, email_verified, avatar_uuid, bio, font_scale, banner_uuid "
+            "FROM users WHERE id = ?",
+            (user["id"],),
+        ).fetchone()
+
+    payload = dict(row)
+    # Phase R7: фронту нужны и статус верификации, и доступность почты как таковой
+    payload["mail_backend"] = MAIL_BACKEND
+    return JSONResponse(payload)
 
 
 @app.post("/api/profile")
@@ -3184,54 +3416,167 @@ async def change_username(request: Request, username: str = Form(...), password:
 
 
 @app.post("/api/profile/email")
-async def change_email(request: Request, email: str = Form(...), password: str = Form(...)):
-    """Change current user's email (requires current password)"""
+async def change_email(request: Request, email: str = Form(...), code: str = Form(""), password: str = Form("")):
+    """
+    Phase R7: второй шаг смены почты. Шаг первый — /api/email/code/request
+    с purpose=email_change: код уходит на НОВЫЙ адрес.
+    """
     user = get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
-    
+
     email_clean = email.strip().lower()
     if not validate_email_format(email_clean):
         raise HTTPException(status_code=400, detail="Invalid email format")
-    
-    if not verify_password(password, user["password_hash"]):
-        raise HTTPException(status_code=400, detail="Incorrect password")
-    
+
+    if not code.strip():
+        raise HTTPException(status_code=400, detail="Требуется код из письма (сначала запросите его)")
+
+    row = consume_email_code(user["id"], "email_change", code)
+    target = (row.get("target") or "").strip().lower()
+    if target != email_clean:
+        raise HTTPException(status_code=400, detail="Код был отправлен на другой адрес")
+
     with get_db() as conn:
-        existing = conn.execute("SELECT id FROM users WHERE email = ? AND id != ?", (email_clean, user["id"])).fetchone()
-        if existing:
-            raise HTTPException(status_code=400, detail="Email already registered")
-        conn.execute("UPDATE users SET email = ? WHERE id = ?", (email_clean, user["id"]))
+        conn.execute(
+            "UPDATE users SET email = ?, email_verified = 1 WHERE id = ?", (email_clean, user["id"])
+        )
         conn.commit()
-    
-    return JSONResponse({"success": True, "email": email_clean})
+
+    app_logger.info("смена почты: user_id=%s (код подтверждён)", user["id"])
+    return JSONResponse({"success": True, "email": email_clean, "email_verified": 1})
 
 
-@app.post("/api/profile/password")
-async def change_password(request: Request, current_password: str = Form(...), new_password: str = Form(...), confirm_password: str = Form(...), email_code: str = Form("")):
-    """Change current user's password.
-    If email is set, email_code must match the email address.
-    If email is NULL, only current password is required (with a hint)."""
+# ---------------- Phase R7: запрос и подтверждение кодов ----------------
+@app.post("/api/email/code/request")
+async def request_email_code(
+    request: Request,
+    purpose: str = Form(...),
+    new_email: str = Form(""),
+    current_password: str = Form(""),
+):
+    """
+    Выпустить 6-значный код и отправить его письмом.
+    purpose: verify | email_change | password_change.
+    """
     user = get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
-    
+
+    purpose = (purpose or "").strip()
+    if purpose not in CODE_PURPOSES:
+        raise HTTPException(status_code=400, detail="Неизвестная цель кода")
+
+    if MAIL_BACKEND == "none":
+        raise HTTPException(status_code=503, detail="Почта не настроена: задайте SMTP_HOST")
+
+    recipient = (user.get("email") or "").strip()
+    target: str | None = None
+
+    if purpose == "password_change":
+        if not verify_password(current_password, user["password_hash"]):
+            raise HTTPException(status_code=400, detail="Current password is incorrect")
+        if not recipient:
+            raise HTTPException(status_code=400, detail="У аккаунта нет почты — код некуда отправить")
+    elif purpose == "email_change":
+        if not verify_password(current_password, user["password_hash"]):
+            raise HTTPException(status_code=400, detail="Current password is incorrect")
+        new_email_clean = new_email.strip().lower()
+        if not validate_email_format(new_email_clean):
+            raise HTTPException(status_code=400, detail="Invalid email format")
+        with get_db() as conn:
+            taken = conn.execute(
+                "SELECT id FROM users WHERE email = ? AND id != ?", (new_email_clean, user["id"])
+            ).fetchone()
+        if taken:
+            raise HTTPException(status_code=400, detail="Email already registered")
+        recipient = new_email_clean       # код уходит на НОВУЮ почту
+        target = new_email_clean
+    else:  # verify
+        if not recipient:
+            raise HTTPException(status_code=400, detail="У аккаунта нет почты — код некуда отправить")
+        if new_email.strip():
+            candidate = new_email.strip().lower()
+            if not validate_email_format(candidate):
+                raise HTTPException(status_code=400, detail="Invalid email format")
+            recipient = candidate
+            target = candidate
+
+    # SMTP — синхронный: не блокируем event loop
+    await run_in_threadpool(issue_email_code, user["id"], purpose, recipient, target)
+    return JSONResponse({"success": True, "purpose": purpose, "sent_to": _mask_email(recipient)})
+
+
+def _mask_email(address: str) -> str:
+    """Для ответа клиенту: a****b@domain — сам адрес наружу не светим."""
+    if "@" not in address:
+        return "***"
+    name, domain = address.split("@", 1)
+    if len(name) <= 2:
+        return f"***@{domain}"
+    return f"{name[0]}{'*' * (len(name) - 2)}{name[-1]}@{domain}"
+
+
+@app.post("/api/email/code/confirm")
+async def confirm_email_code(request: Request, purpose: str = Form(...), code: str = Form(...)):
+    """
+    Подтвердить код: verify → email_verified=1, email_change → почта обновлена и верифицирована.
+    (password_change подтверждается в /api/profile/password — там же и меняется пароль.)
+    """
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    purpose = (purpose or "").strip()
+    if purpose not in ("verify", "email_change"):
+        raise HTTPException(status_code=400, detail="Неизвестная цель кода")
+
+    row = consume_email_code(user["id"], purpose, code)
+
+    new_email = (row.get("target") or "").strip().lower() or (user.get("email") or "").strip().lower()
+    with get_db() as conn:
+        if purpose == "email_change" and new_email:
+            taken = conn.execute(
+                "SELECT id FROM users WHERE email = ? AND id != ?", (new_email, user["id"])
+            ).fetchone()
+            if taken:
+                raise HTTPException(status_code=400, detail="Email already registered")
+            conn.execute(
+                "UPDATE users SET email = ?, email_verified = 1 WHERE id = ?", (new_email, user["id"])
+            )
+        else:
+            conn.execute("UPDATE users SET email_verified = 1 WHERE id = ?", (user["id"],))
+        conn.commit()
+        fresh = conn.execute("SELECT email, email_verified FROM users WHERE id = ?", (user["id"],)).fetchone()
+
+    app_logger.info("почта подтверждена: user_id=%s purpose=%s", user["id"], purpose)
+    return JSONResponse({"success": True, "email": fresh["email"], "email_verified": fresh["email_verified"]})
+
+
+@app.post("/api/profile/password")
+async def change_password(request: Request, current_password: str = Form(...), new_password: str = Form(...), confirm_password: str = Form(...), code: str = Form("")):
+    """
+    Phase R7: смена пароля в два шага.
+    Шаг 1 — POST /api/email/code/request с purpose=password_change и текущим паролем,
+    шаг 2 — сюда: код из письма + новый пароль. Плюс session_epoch++ (R6 рвёт чужие сессии).
+    """
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
     if not verify_password(current_password, user["password_hash"]):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
-    
-    # Email verification step
-    if user.get("email"):
-        if not email_code:
-            raise HTTPException(status_code=400, detail="Email confirmation required: enter your email address")
-        if email_code.strip().lower() != user["email"]:
-            raise HTTPException(status_code=400, detail="Email does not match")
-    
+
     if new_password != confirm_password:
         raise HTTPException(status_code=400, detail="New passwords do not match")
-    
+
     if len(new_password) < 4:
         raise HTTPException(status_code=400, detail="New password must be at least 4 characters")
-    
+
+    if not code.strip():
+        raise HTTPException(status_code=400, detail="Требуется код из письма (сначала запросите его)")
+    consume_email_code(user["id"], "password_change", code)
+
     new_hash = hash_password(new_password)
     with get_db() as conn:
         # Phase R6 (A07): поднимаем epoch — все сессии, кроме текущей, становятся невалидными

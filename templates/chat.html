@@ -291,8 +291,9 @@
                     <button class="slot-btn" id="changeUsernameBtn" style="width: 100%;">Сменить username</button>
                 </div>
 
+                <!-- Phase R7: почта — статус верификации + смена по коду -->
                 <div class="settings-section">
-                    <h3>Почта</h3>
+                    <h3>Почта <span id="emailVerifiedBadge" class="email-badge email-badge-unknown" hidden>—</span></h3>
                     <div class="profile-form-group">
                         <label>Текущая почта</label>
                         <input type="email" id="profileCurrentEmail" readonly>
@@ -305,7 +306,17 @@
                         <label>Пароль (для подтверждения)</label>
                         <input type="password" id="profileEmailPassword" autocomplete="current-password">
                     </div>
-                    <button class="slot-btn" id="changeEmailBtn" style="width: 100%;">Сменить почту</button>
+                    <div class="profile-form-group" id="emailCodeGroup" style="display: none;">
+                        <label>Код из письма (6 цифр)</label>
+                        <input type="text" id="profileEmailCodeInput" inputmode="numeric" pattern="[0-9]{6}"
+                               maxlength="6" autocomplete="one-time-code" placeholder="123456">
+                    </div>
+                    <div style="display: flex; gap: 8px;">
+                        <button class="slot-btn" id="requestEmailCodeBtn" style="flex: 1;">Отправить код</button>
+                        <button class="slot-btn" id="changeEmailBtn" style="flex: 1;">Сменить почту</button>
+                    </div>
+                    <button class="slot-btn" id="verifyEmailBtn" style="width: 100%; margin-top: 8px;">Подтвердить текущую почту</button>
+                    <div id="emailCodeHint" style="font-size: 0.8rem; opacity: 0.75; margin-top: 6px;"></div>
                 </div>
 
                 <div class="settings-section">
@@ -314,10 +325,15 @@
                         <label>Текущий пароль</label>
                         <input type="password" id="profileCurrentPassword" autocomplete="current-password">
                     </div>
-                    <div class="profile-form-group" id="emailCodeGroup" style="display: none;">
-                        <label>Подтверждение почты (введите свой email)</label>
-                        <input type="email" id="profileEmailCode" placeholder="user@example.com">
+                    <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                        <button class="slot-btn" id="requestPasswordCodeBtn" style="flex: 1;">Отправить код на почту</button>
                     </div>
+                    <div class="profile-form-group" id="passwordCodeGroup" style="display: none;">
+                        <label>Код из письма (6 цифр)</label>
+                        <input type="text" id="profilePasswordCode" inputmode="numeric" pattern="[0-9]{6}"
+                               maxlength="6" autocomplete="one-time-code" placeholder="123456">
+                    </div>
+                    <div id="passwordCodeHint" style="font-size: 0.8rem; opacity: 0.75; margin-bottom: 8px;"></div>
                     <div class="profile-form-group">
                         <label>Новый пароль</label>
                         <input type="password" id="profileNewPassword" autocomplete="new-password">
@@ -813,6 +829,46 @@
         
         applyContrast();
         
+        // Phase R7: бейдж статуса почты в профиле
+        function renderEmailStatus(data) {
+            const badge = document.getElementById('emailVerifiedBadge');
+            if (!badge) return;
+            badge.hidden = false;
+            if (!data || !data.email) {
+                badge.textContent = 'почта не задана';
+                badge.className = 'email-badge email-badge-unknown';
+                return;
+            }
+            if (data.email_verified) {
+                badge.textContent = '✓ подтверждена';
+                badge.className = 'email-badge email-badge-yes';
+            } else {
+                badge.textContent = 'не подтверждена';
+                badge.className = 'email-badge email-badge-no';
+            }
+        }
+
+        // Phase R7: единая отправка запроса на код (показываем поле ввода)
+        async function requestCode(purpose, extraFields, codeGroupId, hintId, okMessage) {
+            const fd = new FormData();
+            fd.append('purpose', purpose);
+            Object.keys(extraFields || {}).forEach(k => fd.append(k, extraFields[k]));
+            try {
+                const res = await fetch('/api/email/code/request', { method: 'POST', body: fd });
+                const data = await res.json().catch(() => ({}));
+                if (res.ok) {
+                    document.getElementById(codeGroupId).style.display = '';
+                    document.getElementById(hintId).textContent =
+                        okMessage + (data.sent_to ? ' (' + data.sent_to + ')' : '');
+                    return true;
+                }
+                alert(data.detail || 'Не удалось отправить код');
+            } catch (e) {
+                alert('Ошибка сети при запросе кода');
+            }
+            return false;
+        }
+
         // Load profile data
         let loadedProfileData = null;
         async function loadProfile() {
@@ -838,13 +894,11 @@
                     const el = (id) => document.getElementById(id);
                     el('profileCurrentUsername').value = '@' + (data.username || '');
                     el('profileCurrentEmail').value = data.email || '(не задана)';
-                    // Show email code field only if email is set
-                    const emailCodeGroup = el('emailCodeGroup');
-                    if (data.email) {
-                        emailCodeGroup.style.display = '';
-                    } else {
-                        emailCodeGroup.style.display = 'none';
-                    }
+                    // Phase R7: статус верификации почты — бейдж рядом с заголовком
+                    renderEmailStatus(data);
+                    // поля кодов появляются после запроса кода, а не сразу
+                    el('emailCodeGroup').style.display = 'none';
+                    el('passwordCodeGroup').style.display = 'none';
                     // Phase micro: apply font scale from profile
                     initFontScale(data.font_scale);
                 }
@@ -1473,18 +1527,56 @@
                 } catch (e) { alert('Ошибка сети'); }
             });
             
-            // Phase 7.1a: Change email
-            document.getElementById('changeEmailBtn').addEventListener('click', async () => {
+            // Phase R7: запрос кода на новую почту (шаг 1 смены почты)
+            document.getElementById('requestEmailCodeBtn').addEventListener('click', async () => {
                 const newEmail = document.getElementById('profileNewEmail').value.trim();
                 const password = document.getElementById('profileEmailPassword').value;
                 if (!newEmail) { alert('Введите новый email'); return; }
-                if (!password) { alert('Введите пароль'); return; }
+                if (!password) { alert('Введите текущий пароль'); return; }
+                await requestCode(
+                    'email_change',
+                    { new_email: newEmail, current_password: password },
+                    'emailCodeGroup', 'emailCodeHint',
+                    'Код отправлен на новую почту'
+                );
+            });
+
+            // Phase R7: подтверждение текущей почты
+            document.getElementById('verifyEmailBtn').addEventListener('click', async () => {
+                const ok = await requestCode(
+                    'verify', {}, 'emailCodeGroup', 'emailCodeHint', 'Код отправлен на почту'
+                );
+                if (!ok) return;
+                const code = document.getElementById('profileEmailCodeInput').value.trim();
+                if (!code) { alert('Введите код из письма'); return; }
+                const fd = new FormData();
+                fd.append('purpose', 'verify');
+                fd.append('code', code);
+                try {
+                    const res = await fetch('/api/email/code/confirm', { method: 'POST', body: fd });
+                    const data = await res.json().catch(() => ({}));
+                    if (res.ok) {
+                        document.getElementById('profileEmailCodeInput').value = '';
+                        document.getElementById('emailCodeHint').textContent = 'Почта подтверждена ✓';
+                        await loadProfile();
+                    } else {
+                        alert(data.detail || 'Код не принят');
+                    }
+                } catch (e) { alert('Ошибка сети'); }
+            });
+
+            // Phase R7: Change email — шаг 2 (код, пришедший на новый адрес)
+            document.getElementById('changeEmailBtn').addEventListener('click', async () => {
+                const newEmail = document.getElementById('profileNewEmail').value.trim();
+                const code = document.getElementById('profileEmailCodeInput').value.trim();
+                if (!newEmail) { alert('Введите новый email'); return; }
+                if (!code) { alert('Сначала запросите код на новую почту'); return; }
                 const fd = new FormData();
                 fd.append('email', newEmail);
-                fd.append('password', password);
+                fd.append('code', code);
                 try {
                     const res = await fetch('/api/profile/email', { method: 'POST', body: fd });
-                    const data = await res.json();
+                    const data = await res.json().catch(() => ({}));
                     if (res.ok) {
                         location.reload();
                     } else {
@@ -1492,30 +1584,45 @@
                     }
                 } catch (e) { alert('Ошибка сети'); }
             });
-            
-            // Phase 7.1a: Change password
+
+            // Phase R7: смена пароля — шаг 1: текущий пароль → код на почту
+            document.getElementById('requestPasswordCodeBtn').addEventListener('click', async () => {
+                const current = document.getElementById('profileCurrentPassword').value;
+                if (!current) { alert('Введите текущий пароль'); return; }
+                await requestCode(
+                    'password_change',
+                    { current_password: current },
+                    'passwordCodeGroup', 'passwordCodeHint',
+                    'Код отправлен, действует 10 минут'
+                );
+            });
+
+            // Phase R7: Change password — шаг 2: код + новый пароль
             document.getElementById('changePasswordBtn').addEventListener('click', async () => {
                 const current = document.getElementById('profileCurrentPassword').value;
-                const emailCode = document.getElementById('profileEmailCode').value.trim();
+                const code = document.getElementById('profilePasswordCode').value.trim();
                 const newPw = document.getElementById('profileNewPassword').value;
                 const confirmPw = document.getElementById('profileConfirmPassword').value;
                 if (!current) { alert('Введите текущий пароль'); return; }
+                if (!code) { alert('Сначала запросите код на почту'); return; }
                 if (!newPw) { alert('Введите новый пароль'); return; }
                 if (newPw !== confirmPw) { alert('Пароли не совпадают'); return; }
                 const fd = new FormData();
                 fd.append('current_password', current);
                 fd.append('new_password', newPw);
                 fd.append('confirm_password', confirmPw);
-                fd.append('email_code', emailCode);
+                fd.append('code', code);
                 try {
                     const res = await fetch('/api/profile/password', { method: 'POST', body: fd });
-                    const data = await res.json();
+                    const data = await res.json().catch(() => ({}));
                     if (res.ok) {
-                        alert('Пароль изменён');
+                        alert('Пароль изменён, остальные устройства разлогинены');
                         document.getElementById('profileCurrentPassword').value = '';
                         document.getElementById('profileNewPassword').value = '';
                         document.getElementById('profileConfirmPassword').value = '';
-                        document.getElementById('profileEmailCode').value = '';
+                        document.getElementById('profilePasswordCode').value = '';
+                        document.getElementById('passwordCodeGroup').style.display = 'none';
+                        document.getElementById('passwordCodeHint').textContent = '';
                     } else {
                         alert(data.detail || 'Ошибка смены пароля');
                     }
