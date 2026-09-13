@@ -715,16 +715,25 @@ header h1 {
     transition: width 0.15s linear;
 }
 
-/* Phase micro: glass toggle switch */
+/* Phase micro: glass toggle switch
+   7.8-fix2 [3]: только пилюля — ни border, ни outline, ни подложки-прямоугольника
+   (applyEditorContrast больше не вешает на .glass-toggle инлайновую рамку) */
 .glass-toggle {
-    background: none; border: none; padding: 0; cursor: pointer; outline: none;
+    background: none; border: none; outline: none; padding: 0; margin: 0;
+    cursor: pointer; line-height: 0; border-radius: 999px;
+}
+.glass-toggle:focus-visible {
+    outline: 2px solid var(--accent-color, #0084ff);
+    outline-offset: 3px;
 }
 .glass-toggle-track {
-    display: block; width: 44px; height: 24px; border-radius: 12px;
+    display: block; width: 44px; height: 24px; border-radius: 999px;
     background: rgba(0,0,0,0.18);
     box-shadow: inset 0 1px 3px rgba(0,0,0,0.15);
     transition: background 0.25s;
     position: relative;
+    -webkit-backdrop-filter: blur(6px) saturate(1.4);
+    backdrop-filter: blur(6px) saturate(1.4);
 }
 .glass-toggle-thumb {
     display: block; width: 20px; height: 20px; border-radius: 50%;
@@ -1243,6 +1252,33 @@ header h1 {
     margin-bottom: 1rem;
     color: var(--text-primary);
     font-size: 1rem;
+}
+
+/* Phase R7: бейдж верификации почты в профиле */
+.email-badge {
+    display: inline-block;
+    margin-left: 0.5rem;
+    padding: 0.1rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    vertical-align: middle;
+}
+
+.email-badge-yes {
+    background: var(--accent, #2f81f7);
+    color: #fff;
+}
+
+.email-badge-no {
+    background: rgba(220, 53, 69, 0.18);
+    color: var(--btn-danger-bg, #dc3545);
+}
+
+.email-badge-unknown {
+    background: rgba(128, 128, 128, 0.18);
+    color: var(--text-secondary, #888);
 }
 
 .color-picker-row {
@@ -2649,5 +2685,515 @@ header h1 {
     .accessory-island {
         margin: 0 6px;
         max-height: min(40vh, 300px);
+    }
+}
+
+/* ===== Phase 7.6d-fix: канал объявлений «ВайбБункер» ===== */
+/* Канал — не пользователь: объявления идут по центру, без аватара и без цитаты. */
+.message.system-announcement {
+    align-self: center;
+    margin: 0.6rem auto;
+    max-width: min(92%, 620px);
+    text-align: center;
+}
+
+.message.system-announcement .message-body {
+    /* 7.8-fix [5]: фон объявления — токен темы broadcast_bg, текст по YIQ
+       (--broadcast-text считает applyContrast). Раньше был --chip-bg: он не из
+       манифеста, в тёмной теме оставался светлым и текст сливался. */
+    background: var(--broadcast-bg, var(--chip-bg, rgba(128, 128, 128, 0.16)));
+    color: var(--broadcast-text, var(--text-primary));
+    border: 1px solid var(--border-color, rgba(128, 128, 128, 0.25));
+    border-radius: 16px;
+    padding: 0.7rem 1rem;
+    font-size: 0.92rem;
+    /* Phase 7.8: переносы даёт renderMarkdown (<br>) — pre-wrap удваивал бы строки */
+    white-space: normal;
+    word-break: break-word;
+    /* текст по центру — как принято в 7.6d-fix (п.4): само объявление и так
+       отцентровано в ленте, выравнивание внутри не трогаем */
+}
+
+.message.system-announcement .message-time {
+    justify-content: center;
+    opacity: 0.7;
+}
+
+.channel-marker {
+    margin-right: 0.3rem;
+    font-size: 0.9rem;
+}
+
+.user-item-system .user-username {
+    font-style: italic;
+    opacity: 0.75;
+}
+
+/* строка канала: без «занавеса» и без стрелки действий — канал не удаляют */
+.user-item-system {
+    cursor: pointer;
+}
+
+.channel-notice {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.9rem 1rem;
+    margin: 0.5rem 0;
+    border-radius: 14px;
+    background: var(--chip-bg, rgba(128, 128, 128, 0.14));
+    color: var(--text-secondary, #666);
+    font-size: 0.9rem;
+    text-align: center;
+    flex-wrap: wrap;
+}
+
+.channel-notice-icon {
+    font-size: 1.05rem;
+}
+
+/* плашка creator в пустом канале + кнопка «Вставить шаблон» */
+.channel-notice-creator {
+    justify-content: flex-start;
+    text-align: left;
+}
+
+.channel-notice-creator .cmd-chip {
+    margin-left: auto;
+    cursor: pointer;
+}
+
+/* оформление канала: в ящике профиля остаются только поля канала */
+.profile-channel-mode .settings-section:not(.channel-editable) {
+    display: none;
+}
+
+/* ===== Phase 7.6d-fix: markdown-подмножество в пузырях ===== */
+.message-text {
+    display: block;
+    overflow-wrap: anywhere;
+}
+
+.md-code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.9em;
+    padding: 0.05em 0.35em;
+    border-radius: 6px;
+    background: rgba(128, 128, 128, 0.22);
+}
+
+.md-code-block {
+    margin: 0.35rem 0;
+    padding: 0.5rem 0.65rem;
+    border-radius: 10px;
+    background: rgba(128, 128, 128, 0.22);
+    overflow-x: auto;
+    text-align: left;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.md-code-block code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.88em;
+}
+
+.message a {
+    color: inherit;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+/* =====================================================================
+   Phase 7.8: UI-полировка (шапка-остров, присутствие, закрытия)
+   ===================================================================== */
+
+/* ---- [1] Цвет ника: один токен на шапку чата и чужой профиль ---- */
+#chatHeaderName,
+#otherProfileName {
+    color: var(--name-color, var(--text-primary, #333333));
+}
+
+/* ---- [1.1] Тёмная тема: всё из токенов, чёрного по умолчанию нет ---- */
+.chat-header,
+.chat-header .chat-del-title {
+    color: var(--header-island-text, var(--text-primary, #333333));
+}
+
+/* ---- [2.1][2.2] Шапка чата — остров, внутри него остров «ава + ник» ---- */
+.chat-header {
+    margin: 8px 8px 0;
+    padding: 0.5rem 0.6rem;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    justify-content: flex-start;
+    flex-shrink: 0;
+    border: 1px solid var(--border-color, #dddddd);
+    border-radius: 16px;
+    background-color: var(--header-island-color, var(--panel-color, #ffffff));
+    background-color: color-mix(in srgb, var(--header-island-color, var(--panel-color, #ffffff)) 84%, transparent);
+    box-shadow: 0 4px 16px var(--shadow-1, rgba(0, 0, 0, 0.12));
+}
+
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .chat-header {
+        -webkit-backdrop-filter: blur(20px) saturate(1.4);
+        backdrop-filter: blur(20px) saturate(1.4);
+    }
+}
+
+.chat-peer-island {
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+    padding: 0.3rem 0.7rem 0.3rem 0.35rem;
+    border: 1px solid var(--border-color, rgba(128, 128, 128, 0.25));
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--panel-color, #ffffff) 55%, transparent);
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+    cursor: pointer;
+}
+
+/* =====================================================================
+   7.8-fix [2]: desktop — шапка чата это остров ПО ЦЕНТРУ
+   (мобила ниже не меняется: там остров во всю ширину, ава прижата к стрелке)
+   ===================================================================== */
+@media (min-width: 769px) {
+    .chat-header {
+        width: max-content;
+        max-width: calc(100% - 32px);
+        margin: 8px auto 0;      /* остров по центру чата */
+        padding: 0.45rem 1.2rem; /* padding симметричный */
+        gap: 0.75rem;
+        justify-content: center;
+        position: relative;      /* якорь для баннера-подложки и кнопок действий */
+        overflow: hidden;
+    }
+
+    /* вложенный контейнер прозрачный: стекло и рамку держит сам остров */
+    .chat-peer-island {
+        position: static;
+        overflow: visible;
+        padding: 0;
+        gap: 0.6rem;
+        border: none;
+        border-radius: 0;
+        background: none;
+        -webkit-backdrop-filter: none;
+        backdrop-filter: none;
+    }
+
+    /* баннер собеседника ложится под стекло ВСЕГО острова */
+    .chat-peer-banner {
+        inset: 0;
+        width: 100%;
+        height: 100%;
+    }
+
+    /* балансир справа = ширине авы: концы острова равноудалены от ника */
+    .chat-peer-island::after {
+        content: '';
+        flex: 0 0 32px;
+        width: 32px;
+        height: 1px;
+    }
+
+    .chat-peer-island.with-banner {
+        background: none;
+    }
+
+    /* ник по центру острова */
+    .chat-header .marquee-wrap {
+        flex: 1 1 auto;
+        min-width: 0;
+        text-align: center;
+    }
+
+    .chat-header .marquee-inner {
+        justify-content: center;
+    }
+
+    /* кнопки действий (трэш, участники) — в правом «балансирном» отсеке */
+    .chat-header-actions {
+        position: absolute;
+        right: 0.7rem;
+        top: 50%;
+        transform: translateY(-50%);
+        margin-left: 0;
+    }
+}
+
+/* [3] баннер собеседника — под стеклом, текст остаётся читаемым */
+.chat-peer-banner {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    opacity: 0.5;
+    z-index: 0;
+    pointer-events: none;
+}
+
+.chat-peer-island > *:not(.chat-peer-banner) {
+    position: relative;
+    z-index: 1;
+}
+
+.chat-peer-island.with-banner {
+    background: color-mix(in srgb, var(--panel-color, #ffffff) 40%, transparent);
+}
+
+.chat-header-avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.chat-header-actions {
+    margin-left: auto;
+    display: flex;
+    gap: 0.5rem;
+    flex-shrink: 0;
+}
+
+/* 7.8-fix [4]: верхняя шапка приложения НЕ зависит от токена header_color —
+   тот красится только на элементе #chatHeader. Здесь свой токен (--header-color)
+   плюс общий материал острова (--panel-color) — смешения нет. */
+
+/* ---- [5] Кнопка удаления чата: прижата к правому краю, по ширине иконки ---- */
+.curtain-actions {
+    justify-content: flex-end;
+    padding-right: 10px;
+}
+
+.user-item.curtain-open .curtain-slide {
+    transform: translateX(-64px);   /* 44px кнопка + 10px отступ + воздух */
+}
+
+/* ---- [5.1] Подтверждение удаления — фиксированная модалка (видна из контактов) ---- */
+.modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    background: rgba(0, 0, 0, 0.35);
+}
+
+.chat-del-confirm {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 2100;
+    width: min(320px, calc(100% - 32px));
+    padding: 1.1rem 1rem 1rem;
+}
+
+/* ---- [6] Присутствие: островок «был(а) в сети …» и границы аватарок ---- */
+.presence-island {
+    /* держится сверху ленты: видно и в начале переписки, и при скролле */
+    position: sticky;
+    top: 0;
+    z-index: 6;
+    width: fit-content;
+    max-width: 90%;
+    margin: 0 auto 0.5rem;
+    padding: 0.3rem 0.8rem;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-weight: 500;
+    color: var(--presence-text, var(--text-secondary, #666666));
+    border: 1px solid var(--border-color, rgba(128, 128, 128, 0.25));
+    background-color: color-mix(in srgb, var(--panel-color, #ffffff) 78%, transparent);
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+    pointer-events: none;
+}
+
+.user-avatar[data-presence] {
+    box-sizing: border-box;
+    border: 2px solid transparent;
+}
+
+.user-avatar[data-presence="online"] {
+    border-color: var(--presence-online, #2ecc71);
+}
+
+.user-avatar[data-presence="offline"] {
+    border-color: var(--presence-offline, #9aa0a6);
+}
+
+/* ---- [7] Единый круглый островок закрытия для всех drawer/модалок ---- */
+.island-close {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    z-index: 5;
+    width: 34px;
+    height: 34px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border-radius: 50%;
+    border: 1px solid var(--border-color, rgba(128, 128, 128, 0.35));
+    background: color-mix(in srgb, var(--panel-color, #ffffff) 60%, transparent);
+    color: var(--text-primary, #333333);
+    cursor: pointer;
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+    transition: background 0.15s, color 0.15s;
+}
+
+.island-close svg {
+    width: 16px;
+    height: 16px;
+    display: block;
+}
+
+.island-close:hover {
+    background: color-mix(in srgb, var(--btn-danger-bg, #dc3545) 18%, transparent);
+    color: var(--btn-danger-bg, #dc3545);
+    border-color: var(--btn-danger-bg, #dc3545);
+}
+
+/* 7.8-fix2 [1]: крестик ВНЕ ПОТОКА — position:absolute, контент центрируется
+   НЕЗАВИСИМО от него. Никаких padding-отступов под кнопку: баннер/имя/bio
+   стоят строго по центру, как будто кнопки нет. */
+.theme-drawer-header,
+.profile-modal-content,
+.delete-account-modal-content,
+.settings-modal-content {
+    position: relative;   /* только якорь для .island-close */
+}
+
+.theme-drawer-header {
+    justify-content: center;
+}
+
+.theme-drawer-header h2 {
+    flex: 1;
+    text-align: center;
+}
+
+/* модалка картинки: кнопка живёт сверху над контентом */
+.island-close.modal-close {
+    top: -40px;
+    right: 0;
+}
+
+/* ---- тумблеры темы в редакторе (7.8-fix2 [3]: чистая пилюля, без рамок) ---- */
+.theme-toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+
+.theme-toggle-row label {
+    flex: 1;
+    min-width: 0;
+}
+
+/* =====================================================================
+   Phase 7.8: мобила (390×844) — компактная шапка-остров
+   ===================================================================== */
+@media (max-width: 768px) {
+    /* =================================================================
+       7.8-fix3: геометрия пузыря профиля на мобиле (свой / чужой / канал)
+       ================================================================= */
+    .profile-modal-content {
+        /* ШИРИНА как на desktop — не узкая колонка по контенту */
+        width: min(92vw, 420px);
+        max-width: min(92vw, 420px);
+        /* ВЫСОТА по контенту — не растянута во весь экран */
+        height: auto;
+        max-height: 85vh;
+        max-height: 85dvh;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        /* ЦЕНТР по обеим осям: оверлей .modal на мобиле стоит
+           align-items/justify-content: stretch — auto-поля перебивают stretch */
+        margin: auto;
+        align-self: center;
+        border-radius: 20px;
+        box-shadow: 0 12px 40px var(--shadow-2, rgba(0, 0, 0, 0.3));
+        animation: none;
+    }
+
+    /* свой профиль (и канал в режиме профиля) — ящик .profile-drawer:
+       на мобиле он был листом во весь экран, теперь такой же пузырь */
+    .profile-drawer {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        right: auto;
+        bottom: auto;
+        width: min(92vw, 420px) !important;
+        height: auto;
+        max-height: 85vh;
+        max-height: 85dvh;
+        margin: 0;
+        transform: translate(-50%, -50%);
+        border-radius: 20px;
+        box-shadow: 0 12px 40px var(--shadow-2, rgba(0, 0, 0, 0.3));
+        z-index: 1100;
+    }
+    .profile-drawer.open {
+        display: flex;
+        transform: translate(-50%, -50%);
+    }
+    /* внутри пузыря скроллится тело, шапка с крестиком остаётся на месте */
+    .profile-drawer .theme-drawer-body {
+        min-height: 0;
+    }
+
+    .chat-header {
+        margin: 6px 6px 0;
+        padding: 0.4rem 0.5rem;
+        gap: 0.25rem;
+        border-radius: 14px;
+    }
+
+    /* ава прижата к стрелке назад: без дыр по центру */
+    .chat-back-btn {
+        margin-right: -4px;
+        flex-shrink: 0;
+    }
+
+    .chat-peer-island {
+        padding: 0.25rem 0.55rem 0.25rem 0.3rem;
+        gap: 0.35rem;
+        min-width: 0;
+        flex: 1 1 auto;
+    }
+
+    .chat-header-avatar {
+        width: 28px !important;
+        height: 28px !important;
+        margin-right: 0 !important;
+    }
+
+    .marquee-wrap {
+        max-width: none;
+        flex: 1 1 auto;
+        min-width: 0;
+    }
+
+    .chat-header-actions {
+        margin-left: auto;
+    }
+
+    /* подтверждение удаления — по центру экрана, поверх всего */
+    .chat-del-confirm {
+        width: min(320px, calc(100% - 32px));
+        padding: 1.1rem 1rem 1rem;
     }
 }

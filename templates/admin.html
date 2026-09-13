@@ -48,9 +48,45 @@
         .modal-content h3 { margin-bottom: 1rem; }
         .modal-content input, .modal-content select { width: 100%; padding: 0.75rem; border: 1px solid var(--border-color, #dddddd); border-radius: 4px; margin-bottom: 1rem; }
         .modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; }
+        /* Phase 7.8: единый круглый островок закрытия — как в профиле и редакторе тем */
+        .island-close {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            width: 34px;
+            height: 34px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            border: 1px solid rgba(128, 128, 128, 0.35);
+            background: rgba(128, 128, 128, 0.18);
+            color: #333;
+            cursor: pointer;
+            -webkit-backdrop-filter: blur(10px);
+            backdrop-filter: blur(10px);
+            transition: background 0.15s, color 0.15s;
+        }
+        .island-close svg { width: 16px; height: 16px; display: block; }
+        .island-close:hover { background: rgba(220, 53, 69, 0.18); color: #dc3545; }
+        /* 7.8-fix2 [1]: крестик вне потока — контент не сдвигается под кнопку */
+        .modal-content { position: relative; }
+        .modal-content h3 { text-align: center; }
         .modal-actions button { padding: 0.5rem 1rem; border: none; border-radius: 4px; cursor: pointer; }
         .btn-cancel { background: #e4e6eb; color: #333; }
         .btn-confirm { background: #0084ff; color: white; }
+        
+        /* Phase R2: toast вместо alert */
+        .toast { position: fixed; left: 50%; bottom: 2rem; transform: translateX(-50%); background: #333; color: #fff; padding: 0.75rem 1.25rem; border-radius: 6px; font-size: 0.9rem; opacity: 0; pointer-events: none; transition: opacity 0.2s ease; z-index: 2000; }
+        .toast.show { opacity: 1; }
+        
+        /* Phase R4: карточки метрик пульса */
+        .pulse-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
+        .pulse-metrics .metric { background: #f8f9fa; border: 1px solid var(--border-color, #eeeeee); border-radius: 8px; padding: 0.6rem 0.75rem; }
+        .pulse-metrics .metric .label { font-size: 0.75rem; color: #666; }
+        .pulse-metrics .metric .value { font-size: 1.05rem; font-weight: 600; color: #333; margin-top: 0.15rem; }
+        .pulse-metrics .metric .value.bad { color: #dc3545; }
+        .pulse-metrics .metric .value.good { color: #28a745; }
         
         @media (max-width: 768px) {
             .container { padding: 0.5rem; }
@@ -96,6 +132,15 @@
             <p id="limitsStatus" style="margin-top: 0.5rem; font-size: 0.85rem; color: #28a745; display: none;"></p>
         </div>
         
+        <!-- Phase R2: обслуживание хранилища -->
+        <div class="section">
+            <h2>Обслуживание</h2>
+            <div class="invite-section">
+                <button class="invite-btn" id="cleanupOrphansBtn">Почистить сирот</button>
+                <span style="font-size: 0.85rem; color: #666;">Файлы в uploads без записи в attachments (недописанные .part удаляются при старте)</span>
+            </div>
+        </div>
+
         <!-- Phase 7.1c: Audit Log -->
         <div class="section">
             <h2>Аудит</h2>
@@ -107,15 +152,21 @@
             </div>
         </div>
         
-        <!-- Phase 7.1c: Pulse -->
+        <!-- Phase 7.1c / R4: Pulse -->
         <div class="section">
             <h2>Пульс <span id="pulseStatus" style="font-size: 0.75rem; color: #28a745; font-weight: normal;">● live</span></h2>
+            <div id="pulseMetrics" class="pulse-metrics"></div>
             <div style="max-height: 300px; overflow-y: auto;" id="pulseWrap">
                 <table>
                     <thead><tr><th>Время</th><th>Тип</th><th>Детали</th></tr></thead>
                     <tbody id="pulseTable"></tbody>
                 </table>
             </div>
+            <p style="margin-top: 0.5rem; font-size: 0.8rem; color: #666;">
+                Логи: <code>data/logs/app.log</code> и <code>data/logs/error.log</code> (ротация 5 МБ × 5).
+                Проверить error.log: кнопка «Подорвать» (только админ, ответ 500).
+                <button class="action-btn btn-block" id="debugBoomBtn" style="margin-left: 0.5rem;">Подорвать</button>
+            </p>
         </div>
         
         <!-- Users Table -->
@@ -162,9 +213,13 @@
         </div>
     </div>
     
+    <!-- Phase R2: toast -->
+    <div class="toast" id="toast"></div>
+    
     <!-- Warn Modal -->
     <div class="modal" id="warnModal">
         <div class="modal-content">
+            <button type="button" class="island-close" id="warnCloseBtn" title="Закрыть" aria-label="Закрыть"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg></button>
             <h3>Warn User</h3>
             <p id="warnTargetName"></p>
             <input type="hidden" id="warnTargetId">
@@ -179,6 +234,7 @@
     <!-- Ban Modal -->
     <div class="modal" id="banModal">
         <div class="modal-content">
+            <button type="button" class="island-close" id="banCloseBtn" title="Закрыть" aria-label="Закрыть"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg></button>
             <h3>Ban User</h3>
             <p id="banTargetName"></p>
             <input type="hidden" id="banTargetId">
@@ -192,6 +248,40 @@
     </div>
 
     <script>
+        // Phase R6 (CSRF, double-submit): cookie csrftoken → заголовок X-CSRF-Token
+        // на каждом изменяющем fetch. Один патч на всю админку.
+        (function () {
+            function getCookie(name) {
+                const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const match = document.cookie.match(new RegExp('(?:^|; )' + escaped + '=([^;]*)'));
+                return match ? decodeURIComponent(match[1]) : '';
+            }
+            const originalFetch = window.fetch;
+            window.fetch = function (input, init) {
+                const options = init || {};
+                const method = String(options.method || (input && input.method) || 'GET').toUpperCase();
+                if (method !== 'GET' && method !== 'HEAD') {
+                    const token = getCookie('csrftoken');
+                    if (token) {
+                        const headers = new Headers(options.headers || (input && input.headers) || {});
+                        headers.set('X-CSRF-Token', token);
+                        return originalFetch(input, Object.assign({}, options, { headers: headers }));
+                    }
+                }
+                return originalFetch(input, init);
+            };
+        })();
+
+        // Phase R6 (XSS): пользовательские строки в innerHTML — только через escapeHtml
+        function escapeHtml(value) {
+            return String(value == null ? '' : value)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
         // Load invites, limits, audit and pulse on page load
         loadInvites();
         loadLimits();
@@ -209,9 +299,9 @@
                     const div = document.createElement('div');
                     div.className = 'invite-item';
                     div.innerHTML = `
-                        <span><code>${inv.code}</code></span>
+                        <span><code>${escapeHtml(inv.code)}</code></span>
                         <span class="invite-status ${inv.used_by ? 'used' : 'unused'}">
-                            ${inv.used_by ? 'Used by @' + inv.used_by_username : 'Unused'}
+                            ${inv.used_by ? 'Used by @' + escapeHtml(inv.used_by_username) : 'Unused'}
                         </span>
                     `;
                     list.appendChild(div);
@@ -241,6 +331,9 @@
             document.getElementById('warnModal').classList.add('active');
         }
         
+        document.getElementById('warnCloseBtn').addEventListener('click', closeWarnModal);
+        document.getElementById('banCloseBtn').addEventListener('click', closeBanModal);
+
         function closeWarnModal() {
             document.getElementById('warnModal').classList.remove('active');
         }
@@ -348,6 +441,38 @@
             }
         }
 
+        // Phase R2: toast вместо alert
+        let toastTimer = null;
+        function showToast(message) {
+            const el = document.getElementById('toast');
+            el.textContent = message;
+            el.classList.add('show');
+            clearTimeout(toastTimer);
+            toastTimer = setTimeout(() => el.classList.remove('show'), 3000);
+        }
+
+        // Phase R2: чистка файлов-сирот в uploads
+        document.getElementById('cleanupOrphansBtn').addEventListener('click', async () => {
+            const btn = document.getElementById('cleanupOrphansBtn');
+            btn.disabled = true;
+            try {
+                const res = await fetch('/api/admin/cleanup-orphans', { method: 'POST' });
+                const data = await res.json();
+                if (!res.ok) {
+                    showToast('Ошибка чистки: ' + (data.detail || res.status));
+                    return;
+                }
+                showToast(data.deleted === 0
+                    ? 'Сирот нет — удалять нечего'
+                    : 'Удалено файлов-сирот: ' + data.deleted);
+                loadAudit();
+            } catch (err) {
+                showToast('Ошибка чистки: ' + err);
+            } finally {
+                btn.disabled = false;
+            }
+        });
+
         // Phase 7.1b: load/save upload limits
         async function loadLimits() {
             try {
@@ -385,27 +510,87 @@
                 const rows = await res.json();
                 const tbody = document.getElementById('auditTable');
                 tbody.innerHTML = rows.map(r => `<tr>
-                    <td style="white-space:nowrap">${r.created_at || ''}</td>
-                    <td>${r.actor ? '@' + r.actor : '-'}</td>
-                    <td>${r.action}</td>
-                    <td>${r.target ? '@' + r.target : '-'}</td>
-                    <td>${r.detail || ''}</td>
+                    <td style="white-space:nowrap">${escapeHtml(r.created_at || '')}</td>
+                    <td>${r.actor ? '@' + escapeHtml(r.actor) : '-'}</td>
+                    <td>${escapeHtml(r.action)}</td>
+                    <td>${r.target ? '@' + escapeHtml(r.target) : '-'}</td>
+                    <td>${escapeHtml(r.detail || '')}</td>
                 </tr>`).join('');
             } catch (err) {
                 console.error('Failed to load audit:', err);
             }
         }
 
-        // Phase 7.1c: pulse
+        // Phase R4: человеческие единицы для метрик
+        function humanBytes(bytes) {
+            if (bytes === null || bytes === undefined) return '—';
+            const mb = bytes / (1024 * 1024);
+            return mb >= 1024 ? (mb / 1024).toFixed(1) + ' ГБ' : mb.toFixed(1) + ' МБ';
+        }
+        function humanDuration(seconds) {
+            if (seconds === null || seconds === undefined) return '—';
+            const m = Math.floor(seconds / 60), h = Math.floor(m / 60), d = Math.floor(h / 24);
+            if (d > 0) return d + ' д ' + (h % 24) + ' ч';
+            if (h > 0) return h + ' ч ' + (m % 60) + ' мин';
+            if (m > 0) return m + ' мин';
+            return Math.round(seconds) + ' с';
+        }
+        function humanTime(iso) {
+            if (!iso) return 'нет данных';
+            const d = new Date(iso);
+            return isNaN(d.getTime()) ? iso : d.toLocaleString();
+        }
+
+        // Phase R4: карточки метрик
+        function renderMetrics(m) {
+            if (!m) return;
+            const integrityOk = m.last_integrity && m.last_integrity.ok;
+            const integrityText = m.last_integrity && m.last_integrity.detail
+                ? (integrityOk ? 'ok' : String(m.last_integrity.detail).slice(0, 40))
+                : '—';
+            const cards = [
+                ['Свободно на диске', humanBytes(m.disk_free_bytes), ''],
+                ['Размер БД', humanBytes(m.db_size_bytes), ''],
+                ['Uptime', humanDuration(m.uptime_seconds), ''],
+                ['WS-соединений', String(m.ws_connections ?? '—'), ''],
+                ['Ошибок за час', String(m.errors_last_hour ?? '—'),
+                    (m.errors_last_hour || 0) > 0 ? 'bad' : 'good'],
+                ['Целостность БД', integrityText, integrityOk ? 'good' : 'bad'],
+                ['Последний бэкап', humanTime(m.last_backup_at), m.last_backup_at ? '' : 'bad'],
+            ];
+            document.getElementById('pulseMetrics').innerHTML = cards.map(
+                ([label, value, cls]) => `<div class="metric">
+                    <div class="label">${label}</div>
+                    <div class="value ${cls}">${value}</div>
+                </div>`
+            ).join('');
+        }
+
+        // Phase R4: намеренный бум — проверяем, что error.log ловит traceback
+        document.getElementById('debugBoomBtn').addEventListener('click', async () => {
+            try {
+                const res = await fetch('/api/admin/debug-boom', { method: 'POST' });
+                showToast(res.status === 500
+                    ? 'Бум: 500 ушёл клиенту, traceback — в error.log'
+                    : 'Неожиданный ответ: ' + res.status);
+                loadPulse();
+            } catch (err) {
+                showToast('Запрос не дошёл: ' + err);
+            }
+        });
+
+        // Phase 7.1c / R4: pulse + метрики
         async function loadPulse() {
             try {
                 const res = await fetch('/api/admin/pulse');
-                const rows = await res.json();
+                const data = await res.json();
+                renderMetrics(data.metrics);
+                const rows = data.events || [];
                 const tbody = document.getElementById('pulseTable');
                 tbody.innerHTML = rows.slice().reverse().map(r => `<tr>
-                    <td style="white-space:nowrap">${r.ts}</td>
-                    <td>${r.kind}</td>
-                    <td>${r.detail}</td>
+                    <td style="white-space:nowrap">${escapeHtml(r.ts)}</td>
+                    <td>${escapeHtml(r.kind)}</td>
+                    <td>${escapeHtml(r.detail)}</td>
                 </tr>`).join('');
             } catch (err) {
                 console.error('Failed to load pulse:', err);

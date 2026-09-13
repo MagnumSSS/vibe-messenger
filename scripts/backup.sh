@@ -1,60 +1,17 @@
 #!/bin/bash
 # Backup script for Private Messenger
-# Creates timestamped backup of SQLite database and uploads directory
+#
+# Phase R2: вся логика перенесена в scripts/backup.py — онлайн-копия через
+# sqlite3.Connection.backup() (Online Backup API, WAL-safe, без остановки сервиса)
+# плюс обязательный PRAGMA integrity_check ПО КОПИИ: битую копию скрипт не считает
+# бэкапом и завершается ненулевым кодом.
+#
+# Шим оставлен, чтобы не ломать cron и документацию: те же env-переменные
+# (DATA_DIR, BACKUP_DIR, DB_NAME, RETAIN_COUNT) и тот же exit-код.
 
-set -e
+set -euo pipefail
 
-# Configuration - can be overridden via environment variables
-DATA_DIR="${DATA_DIR:-/var/lib/messenger/data}"
-BACKUP_DIR="${BACKUP_DIR:-/var/lib/messenger/backups}"
-DB_NAME="${DB_NAME:-messenger.db}"
-RETAIN_COUNT="${RETAIN_COUNT:-7}"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PY="${PYTHON:-python3}"
 
-# Create backup directory if it doesn't exist
-mkdir -p "$BACKUP_DIR"
-
-# Generate timestamp
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-BACKUP_DB="$BACKUP_DIR/messenger-${TIMESTAMP}.db"
-BACKUP_TAR="$BACKUP_DIR/uploads-${TIMESTAMP}.tar.gz"
-
-echo "Starting backup at $(date)"
-echo "Data directory: $DATA_DIR"
-echo "Backup directory: $BACKUP_DIR"
-
-# SQLite Online Backup API — та же механика, что у CLI .backup, но без внешней зависимости — автономность сердца
-if [ -f "$DATA_DIR/$DB_NAME" ]; then
-    echo "Backing up database..."
-    python3 - "$DATA_DIR/$DB_NAME" "$BACKUP_DB" <<'PY'
-import sqlite3, sys
-src = sqlite3.connect(sys.argv[1]); dst = sqlite3.connect(sys.argv[2])
-with dst: src.backup(dst)
-src.close(); dst.close()
-PY
-    echo "Database backup created: $BACKUP_DB"
-else
-    echo "ERROR: Database file not found at $DATA_DIR/$DB_NAME"
-    exit 1
-fi
-
-# Backup uploads directory
-if [ -d "$DATA_DIR/uploads" ]; then
-    echo "Backing up uploads..."
-    tar -czf "$BACKUP_TAR" -C "$DATA_DIR" uploads
-    echo "Uploads backup created: $BACKUP_TAR"
-else
-    echo "WARNING: Uploads directory not found at $DATA_DIR/uploads"
-fi
-
-# Remove old backups (keep only RETAIN_COUNT most recent)
-echo "Cleaning old backups (keeping last $RETAIN_COUNT)..."
-cd "$BACKUP_DIR"
-ls -t messenger-*.db 2>/dev/null | tail -n +$((RETAIN_COUNT + 1)) | xargs -r rm --
-ls -t uploads-*.tar.gz 2>/dev/null | tail -n +$((RETAIN_COUNT + 1)) | xargs -r rm --
-
-echo "Backup completed successfully at $(date)"
-echo ""
-echo "To restore on a clean machine:"
-echo "  1. Copy $BACKUP_DB to \$DATA_DIR/$DB_NAME"
-echo "  2. Extract $BACKUP_TAR to \$DATA_DIR/"
-echo "  3. Start the messenger service"
+exec "$PY" "$HERE/backup.py" "$@"

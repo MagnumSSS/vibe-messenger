@@ -1,20 +1,27 @@
 import os
 import re
+import sys
 import sqlite3
 import hashlib
+import hmac
 import secrets
+import smtplib
+import ssl
 import uuid
+from email.message import EmailMessage
 import json
 import base64
 import mimetypes
 import time
 import asyncio
 import logging
+import shutil
+from logging.handlers import RotatingFileHandler
 from collections import deque
 from datetime import datetime, timezone, timedelta
 from contextlib import contextmanager
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, parse_qs
 
 
 import aiofiles
@@ -23,31 +30,152 @@ from fastapi import FastAPI, Request, Form, Depends, HTTPException, status, WebS
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse, Response
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.datastructures import MutableHeaders
+from starlette.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles 
 
+# ========== Phase R5: .env подхватывается ДО чтения любых настроек ==========
+# Явные переменные окружения всегда важнее файла (load_env их не перезаписывает).
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts"))
+import load_env  # noqa: E402  (импорт после настройки sys.path — так и задумано)
+
+load_env.load()
+
 # Config from env
-SECRET_KEY = os.environ.get("SECRET_KEY")
-if SECRET_KEY is None:
-    # Fixed dev key for development - DO NOT use in production
-    SECRET_KEY = "dev-secret-key-change-in-production"
-    import sys
-    print("=" * 80, file=sys.stderr)
-    print("WARNING: SECRET_KEY not set! Using fixed development key.", file=sys.stderr)
-    print("All sessions will persist across restarts, but this is INSECURE for production.", file=sys.stderr)
-    print("Please set the SECRET_KEY environment variable in production.", file=sys.stderr)
-    print("=" * 80, file=sys.stderr)
+APP_MODE = (os.environ.get("APP_MODE") or "dev").strip().lower()
+SECRET_KEY = (os.environ.get("SECRET_KEY") or "").strip()
+# Phase R4: сам ключ в логи не пишем никогда — только факт/длину
+DEV_FALLBACK_KEY = "dev-secret-key-change-in-production"
 FIRST_USER_ADMIN = os.environ.get("FIRST_USER_ADMIN", "1") == "1"
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", "10485760"))  # 10MB default
 THEME_IMAGE_MAX_BYTES = int(os.environ.get("THEME_IMAGE_MAX_BYTES", str(5 * 1024 * 1024)))  # ~5MB for theme image slots (separate from MAX_UPLOAD_BYTES)
 PORT = int(os.environ.get("PORT", "8000"))
-DATA_DIR = os.environ.get("DATA_DIR", "./data")
+# Phase R1: DATA_DIR is the single source of truth for all persistent state.
+# DB and uploads are derived from it, tests may point it at a temp dir.
+DATA_DIR = os.environ.get("DATA_DIR", "data")
 
-os.makedirs(DATA_DIR, exist_ok=True)
+
+# ========== Phase R5: guard DATA_DIR ==========
+# Проверяем ДО логирования и БД: если каталог недоступен, дальше нет смысла идти.
+def guard_data_dir(path: str) -> None:
+    """Каталог данных должен существовать (или создаваться) и быть доступен для записи."""
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError as exc:
+        sys.stderr.write(f"FATAL: DATA_DIR={path!r} не удалось создать: {exc}\n")
+        sys.exit(1)
+    if not os.path.isdir(path):
+        sys.stderr.write(f"FATAL: DATA_DIR={path!r} не является каталогом\n")
+        sys.exit(1)
+    probe = os.path.join(path, ".write-test")
+    try:
+        with open(probe, "w") as handle:
+            handle.write("ok")
+        os.remove(probe)
+    except OSError as exc:
+        sys.stderr.write(f"FATAL: DATA_DIR={path!r} недоступен для записи: {exc}\n")
+        sys.exit(1)
+
+
+guard_data_dir(DATA_DIR)
+
 DB_PATH = os.path.join(DATA_DIR, "messenger.db")
 UPLOADS_DIR = os.path.join(DATA_DIR, "uploads")
 THEME_IMAGES_DIR = os.path.join(DATA_DIR, "theme_images")
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 os.makedirs(THEME_IMAGES_DIR, exist_ok=True)
+
+
+# ========== Phase R4: логи ==========
+# Всё пишется в data/logs (data/ целиком в .gitignore), формат:
+#   время | level | модуль | сообщение
+# Секреты (cookie, SECRET_KEY, пароли) в логи не попадают — см. УСТАВ, п. 12.
+LOG_DIR = os.path.join(DATA_DIR, "logs")
+LOG_FORMAT = "%(asctime)s | %(levelname)s | %(module)s | %(message)s"
+LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
+LOG_MAX_BYTES = 5 * 1024 * 1024   # 5 МБ на файл
+LOG_BACKUP_COUNT = 5              # app.log.1 … app.log.5
+APP_LOG_PATH = os.path.join(LOG_DIR, "app.log")
+ERROR_LOG_PATH = os.path.join(LOG_DIR, "error.log")
+
+
+def setup_logging(level=logging.INFO) -> None:
+    """
+    Настроить логи один раз на процесс:
+      data/logs/app.log   — INFO и выше, ротация 5 МБ × 5
+      data/logs/error.log — только ERROR и выше, своя ротация
+      stdout              — дубль app.log, чтобы dev-режим остался видимым
+    """
+    os.makedirs(LOG_DIR, exist_ok=True)
+    formatter = logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT)
+
+    root = logging.getLogger("messenger")
+    root.setLevel(level)
+    for handler in list(root.handlers):     # повторный вызов не плодит хендлеры
+        root.removeHandler(handler)
+        try:
+            handler.close()
+        except Exception:
+            pass
+
+    app_handler = RotatingFileHandler(
+        APP_LOG_PATH, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT, encoding="utf-8"
+    )
+    app_handler.setLevel(logging.INFO)
+    app_handler.setFormatter(formatter)
+    root.addHandler(app_handler)
+
+    error_handler = RotatingFileHandler(
+        ERROR_LOG_PATH, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT, encoding="utf-8"
+    )
+    error_handler.setLevel(logging.ERROR)
+    error_handler.setFormatter(formatter)
+    root.addHandler(error_handler)
+
+    console = logging.StreamHandler(stream=sys.stdout)
+    console.setLevel(logging.INFO)
+    console.setFormatter(formatter)
+    root.addHandler(console)
+
+    root.propagate = False
+
+
+setup_logging()
+
+app_logger = logging.getLogger("messenger.app")
+error_logger = logging.getLogger("messenger.error")
+admin_logger = logging.getLogger("messenger.admin")
+
+# ========== Phase R5: режимы (dev|prod) и строгость к SECRET_KEY ==========
+if APP_MODE not in ("dev", "prod"):
+    app_logger.warning("APP_MODE=%r неизвестен — работаем как dev", APP_MODE)
+    APP_MODE = "dev"
+
+if APP_MODE == "prod":
+    if not SECRET_KEY or SECRET_KEY == "localdev" or len(SECRET_KEY) < 32:
+        error_logger.error(
+            "APP_MODE=prod требует SECRET_KEY >= 32 символов "
+            "(сейчас: %s); сгенерируй: python -c \"import secrets;print(secrets.token_hex(32))\"",
+            "не задан" if not SECRET_KEY else f"{len(SECRET_KEY)} символов"
+        )
+        sys.exit(1)
+    app_logger.info("APP_MODE=prod, SECRET_KEY задан (%d символов)", len(SECRET_KEY))
+elif not SECRET_KEY:
+    SECRET_KEY = DEV_FALLBACK_KEY
+    app_logger.warning("dev-режим: SECRET_KEY не задан — используется небезопасный ключ разработки")
+elif SECRET_KEY == "localdev":
+    app_logger.warning("dev-режим: SECRET_KEY=localdev — небезопасный ключ dev-режима")
+elif len(SECRET_KEY) < 32:
+    app_logger.warning("dev-режим: слабый SECRET_KEY (%d символов) — для прода непригоден", len(SECRET_KEY))
+else:
+    app_logger.info("dev-режим: SECRET_KEY задан (%d символов)", len(SECRET_KEY))
+
+# uptime считается от момента импорта приложения
+START_TIME = time.monotonic()
+# результат стартовой проверки целостности (для /api/admin/pulse)
+LAST_INTEGRITY: dict = {"ok": None, "detail": None, "ts": None}
+# метки времени необработанных ошибок — по ним считается errors_last_hour
+_error_timestamps: deque = deque()
 
 # ========== THEME TOKENS MANIFEST (Phase 5.2) ==========
 # Data-driven theme engine: each token has key, css_var, default, type
@@ -69,6 +197,14 @@ THEME_TOKENS = {
         "hover": {"key": "hover", "css_var": "--hover-bg", "default": "#f5f5f5", "type": "color"},
         "active": {"key": "active", "css_var": "--active-bg", "default": "#e6f2ff", "type": "color"},
         "select_border": {"key": "select_border", "css_var": "--select-border", "default": "#0084ff", "type": "color"},
+        # Phase 7.8: цвет острова шапки (glass сохраняется), цвет ника, цвета присутствия
+        "header_color": {"key": "header_color", "css_var": "--header-island-color", "default": "#ffffff", "type": "color"},
+        "name_color": {"key": "name_color", "css_var": "--name-color", "default": "#0084ff", "type": "color"},
+        "presence_online": {"key": "presence_online", "css_var": "--presence-online", "default": "#2ecc71", "type": "color"},
+        "presence_offline": {"key": "presence_offline", "css_var": "--presence-offline", "default": "#9aa0a6", "type": "color"},
+        "presence_text": {"key": "presence_text", "css_var": "--presence-text", "default": "#666666", "type": "color"},
+        # Phase 7.8-fix: фон объявлений канала (текст считается YIQ-автоконтрастом)
+        "broadcast_bg": {"key": "broadcast_bg", "css_var": "--broadcast-bg", "default": "#e4e6eb", "type": "color"},
     },
     "images": {
         "header_img": {"key": "header_img", "css_var": "--header-img", "default": None, "type": "image"},
@@ -83,6 +219,13 @@ THEME_TOKENS = {
     # Phase 6.6b: sizing tokens - scale multiplier for command chips & toggle icon
     "sizing": {
         "chip_size": {"key": "chip_size", "css_var": "--chip-scale", "default": 1.0, "type": "range", "min": 0.8, "max": 1.3, "unit": "", "step": 0.05},
+    },
+    # Phase 7.8: бинарные настройки темы (тумблеры в редакторе)
+    "toggles": {
+        "name_color_auto": {"key": "name_color_auto", "default": True, "type": "toggle",
+                            "label": "Цвет ника: авто-контраст из темы"},
+        "peer_banner_header": {"key": "peer_banner_header", "default": False, "type": "toggle",
+                               "label": "Баннер собеседника в шапке"},
     }
 }
 
@@ -125,11 +268,19 @@ THEME_PRESETS = {
             "modal_bg": "#ffffff",
             "hover": "#f5f5f5",
             "active": "#e6f2ff",
-            "chip_cmd": "#dbe7ff"
+            "chip_cmd": "#dbe7ff",
+            # Phase 7.8
+            "header_color": "#ffffff",
+            "name_color": "#0084ff",
+            "presence_online": "#2ecc71",
+            "presence_offline": "#9aa0a6",
+            "presence_text": "#666666",
+            "broadcast_bg": "#e4e6eb"
         },
         "images": {},
         "effects": {"wallpaper_blur": 0, "bubble_blur": 0},
-        "sizing": {"chip_size": 1.0}
+        "sizing": {"chip_size": 1.0},
+        "toggles": {"name_color_auto": True, "peer_banner_header": False}
     },
     "dark": {
         "colors": {
@@ -149,10 +300,18 @@ THEME_PRESETS = {
             "hover": "#22304f",
             "active": "#2a3a5f",
             "chip_cmd": "#2a3550",
+            # Phase 7.8: остров шапки — тёмный, ник — светлый (YIQ-автоконтраст)
+            "header_color": "#16213e",
+            "name_color": "#eaeaea",
+            "presence_online": "#2ecc71",
+            "presence_offline": "#8b8f94",
+            "presence_text": "#a0a0a0",
+            "broadcast_bg": "#2d3436"
         },
         "images": {},
         "effects": {"wallpaper_blur": 0, "bubble_blur": 0},
-        "sizing": {"chip_size": 1.0}
+        "sizing": {"chip_size": 1.0},
+        "toggles": {"name_color_auto": True, "peer_banner_header": False}
     }
 }
 
@@ -184,11 +343,13 @@ def merge_theme_with_defaults(theme_json_str):
             "colors": {**THEME_PRESETS["default"]["colors"], **theme.get("colors", {})},
             "images": {**THEME_PRESETS["default"]["images"], **theme.get("images", {})},
             "effects": {**THEME_PRESETS["default"].get("effects", {}), **theme.get("effects", {})},
-            "sizing": {**THEME_PRESETS["default"].get("sizing", {}), **theme.get("sizing", {})}
+            "sizing": {**THEME_PRESETS["default"].get("sizing", {}), **theme.get("sizing", {})},
+            # Phase 7.8: тумблеры темы
+            "toggles": {**THEME_PRESETS["default"].get("toggles", {}), **theme.get("toggles", {})}
         }
         return result
     except Exception as e:
-        print(f"Theme merge error: {e}")
+        app_logger.warning("тема: не удалось разобрать theme_json: %s", e)
         return THEME_PRESETS["default"]
 
 
@@ -225,6 +386,7 @@ def sanitize_theme_config(raw):
     raw_colors = raw.get("colors") if isinstance(raw.get("colors"), dict) else {}
     raw_effects = raw.get("effects") if isinstance(raw.get("effects"), dict) else {}
     raw_sizing = raw.get("sizing") if isinstance(raw.get("sizing"), dict) else {}
+    raw_toggles = raw.get("toggles") if isinstance(raw.get("toggles"), dict) else {}
 
     colors = {}
     for key, spec in THEME_TOKENS["colors"].items():
@@ -249,7 +411,13 @@ def sanitize_theme_config(raw):
             v = float(spec["default"])
         sizing[key] = max(float(spec.get("min", 0.5)), min(float(spec.get("max", 2)), v))
 
-    return {"colors": colors, "images": {}, "effects": effects, "sizing": sizing}
+    # Phase 7.8: тумблеры — только известные ключи и только булевы значения
+    toggles = {}
+    for key, spec in THEME_TOKENS.get("toggles", {}).items():
+        value = raw_toggles.get(key, spec["default"])
+        toggles[key] = bool(value) if isinstance(value, (bool, int)) else bool(spec["default"])
+
+    return {"colors": colors, "images": {}, "effects": effects, "sizing": sizing, "toggles": toggles}
 
 
 def resolve_preset_name(explicit, parsed, fallback):
@@ -321,8 +489,34 @@ def calculate_yiq_contrast(hex_color):
     return "#000000" if yiq >= 128 else "#ffffff"
 
 
-app = FastAPI()
-app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY)
+# Phase R6 (A05): debug-режим (трассировки в ответе) — только в dev, в prod всегда выключен
+app = FastAPI(debug=(APP_MODE == "dev"))
+
+# Формат сессионной cookie настраивается из env, чтобы приложение работало
+# и напрямую, и внутри кросс-сайтового iframe (предпросмотр в браузере):
+#   SESSION_SAME_SITE=lax|strict|none   (default lax)
+#   SESSION_SECURE=1                    (default 0) — ставит флаг Secure
+# Для iframe на другом домене нужно none + secure=1: иначе браузер cookie
+# просто не отправляет, и после логина /chat снова кидает на /.
+SESSION_SAME_SITE = os.environ.get("SESSION_SAME_SITE", "lax").lower()
+if SESSION_SAME_SITE not in ("lax", "strict", "none"):
+    SESSION_SAME_SITE = "lax"
+SESSION_SECURE = os.environ.get("SESSION_SECURE", "0") == "1"
+# X-Frame-Options: deny (по умолчанию) | sameorigin | none — для предпросмотра нужно none
+FRAME_OPTIONS = os.environ.get("FRAME_OPTIONS", "deny").lower()
+if FRAME_OPTIONS not in ("deny", "sameorigin", "none"):
+    FRAME_OPTIONS = "deny"
+
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=SECRET_KEY,
+    same_site=SESSION_SAME_SITE,
+    https_only=SESSION_SECURE,
+)
+app_logger.info(
+    "сессия: cookie same_site=%s secure=%s; X-Frame-Options=%s",
+    SESSION_SAME_SITE, SESSION_SECURE, FRAME_OPTIONS
+)
 
 
 # ========== Phase 7.1b: rate-limiting & security headers ==========
@@ -352,26 +546,197 @@ def _clear_failures(ip: str):
     _login_failures.pop(ip, None)
 
 
+# ========== Phase R6 (A01/CSRF): double-submit токен ==========
+# Клиент присылает значение cookie csrftoken в заголовке X-CSRF-Token
+# (для HTML-форм и multipart — в поле формы csrf_token). Cookie НЕ HttpOnly:
+# фронтенд должен уметь прочитать своё же значение. В кросс-сайтовом iframe
+# режим (SameSite=None; Secure) задаётся теми же env, что и сессия.
+CSRF_COOKIE = "csrftoken"
+CSRF_HEADER = "x-csrf-token"
+CSRF_FIELD = "csrf_token"
+CSRF_SAFE_METHODS = {"GET", "HEAD", "OPTIONS", "TRACE"}
+CSRF_MAX_AGE = 14 * 24 * 3600      # как у сессии: две недели
+
+
+def _new_csrf_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+def _csrf_token_from_body(content_type: str, body: bytes) -> str:
+    """Значение поля csrf_token из тела urlencoded-формы или multipart (без разбора всей формы)."""
+    if content_type.startswith("application/x-www-form-urlencoded"):
+        try:
+            parsed = parse_qs(body.decode("utf-8", "replace"), keep_blank_values=True)
+        except Exception:
+            return ""
+        values = parsed.get(CSRF_FIELD) or []
+        return values[0] if values else ""
+    if content_type.startswith("multipart/form-data"):
+        marker = b'name="' + CSRF_FIELD.encode() + b'"'
+        idx = body.find(marker)
+        if idx == -1:
+            return ""
+        start = body.find(b"\r\n\r\n", idx)
+        if start == -1:
+            return ""
+        start += 4
+        end = body.find(b"\r\n", start)
+        return body[start:end if end != -1 else len(body)].decode("utf-8", "replace").strip()
+    return ""
+
+
+def _csrf_cookie_header(token: str) -> str:
+    """Set-Cookie для csrftoken: НЕ HttpOnly — фронтенд читает своё же значение."""
+    parts = [f"{CSRF_COOKIE}={token}", "Path=/", f"Max-Age={CSRF_MAX_AGE}"]
+    if SESSION_SAME_SITE:
+        parts.append(f"SameSite={SESSION_SAME_SITE.capitalize()}")
+    if SESSION_SECURE:
+        parts.append("Secure")
+    return "; ".join(parts)
+
+
+class CSRFMiddleware:
+    """
+    Чистый ASGI-мидлварь (не BaseHTTPMiddleware): читаем тело, достаём токен
+    и ОТДАЁМ ЕГО ОБРАТНО приложению — иначе эндпоинт получил бы пустое тело
+    (BaseHTTPMiddleware не делится уже прочитанным стримом).
+    """
+
+    # тело больше лимита аплоада (+1 МБ на границы multipart) не буферизуем
+    BODY_LIMIT = MAX_UPLOAD_BYTES + 1024 * 1024
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        headers_dict = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+        cookie_token = ""
+        for chunk in headers_dict.get("cookie", "").split("; "):
+            if chunk.startswith(CSRF_COOKIE + "="):
+                cookie_token = chunk[len(CSRF_COOKIE) + 1:]
+                break
+        token = cookie_token or _new_csrf_token()
+        # request.state живёт в scope["state"] — шаблоны берут {{ request.state.csrf_token }}
+        scope.setdefault("state", {})["csrf_token"] = token
+
+        method = scope.get("method", "GET").upper()
+        if method in CSRF_SAFE_METHODS:
+            if not cookie_token:
+                await self.app(scope, receive, self._send_with_cookie(send, token))
+            else:
+                await self.app(scope, receive, send)
+            return
+
+        # --- изменяющий запрос: проверяем токен (из заголовка или из тела) ---
+        sent_token = headers_dict.get(CSRF_HEADER, "")
+        buffered: bytes | None = None
+        if not sent_token:
+            # заголовка нет — читаем тело и ищем поле csrf_token
+            body = b""
+            more_body = True
+            while more_body:
+                message = await receive()
+                body += message.get("body", b"")
+                more_body = message.get("more_body", False)
+                if len(body) > self.BODY_LIMIT:
+                    await self._reject(send, status=413, detail="Payload too large")
+                    return
+            buffered = body
+            sent_token = _csrf_token_from_body(headers_dict.get("content-type", ""), body)
+
+        if not cookie_token or not sent_token or not hmac.compare_digest(cookie_token, sent_token):
+            admin_logger.warning(
+                "CSRF отклонён: %s %s (client=%s)", method, scope.get("path", "?"),
+                (scope.get("client") or ["?"])[0]
+            )
+            await self._reject(send, status=403, detail="CSRF token missing or invalid")
+            return
+
+        if buffered is None:
+            # тело не читали — приложение получит оригинальный receive
+            downstream_receive = receive
+        else:
+            # тело отдаём РОВНО ОДИН раз: дальше прокидываем оригинальный receive,
+            # иначе StreamingResponse дождётся «второго» http.request и упадёт
+            replayed = False
+
+            async def replay():
+                nonlocal replayed
+                if not replayed:
+                    replayed = True
+                    return {"type": "http.request", "body": buffered, "more_body": False}
+                return await receive()
+
+            downstream_receive = replay
+
+        if not cookie_token:
+            await self.app(scope, downstream_receive, self._send_with_cookie(send, token))
+        else:
+            await self.app(scope, downstream_receive, send)
+
+    @staticmethod
+    async def _reject(send, status: int, detail: str):
+        payload = json.dumps({"detail": detail}).encode()
+        await send({
+            "type": "http.response.start",
+            "status": status,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(payload)).encode()),
+            ],
+        })
+        await send({"type": "http.response.body", "body": payload})
+
+    @staticmethod
+    def _send_with_cookie(send, token: str):
+        cookie = _csrf_cookie_header(token).encode("latin-1")
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                headers.append("set-cookie", cookie.decode("latin-1"))
+            await send(message)
+
+        return send_wrapper
+
+
 @app.middleware("http")
 async def security_headers_middleware(request: Request, call_next):
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
+    if FRAME_OPTIONS == "deny":
+        response.headers["X-Frame-Options"] = "DENY"
+    elif FRAME_OPTIONS == "sameorigin":
+        response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    # FRAME_OPTIONS=none — заголовок не шлём (нужно для предпросмотра в iframe)
     response.headers["Referrer-Policy"] = "no-referrer"
+    # Phase R6 (A05): запрещаем браузеру отдавать сайту гео/камеру/микрофон и т.п.
+    response.headers["Permissions-Policy"] = (
+        "geolocation=(), microphone=(), camera=(), payment=(), usb=(), "
+        "accelerometer=(), gyroscope=(), magnetometer=()"
+    )
     response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data: blob:; font-src 'self'"
     # Phase micro banner3: no-cache for all /api/* responses
     if request.url.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
         response.headers["Pragma"] = "no-cache"
+    # Phase 7.8: HTML-страницы не кэшируем — разметка несёт инлайн-JS чата,
+    # и её устаревшая копия выглядит как «нового функционала нет»
+    elif not request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
     return response
 
 
 # ========== Phase 7.1c: PULSE ring-buffer ==========
 _pulse_buffer: deque = deque(maxlen=500)
-_pulse_logger = logging.getLogger("pulse")
-_login_logger = logging.getLogger("pulse.login")
-_upload_logger = logging.getLogger("pulse.upload")
-_ws_logger = logging.getLogger("pulse.ws")
+_pulse_logger = logging.getLogger("messenger.pulse")
+_login_logger = logging.getLogger("messenger.pulse.login")
+_upload_logger = logging.getLogger("messenger.pulse.upload")
+_ws_logger = logging.getLogger("messenger.pulse.ws")
 
 
 def _pulse_emit(kind: str, detail: str):
@@ -393,24 +758,304 @@ async def pulse_middleware(request: Request, call_next):
 
 @app.get("/api/admin/pulse")
 async def get_pulse(request: Request):
+    """События (ring buffer) + метрики состояния (фаза R4)."""
     user = get_current_user(request)
     require_admin(user)
-    return JSONResponse(list(_pulse_buffer))
+    return JSONResponse({"events": list(_pulse_buffer), "metrics": pulse_metrics()})
+
+
+def pulse_metrics() -> dict:
+    """Метрики для админки: диск, БД, uptime, WS, ошибки за час, целостность, бэкап."""
+    now = time.time()
+    while _error_timestamps and _error_timestamps[0] < now - 3600:
+        _error_timestamps.popleft()
+
+    try:
+        disk_free = shutil.disk_usage(DATA_DIR).free
+    except OSError:
+        disk_free = 0
+    try:
+        db_size = os.path.getsize(DB_PATH)
+    except OSError:
+        db_size = 0
+
+    return {
+        "disk_free_bytes": disk_free,
+        "db_size_bytes": db_size,
+        "uptime_seconds": round(time.monotonic() - START_TIME, 1),
+        "ws_connections": len(app.state.connections),
+        "errors_last_hour": len(_error_timestamps),
+        "last_integrity": dict(LAST_INTEGRITY),
+        "last_backup_at": last_backup_at(),
+    }
+
+
+def last_backup_at():
+    """mtime самой свежей копии в BACKUP_DIR; None, если каталога нет или он пуст."""
+    backup_dir = os.environ.get("BACKUP_DIR", "/var/lib/messenger/backups")
+    try:
+        files = [os.path.join(backup_dir, name) for name in os.listdir(backup_dir)]
+        files = [path for path in files if os.path.isfile(path)]
+    except OSError:
+        return None
+    if not files:
+        return None
+    try:
+        return datetime.fromtimestamp(max(os.path.getmtime(p) for p in files)).isoformat(timespec="seconds")
+    except OSError:
+        return None
+
+
+@app.middleware("http")
+async def error_logging_middleware(request: Request, call_next):
+    """
+    Phase R4: необработанное исключение → error.log с traceback, клиенту 500.
+    В лог уходят только метод, путь и хост — без cookie, заголовков и тела.
+    """
+    try:
+        return await call_next(request)
+    except Exception:
+        _error_timestamps.append(time.time())
+        client = request.client.host if request.client else "?"
+        error_logger.exception("необработанное исключение: %s %s (client=%s)",
+                               request.method, request.url.path, client)
+        return JSONResponse({"detail": "Internal Server Error"}, status_code=500)
+
+
+@app.api_route("/api/admin/debug-boom", methods=["GET", "POST"])
+async def debug_boom(request: Request):
+    """
+    Phase R4: намеренный сбой для проверки error.log (только админ, только dev).
+    Клиент обязан получить 500, а traceback — лечь в data/logs/error.log.
+    """
+    user = get_current_user(request)
+    require_admin(user)
+    # Phase R6 (A05): в prod намеренный генератор ошибок недоступен даже админу
+    if APP_MODE == "prod":
+        raise HTTPException(status_code=404, detail="Not Found")
+    raise RuntimeError("DEBUG BOOM: намеренное исключение для проверки логов")
 
 
 templates = Jinja2Templates(directory="templates")
 
 
+def get_conn() -> sqlite3.Connection:
+    """
+    Phase R2: единственная точка создания соединений с SQLite.
+    Ни один модуль не вызывает sqlite3.connect напрямую — только здесь
+    выставляются PRAGMA, критичные для целостности и параллельной работы.
+    """
+    conn = sqlite3.connect(DB_PATH, timeout=5.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 5000")    # ждём чужую блокировку, вместо «database is locked»
+    conn.execute("PRAGMA foreign_keys = ON")      # целостность ссылок обязательна
+    conn.execute("PRAGMA synchronous = NORMAL")   # разумный компромисс для WAL
+    return conn
+
+
 @contextmanager
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = get_conn()
     try:
         yield conn
     finally:
         conn.close()
 
 
+
+
+# ===================================================================== #
+# Phase 7.6d-fix: канал объявлений «ВайбБункер»
+# ===================================================================== #
+# Канал — это НЕ пользователь:
+#   * в users нет никаких ботов (служебный @start удалён миграцией);
+#   * профиль канала лежит в settings (broadcast_*), правит его только creator;
+#   * сообщения канала — обычные строки messages с peer_type='broadcast',
+#     peer_id=0 и sender_id = реальный создатель канала.
+
+# Как выглядела служебная строка канала в версии 7.6d — по ней чистим старые базы
+LEGACY_START_USERNAME = "start"
+LEGACY_START_PASSWORD_HASH = "!system-account-no-login!"
+
+CHANNEL_NAME_DEFAULT = "ВайбБункер"     # имя канала по умолчанию
+CHANNEL_SUBTITLE = "канал объявлений"   # подпись под именем в списке
+CHANNEL_MARKER = "📢"                   # маркер канала
+CHANNEL_PEER_TYPE = "broadcast"         # значение messages.peer_type для объявлений
+PEER_TYPE_USER = "user"
+PEER_TYPE_GROUP = "group"
+
+# Профиль канала по умолчанию. Ключи — единственные разрешённые в settings.
+CHANNEL_SETTINGS_DEFAULTS = {
+    "broadcast_name": CHANNEL_NAME_DEFAULT,
+    "broadcast_bio": "",
+    "broadcast_avatar_uuid": "",
+    "broadcast_banner_uuid": "",
+}
+
+# Шаблон первого объявления: кнопка «Вставить шаблон» у creator в пустом канале.
+WELCOME_TEMPLATE = (
+    "Добро пожаловать в ВайбБункер! 👋\n\n"
+    "• Профиль и темы: аватар, баннер, био, своя тема — шестерёнка сверху.\n\n"
+    "• Сообщения: свайп по сообщению — ответ; чипы «Редакт»/«Удалить» — режимы; "
+    "долгое нажатие — меню.\n\n"
+    "• Контакт: потяни строку контакта («занавес») — пин, мьют, удаление чата.\n\n"
+    "• Группы: «+» в разделе Группы; команды начинаются с «/».\n\n"
+    "• Почта: в профиле — подтверждение почты и смена пароля по коду.\n\n"
+    "• PWA: «Установить» в меню браузера — приложение без вкладок.\n\n"
+    "Это канал объявлений — ответы отключены."
+)
+
+
+def get_channel_profile(conn) -> dict:
+    """Профиль канала из settings (broadcast_*), с дефолтами для пустой БД."""
+    profile = dict(CHANNEL_SETTINGS_DEFAULTS)
+    try:
+        rows = conn.execute("SELECT key, value FROM settings").fetchall()
+    except Exception:
+        rows = []
+    for row in rows:
+        key = row["key"]
+        if key in profile:
+            profile[key] = row["value"]
+    return profile
+
+
+def channel_payload(conn) -> dict:
+    """Публичное описание канала для шаблона и API."""
+    profile = get_channel_profile(conn)
+    name = (profile.get("broadcast_name") or "").strip() or CHANNEL_NAME_DEFAULT
+    return {
+        "id": 0,
+        "is_channel": True,
+        "peer_type": CHANNEL_PEER_TYPE,
+        "name": name,
+        "subtitle": CHANNEL_SUBTITLE,
+        "marker": CHANNEL_MARKER,
+        "bio": profile.get("broadcast_bio") or "",
+        "avatar_uuid": profile.get("broadcast_avatar_uuid") or "",
+        "banner_uuid": profile.get("broadcast_banner_uuid") or "",
+    }
+
+
+def set_channel_fields(conn, fields: dict) -> None:
+    """Записать настройки канала. Ключи — только из CHANNEL_SETTINGS_DEFAULTS (A03)."""
+    for key, value in fields.items():
+        if key not in CHANNEL_SETTINGS_DEFAULTS:
+            raise ValueError(f"недопустимый ключ настроек канала: {key!r}")
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, str(value)),
+        )
+
+
+def creator_user_id(conn) -> int | None:
+    """id создателя: помеченный is_creator, иначе самый первый живой пользователь."""
+    row = conn.execute("SELECT id FROM users WHERE is_creator = 1 ORDER BY id LIMIT 1").fetchone()
+    if row:
+        return int(row["id"])
+    row = conn.execute("SELECT MIN(id) AS id FROM users").fetchone()
+    if row and row["id"] is not None:
+        return int(row["id"])
+    return None
+
+
+def is_creator_user(user) -> bool:
+    return bool(user) and int(user.get("is_creator") or 0) == 1
+
+
+def require_creator(user) -> None:
+    """Писать, править и удалять в канале может только создатель (админы — читатели)."""
+    if not is_creator_user(user):
+        raise HTTPException(
+            status_code=403,
+            detail="Канал объявлений: писать и оформлять может только создатель",
+        )
+
+
+def normalize_read_peer_type(peer_type: str) -> str:
+    """Фронт шлёт type='channel' для отметки «прочитано» — внутри это 'broadcast'."""
+    if peer_type in ("channel", CHANNEL_PEER_TYPE):
+        return CHANNEL_PEER_TYPE
+    return peer_type or PEER_TYPE_USER
+
+
+# ---------- миграции 7.6d-fix (вызываются из ensure_schema) ---------- #
+
+def _migrate_channel_columns(conn) -> None:
+    """Проставить peer_type/peer_id существующим сообщениям (группы и 1-на-1)."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
+    if "peer_type" not in cols or "peer_id" not in cols:
+        return
+    cur = conn.execute(
+        "UPDATE messages SET peer_type = ?, peer_id = COALESCE(group_id, 0) "
+        "WHERE (group_id IS NOT NULL AND group_id != 0) AND peer_type = ?",
+        (PEER_TYPE_GROUP, PEER_TYPE_USER),
+    )
+    if cur.rowcount:
+        app_logger.info("миграция каналов: перемаркировано group-сообщений: %s", cur.rowcount)
+    cur = conn.execute(
+        "UPDATE messages SET peer_id = recipient_id "
+        "WHERE peer_type = ? AND (group_id IS NULL OR group_id = 0) "
+        "AND peer_id = 0 AND recipient_id > 0",
+        (PEER_TYPE_USER,),
+    )
+    if cur.rowcount:
+        app_logger.info("миграция каналов: перемаркировано 1-на-1 сообщений: %s", cur.rowcount)
+
+
+def _remove_system_user(conn) -> int:
+    """
+    Служебный бот @start больше не нужен: удаляем его и всё, что на него ссылалось.
+    Помечен он был флагом is_system, но старые базы могли дойти без колонки —
+    тогда системную строку узнаём по связке username + служебный password_hash.
+    """
+    ids = [int(r["id"]) for r in conn.execute(
+        "SELECT id FROM users WHERE is_system = 1 "
+        "OR (username = ? AND password_hash = ?)",
+        (LEGACY_START_USERNAME, LEGACY_START_PASSWORD_HASH),
+    ).fetchall()]
+    if not ids:
+        return 0
+    ph = ",".join("?" * len(ids))
+    conn.execute(
+        f"DELETE FROM attachments WHERE message_id IN "
+        f"(SELECT id FROM messages WHERE sender_id IN ({ph}) OR recipient_id IN ({ph}))",
+        ids + ids,
+    )
+    conn.execute(
+        f"DELETE FROM messages WHERE sender_id IN ({ph}) OR recipient_id IN ({ph})", ids + ids
+    )
+    conn.execute(f"DELETE FROM pins WHERE user_id IN ({ph}) OR contact_id IN ({ph})", ids + ids)
+    conn.execute(f"DELETE FROM mutes WHERE user_id IN ({ph}) OR contact_id IN ({ph})", ids + ids)
+    conn.execute(f"DELETE FROM blocks WHERE blocker_id IN ({ph}) OR blocked_id IN ({ph})", ids + ids)
+    conn.execute(f"DELETE FROM reads WHERE user_id IN ({ph})", ids)
+    conn.execute(f"DELETE FROM group_members WHERE user_id IN ({ph})", ids)
+    conn.execute(f"DELETE FROM theme_presets WHERE user_id IN ({ph})", ids)
+    conn.execute(f"DELETE FROM email_codes WHERE user_id IN ({ph})", ids)
+    conn.execute(f"DELETE FROM invites WHERE created_by IN ({ph})", ids)
+    conn.execute(f"DELETE FROM warns WHERE user_id IN ({ph}) OR by_admin_id IN ({ph})", ids + ids)
+    conn.execute(f"DELETE FROM users WHERE id IN ({ph})", ids)
+    app_logger.info("миграция каналов: служебный контакт «start» удалён: id=%s", ids)
+    return len(ids)
+
+
+def _ensure_creator(conn) -> None:
+    """creator = первый живой пользователь (min id), если флаг ещё никому не выставлен."""
+    if conn.execute("SELECT 1 FROM users WHERE is_creator = 1 LIMIT 1").fetchone():
+        return
+    row = conn.execute("SELECT MIN(id) AS id FROM users").fetchone()
+    if row and row["id"] is not None:
+        conn.execute("UPDATE users SET is_creator = 1 WHERE id = ?", (int(row["id"]),))
+        app_logger.info("миграция каналов: creator назначен: user_id=%s", int(row["id"]))
+
+
+def _seed_channel_settings(conn) -> None:
+    """Профиль канала живёт в settings — создадим ключи, если их ещё нет."""
+    for key, default in CHANNEL_SETTINGS_DEFAULTS.items():
+        exists = conn.execute("SELECT 1 FROM settings WHERE key = ?", (key,)).fetchone()
+        if not exists:
+            conn.execute("INSERT INTO settings (key, value) VALUES (?, ?)", (key, default))
 
 
 def ensure_schema():
@@ -443,11 +1088,20 @@ def ensure_schema():
             ("theme_json", "TEXT NULL"),             # Phase 4: RGB themes
             ("font_scale", "REAL DEFAULT 1.0"),      # Phase 7 micro: a11y font scale
             ("banner_uuid", "TEXT NULL"),            # Phase 7.6a: profile banner
+            ("session_epoch", "INTEGER NOT NULL DEFAULT 0"),  # Phase R6: смена пароля рвёт чужие сессии
+            ("email_verified", "INTEGER NOT NULL DEFAULT 0"),  # Phase R7: почта подтверждена кодом
+            ("is_system", "INTEGER NOT NULL DEFAULT 0"),   # Phase 7.6d: системный канал «start»
+            ("is_creator", "INTEGER NOT NULL DEFAULT 0"),  # Phase 7.6d: первый зарегистрированный
+            ("last_seen", "TIMESTAMP NULL"),           # Phase 7.8: присутствие
+            ("hide_presence", "INTEGER NOT NULL DEFAULT 0"),  # 7.8-fix2: приватность присутствия
         ]
         for col_name, col_type in user_column_additions:
             if col_name not in user_columns:
+                # A03: имя колонки берём только из whitelist-константы выше
+                if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", col_name):
+                    raise ValueError(f"недопустимое имя колонки: {col_name!r}")
                 conn.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}")
-                print(f"Added column users.{col_name}")
+                app_logger.info(f"схема: добавлена колонка users.{col_name}")
         
         # Create messages table if not exists
         conn.execute("""
@@ -457,8 +1111,9 @@ def ensure_schema():
                 recipient_id INTEGER NOT NULL,
                 text TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (sender_id) REFERENCES users(id),
-                FOREIGN KEY (recipient_id) REFERENCES users(id)
+                -- Phase R2: FK только на sender_id. recipient_id = 0 для групповых
+                -- сообщений (служебный sentinel), поэтому ссылкой он быть не может.
+                FOREIGN KEY (sender_id) REFERENCES users(id)
             )
         """)
         
@@ -469,26 +1124,32 @@ def ensure_schema():
         msg_column_additions = [
             ("deleted_for_sender", "INTEGER DEFAULT 0"),
             ("deleted_for_recipient", "INTEGER DEFAULT 0"),
+            # Phase 7.6d-fix: 'user' | 'group' | 'broadcast' + адресат (0 для канала)
+            ("peer_type", "TEXT NOT NULL DEFAULT 'user'"),
+            ("peer_id", "INTEGER NOT NULL DEFAULT 0"),
         ]
         for col_name, col_type in msg_column_additions:
             if col_name not in msg_columns:
+                # A03: имя колонки берём только из whitelist-константы выше
+                if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", col_name):
+                    raise ValueError(f"недопустимое имя колонки: {col_name!r}")
                 conn.execute(f"ALTER TABLE messages ADD COLUMN {col_name} {col_type}")
-                print(f"Added column messages.{col_name}")
+                app_logger.info(f"схема: добавлена колонка messages.{col_name}")
         
         # Phase 6.1: group support - NULL group_id = 1-on-1 dialog, set = group message
         if "group_id" not in msg_columns:
             conn.execute("ALTER TABLE messages ADD COLUMN group_id INTEGER NULL")
-            print("Added column messages.group_id")
+            app_logger.info("схема: добавлена колонка messages.group_id")
         
         # Phase 6.6: reply support (NULL = standalone message)
         if "reply_to_id" not in msg_columns:
             conn.execute("ALTER TABLE messages ADD COLUMN reply_to_id INTEGER NULL")
-            print("Added column messages.reply_to_id")
+            app_logger.info("схема: добавлена колонка messages.reply_to_id")
 
         # Phase 7.2b: message editing (NULL = never edited)
         if "edited_at" not in msg_columns:
             conn.execute("ALTER TABLE messages ADD COLUMN edited_at TIMESTAMP NULL")
-            print("Added column messages.edited_at")
+            app_logger.info("схема: добавлена колонка messages.edited_at")
         
         # Phase 6.6: per-user contact pins (pinned contacts float to the top)
         conn.execute("""
@@ -591,7 +1252,7 @@ def ensure_schema():
         # Phase 7.1a: email column for registration
         if "email" not in user_columns:
             conn.execute("ALTER TABLE users ADD COLUMN email TEXT NULL")
-            print("Added column users.email")
+            app_logger.info("схема: добавлена колонка users.email")
 
         # Phase 7.1b: admin settings table (upload limits, etc.)
         conn.execute("""
@@ -630,6 +1291,26 @@ def ensure_schema():
             )
         """)
 
+        # Phase R7: коды подтверждения по почте (plaintext кода не хранится — только sha256)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS email_codes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                purpose TEXT NOT NULL,
+                target TEXT NULL,
+                code_hash TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                used INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_email_codes_user
+            ON email_codes(user_id, purpose)
+        """)
+
         # Phase 7.3: read receipts
         conn.execute("""
             CREATE TABLE IF NOT EXISTS reads (
@@ -643,10 +1324,147 @@ def ensure_schema():
         """)
 
         msg_cols = {col[1] for col in conn.execute("PRAGMA table_info(messages)").fetchall()}
+
+        # Phase R2: foreign_keys=ON ломает групповые сообщения, если recipient_id
+        # ссылается на users(id) — в группах это служебный sentinel 0.
+        _migrate_messages_recipient_fk(conn)
+
+        # Phase 7.6d-fix: канал объявлений без бота в users
+        _migrate_channel_columns(conn)   # peer_type/peer_id для существующих сообщений
+        _remove_system_user(conn)        # служебный @start удалён вместе с историей
+        _ensure_creator(conn)            # creator = первый живой пользователь
+        _seed_channel_settings(conn)     # профиль канала: имя/био/аватар/баннер
+
         conn.commit()
 
 
-ensure_schema()
+# Phase R2: актуальное определение messages (без FK на recipient_id — см. выше)
+MESSAGES_COLUMNS = [
+    "id", "sender_id", "recipient_id", "text", "created_at",
+    "deleted_for_sender", "deleted_for_recipient", "group_id", "reply_to_id", "edited_at",
+]
+
+
+def _migrate_messages_recipient_fk(conn) -> bool:
+    """
+    Убрать FOREIGN KEY recipient_id -> users(id) из messages.
+
+    Групповые сообщения пишутся с recipient_id = 0 (sentinel «не адресат-пользователь»),
+    поэтому при foreign_keys=ON такойINSERT стал бы ошибкой. Пересобираем таблицу
+    один раз; данные и id сохраняются.
+    """
+    fks = conn.execute("PRAGMA foreign_key_list(messages)").fetchall()
+    if not any(fk[2] == "users" and fk[3] == "recipient_id" for fk in fks):
+        return False
+
+    conn.commit()  # PRAGMA foreign_keys нельзя менять внутри транзакции
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.execute("""
+            CREATE TABLE messages_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sender_id INTEGER NOT NULL,
+                recipient_id INTEGER NOT NULL,
+                text TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                deleted_for_sender INTEGER DEFAULT 0,
+                deleted_for_recipient INTEGER DEFAULT 0,
+                group_id INTEGER NULL,
+                reply_to_id INTEGER NULL,
+                edited_at TIMESTAMP NULL,
+                FOREIGN KEY (sender_id) REFERENCES users(id)
+            )
+        """)
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
+        columns = [c for c in MESSAGES_COLUMNS if c in existing]
+        conn.execute(
+            f"INSERT INTO messages_new ({', '.join(columns)}) SELECT {', '.join(columns)} FROM messages"
+        )
+        conn.execute("DROP TABLE messages")
+        conn.execute("ALTER TABLE messages_new RENAME TO messages")
+        conn.commit()
+    except Exception:
+        conn.execute("PRAGMA foreign_keys = ON")
+        raise
+    conn.execute("PRAGMA foreign_keys = ON")
+    app_logger.info("миграция messages: recipient_id больше не FK (группы используют 0)")
+    return True
+
+
+# ========== Phase R2: броня SQLite ==========
+
+PART_MAX_AGE_SECONDS = 3600  # брошенные .part старше часа удаляются при старте
+
+# Служебное соединение, удерживающее WAL открытым всё время работы процесса
+_KEEPALIVE_CONN = None
+
+
+def cleanup_stale_parts(directory: str, max_age: float = PART_MAX_AGE_SECONDS) -> int:
+    """Удалить *.part (недописанные вложения) старше max_age секунд."""
+    removed = 0
+    now = time.time()
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return 0
+    for name in names:
+        if not name.endswith(".part"):
+            continue
+        path = os.path.join(directory, name)
+        try:
+            if not os.path.isfile(path) or now - os.path.getmtime(path) <= max_age:
+                continue
+            os.remove(path)
+            removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def db_integrity_check(conn) -> tuple[bool, str]:
+    """PRAGMA integrity_check → (ok, текст результата)."""
+    try:
+        rows = conn.execute("PRAGMA integrity_check").fetchall()
+    except sqlite3.DatabaseError as exc:
+        return False, f"ошибка проверки: {exc}"
+    messages = [str(row[0]) for row in rows]
+    ok = messages == ["ok"]
+    return ok, "; ".join(messages)[:500]
+
+
+def init_db() -> None:
+    """
+    Стартовая инициализация: схема, персистентный WAL, проверка целостности,
+    уборка брошенных .part.
+    """
+    global _KEEPALIVE_CONN
+    app_logger.info("старт приложения: DATA_DIR=%s, PORT=%s", DATA_DIR, PORT)
+    ensure_schema()
+    with get_db() as conn:
+        mode = conn.execute("PRAGMA journal_mode = WAL").fetchone()[0]
+        app_logger.info("journal_mode = %s", mode)
+        ok, detail = db_integrity_check(conn)
+        app_logger.info("integrity_check %s", detail)
+        if not ok:
+            error_logger.error("integrity_check провален: %s", detail)
+        LAST_INTEGRITY.update(
+            ok=ok, detail=detail, ts=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        )
+        _pulse_emit("integrity", f"{'ok' if ok else 'FAIL'}: {detail}")
+
+    # Держим одно служебное соединение: пока оно открыто, SQLite не удаляет
+    # messenger.db-wal/-shm после каждого запроса (иначе WAL-файлы живут ровно
+    # до закрытия последней коннекции) и сам ведёт контрольные точки.
+    _KEEPALIVE_CONN = get_conn()
+    _KEEPALIVE_CONN.execute("SELECT 1")
+
+    removed = cleanup_stale_parts(UPLOADS_DIR) + cleanup_stale_parts(THEME_IMAGES_DIR)
+    if removed:
+        app_logger.info("чистка: удалено брошенных .part: %s", removed)
+        _pulse_emit("cleanup", f"part removed={removed}")
+
+
+init_db()
 
 
 def hash_password(password: str) -> str:
@@ -727,7 +1545,14 @@ def get_current_user(request: Request):
         return None
     with get_db() as conn:
         row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-    return dict(row) if row else None
+    if not row:
+        return None
+    user = dict(row)
+    # Phase R6 (A07): сессия валидна, только пока её epoch совпадает с epoch пользователя.
+    # Смена пароля поднимает epoch в БД — все остальные устройства разлогиниваются.
+    if request.session.get("epoch") != user.get("session_epoch", 0):
+        return None
+    return user
 
 
 def get_current_user_fresh(request: Request):
@@ -735,6 +1560,13 @@ def get_current_user_fresh(request: Request):
     user_id = request.session.get("user_id")
     if not user_id:
         return None
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    if not row:
+        return None
+    if request.session.get("epoch") != (row["session_epoch"] if "session_epoch" in row.keys() else 0):
+        return None
+    return dict(row)
     with get_db() as conn:
         row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     return dict(row) if row else None
@@ -833,6 +1665,8 @@ async def register(request: Request, name: str = Form(...), email: str = Form(..
         
         count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         is_admin = 1 if (count == 0 and FIRST_USER_ADMIN) else 0
+        # Phase 7.6d-fix: creator — первый зарегистрированный пользователь (ботов в users нет)
+        is_creator = 1 if count == 0 else 0
         
         if count > 0 or not FIRST_USER_ADMIN:
             if not invite_code:
@@ -867,13 +1701,17 @@ async def register(request: Request, name: str = Form(...), email: str = Form(..
                 })
         
         conn.execute(
-            "INSERT INTO users (name, username, password_hash, is_admin, email) VALUES (?, ?, ?, ?, ?)",
-            (name, username, password_hash, is_admin, email_clean)
+            "INSERT INTO users (name, username, password_hash, is_admin, email, is_creator) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (name, username, password_hash, is_admin, email_clean, is_creator)
         )
         new_user_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         
         if invite_code and count > 0:
             conn.execute("UPDATE invites SET used_by = ? WHERE code = ?", (new_user_id, invite_code))
+        
+        if is_creator:
+            app_logger.info("creator назначен: user_id=%s", new_user_id)
         
         conn.commit()
     
@@ -891,6 +1729,8 @@ async def login(request: Request, username: str = Form(...), password: str = For
     if not user or not verify_password(password, user["password_hash"]):
         count = _record_failure(ip)
         _pulse_emit("login", f"FAIL ip={ip} email={username.strip().lower()} attempts={count}")
+        # в лог — только счётчик и хост: ни email, ни пароль, ни cookie
+        _login_logger.warning("логин неудачный: ip=%s, попыток подряд=%s", ip, count)
         if count >= _RATE_LIMIT_MAX:
             return JSONResponse(
                 status_code=429,
@@ -901,7 +1741,12 @@ async def login(request: Request, username: str = Form(...), password: str = For
     
     _clear_failures(ip)
     _pulse_emit("login", f"OK ip={ip} user={user['username']} id={user['id']}")
+    _login_logger.info("логин: ip=%s, user_id=%s", ip, user["id"])
+    # Phase R6 (A07): логин = НОВАЯ сессия. Старые данные сессии выбрасываем,
+    # иначе атакующий может подсунуть заранее известный session id (session fixation).
+    request.session.clear()
     request.session["user_id"] = user["id"]
+    request.session["epoch"] = user["session_epoch"]
     return RedirectResponse(url="/chat", status_code=303)
 
 
@@ -919,6 +1764,8 @@ async def chat_page(request: Request):
     
     with get_db() as conn:
         # Phase 6.6: pinned contacts float to the top (marker flag for the template)
+        # Phase 7.6d-fix: канал объявлений — не пользователь, в этом списке его нет
+        # (отрисовывается отдельной строкой поверх списка)
         users = conn.execute("""
             SELECT u.id, u.name, u.username, u.avatar_uuid,
                    CASE WHEN p.contact_id IS NULL THEN 0 ELSE 1 END AS pinned
@@ -927,7 +1774,9 @@ async def chat_page(request: Request):
             WHERE u.id != ?
             ORDER BY pinned DESC, u.id ASC
         """, (user["id"], user["id"])).fetchall()
-    
+
+        channel = channel_payload(conn)
+
     # Ensure theme_json is never None - default to '{}'
     if user.get("theme_json") is None:
         user["theme_json"] = "{}"
@@ -935,7 +1784,12 @@ async def chat_page(request: Request):
     return templates.TemplateResponse(request, "chat.html", {
         "user": user,
         "users": [dict(u) for u in users],
-        "max_upload_bytes": MAX_UPLOAD_BYTES
+        "max_upload_bytes": MAX_UPLOAD_BYTES,
+        # Phase 7.6d-fix: канал и флаг creator (инпут/плашка, оформление канала)
+        "channel": channel,
+        "is_creator": int(user.get("is_creator") or 0),
+        # шаблон первого объявления (кнопка «Вставить шаблон» у creator в пустом канале)
+        "welcome_template": WELCOME_TEMPLATE,
     })
 
 
@@ -946,9 +1800,27 @@ async def api_users(request: Request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
     with get_db() as conn:
-        users = conn.execute("SELECT id, name, username, avatar_uuid, bio FROM users WHERE id != ?", (user["id"],)).fetchall()
-    
-    return JSONResponse([dict(u) for u in users])
+        users = conn.execute(
+            "SELECT id, name, username, avatar_uuid, bio, last_seen, hide_presence "
+            "FROM users WHERE id != ?",
+            (user["id"],),
+        ).fetchall()
+        viewer_hidden = int((conn.execute(
+            "SELECT hide_presence FROM users WHERE id = ?", (user["id"],)
+        ).fetchone() or {"hide_presence": 0})["hide_presence"] or 0)
+
+    # Phase 7.8: присутствие — online берём из живых WS-подключений (БД не хранит статус)
+    # 7.8-fix2 [5]: приватность взаимная — скрываю я или собеседник, статус = null
+    online_ids = set(app.state.connections.keys())
+    rows = []
+    for u in users:
+        item = dict(u)
+        hidden = bool(viewer_hidden or int(u["hide_presence"] or 0))
+        item["online"] = False if hidden else (int(u["id"]) in online_ids)
+        item["last_seen"] = None if hidden else u["last_seen"]
+        item["hidden"] = hidden
+        rows.append(item)
+    return JSONResponse(rows)
 
 
 @app.get("/api/user/{user_id}/profile")
@@ -959,12 +1831,22 @@ async def api_user_profile(request: Request, user_id: int):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
     with get_db() as conn:
-        row = conn.execute("SELECT id, name, username, avatar_uuid, bio, banner_uuid, theme_json FROM users WHERE id = ?", (user_id,)).fetchone()
-    
+        row = conn.execute(
+            "SELECT id, name, username, avatar_uuid, bio, banner_uuid, theme_json, last_seen, "
+            "hide_presence FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+        visible = presence_visible(conn, current_user["id"], user_id)
+
     if not row:
         raise HTTPException(status_code=404, detail="User not found")
     
-    return JSONResponse(dict(row))
+    payload = dict(row)
+    # 7.8-fix2 [5]: приватность взаимная — скрыт статус у цели или у смотрящего
+    payload["online"] = (int(user_id) in app.state.connections) if visible else False
+    payload["last_seen"] = row["last_seen"] if visible else None
+    payload["hidden"] = not visible
+    return JSONResponse(payload)
 
 
 @app.get("/api/messages/{recipient_id}")
@@ -977,6 +1859,7 @@ async def api_messages(request: Request, recipient_id: int):
         messages = conn.execute("""
             SELECT m.id, m.sender_id, m.recipient_id, m.text, m.created_at, m.edited_at,
                    sender.avatar_uuid as sender_avatar_uuid,
+                   m.peer_type, m.peer_id,
                    m.reply_to_id,
                    r.text AS reply_to_text, ru.name AS reply_to_name
             FROM messages m
@@ -984,6 +1867,8 @@ async def api_messages(request: Request, recipient_id: int):
             LEFT JOIN messages r ON r.id = m.reply_to_id
             LEFT JOIN users ru ON ru.id = r.sender_id
             WHERE m.group_id IS NULL
+              -- Phase 7.6d-fix: объявления канала в личные диалоги не попадают
+              AND IFNULL(m.peer_type, 'user') != 'broadcast'
               AND ((m.sender_id = ? AND m.recipient_id = ?) OR (m.sender_id = ? AND m.recipient_id = ?))
               -- Phase 6.5: hide rows this user deleted ("у себя" / "у всех" / delete-chat)
               AND ((m.sender_id = ? AND m.deleted_for_sender = 0) OR (m.recipient_id = ? AND m.deleted_for_recipient = 0))
@@ -1009,6 +1894,217 @@ async def api_messages(request: Request, recipient_id: int):
             result.append(msg_dict)
     
     return JSONResponse({"messages": result, "muted_by_me": muted_by_me})
+
+
+# ============== Phase 7.6d-fix: канал объявлений (без бота в users) ==============
+
+async def push_to_all(payload: dict, exclude_uid: int | None = None) -> None:
+    """Разослать событие всем живым WS-подключениям (канал читают все)."""
+    for uid, ws_conn in list(app.state.connections.items()):
+        if exclude_uid is not None and int(uid) == int(exclude_uid):
+            continue
+        try:
+            await ws_conn.send_json(payload)
+        except Exception:
+            pass
+
+
+def channel_message_rows(conn, limit: int | None = None) -> list:
+    """История канала: peer_type='broadcast', sender_id — реальный создатель."""
+    sql = """
+        SELECT m.id, m.sender_id, m.text, m.created_at, m.edited_at,
+               u.name AS sender_name, u.username AS sender_username,
+               u.avatar_uuid AS sender_avatar_uuid
+        FROM messages m
+        LEFT JOIN users u ON u.id = m.sender_id
+        WHERE m.peer_type = 'broadcast'
+        ORDER BY m.created_at ASC, m.id ASC
+    """
+    rows = conn.execute(sql).fetchall() if limit is None else conn.execute(sql + " LIMIT ?", (limit,)).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        item.update({
+            "peer_type": CHANNEL_PEER_TYPE,
+            "peer_id": 0,
+            "is_broadcast": 1,
+            "channel": 1,
+            "group_id": None,
+            "recipient_id": 0,
+            "sender_name": item.get("sender_name") or CHANNEL_NAME_DEFAULT,
+            "sender_username": item.get("sender_username") or "",
+            "sender_avatar_uuid": item.get("sender_avatar_uuid") or "",
+            "attachments": [],
+            "reply_to_id": None,
+        })
+        result.append(item)
+    return result
+
+
+@app.get("/api/channel")
+async def get_channel(request: Request):
+    """Профиль канала: имя, био, аватар, баннер + права вызывающего."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    with get_db() as conn:
+        payload = channel_payload(conn)
+        payload["is_creator"] = int(is_creator_user(user))
+        payload["creator_id"] = creator_user_id(conn)
+    return JSONResponse(payload)
+
+
+@app.post("/api/channel")
+async def update_channel(request: Request, name: str = Form(""), bio: str = Form("")):
+    """Оформить канал: имя и описание. Только creator (админы — читатели)."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    require_creator(user)
+
+    clean_name = (name or "").strip()[:50]
+    if not clean_name:
+        raise HTTPException(status_code=400, detail="Название канала обязательно")
+    clean_bio = (bio or "").strip()[:200]
+
+    with get_db() as conn:
+        set_channel_fields(conn, {"broadcast_name": clean_name, "broadcast_bio": clean_bio})
+        conn.commit()
+        payload = channel_payload(conn)
+    log_admin_action(user["id"], "channel_profile", None, f"name={clean_name}")
+    payload["is_creator"] = 1
+    app_logger.info("канал оформлен: creator_id=%s name=%r", user["id"], clean_name)
+    return JSONResponse({"success": True, "channel": payload})
+
+
+def _save_channel_image(upload: UploadFile, subdir: str) -> tuple[str, str]:
+    """Сохранить картинку профиля канала (avatars/ или banners/). Возвращает uuid-имя."""
+    if not upload.filename:
+        raise HTTPException(status_code=400, detail="No file provided")
+    mime_type = upload.content_type or mimetypes.guess_type(upload.filename)[0]
+    if not mime_type or not mime_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Only image files are allowed")
+    ext = Path(upload.filename).suffix.lower()
+    uuid_name = f"{uuid.uuid4().hex}{ext}"
+    target_dir = os.path.join(UPLOADS_DIR, subdir)
+    os.makedirs(target_dir, exist_ok=True)
+    return uuid_name, os.path.join(target_dir, uuid_name)
+
+
+@app.post("/api/channel/avatar")
+async def upload_channel_avatar(request: Request, avatar: UploadFile = File(...)):
+    """Аватар канала — только creator."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    require_creator(user)
+    uuid_name, file_path = _save_channel_image(avatar, "avatars")
+    part_path = file_path + ".part"
+    data = await avatar.read()
+    try:
+        async with aiofiles.open(part_path, "wb") as f:
+            await f.write(data)
+        os.replace(part_path, file_path)
+    except Exception:
+        try:
+            await aiofiles.os.remove(part_path)
+        except OSError:
+            pass
+        raise
+    with get_db() as conn:
+        set_channel_fields(conn, {"broadcast_avatar_uuid": uuid_name})
+        conn.commit()
+    return JSONResponse({"avatar_uuid": uuid_name})
+
+
+@app.post("/api/channel/banner")
+async def upload_channel_banner(request: Request, banner: UploadFile = File(...)):
+    """Баннер канала — только creator."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    require_creator(user)
+    uuid_name, file_path = _save_channel_image(banner, "banners")
+    part_path = file_path + ".part"
+    data = await banner.read()
+    try:
+        async with aiofiles.open(part_path, "wb") as f:
+            await f.write(data)
+        os.replace(part_path, file_path)
+    except Exception:
+        try:
+            await aiofiles.os.remove(part_path)
+        except OSError:
+            pass
+        raise
+    with get_db() as conn:
+        set_channel_fields(conn, {"broadcast_banner_uuid": uuid_name})
+        conn.commit()
+    return JSONResponse({"banner_uuid": uuid_name})
+
+
+@app.get("/api/channel/messages")
+async def get_channel_messages(request: Request):
+    """История канала объявлений: одна лента на всех, пишет в неё только creator."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    with get_db() as conn:
+        messages = channel_message_rows(conn)
+        payload = channel_payload(conn)
+        payload["is_creator"] = int(is_creator_user(user))
+        payload["creator_id"] = creator_user_id(conn)
+    return JSONResponse({
+        "messages": messages,
+        "channel": payload,
+        "is_creator": payload["is_creator"],
+    })
+
+
+async def post_channel_message(request: Request, user, text: str) -> JSONResponse:
+    """
+    Объявление в канал: одна строка на всех (peer_type='broadcast', peer_id=0),
+    автор — реальный создатель. Доставка — веером по WS.
+    """
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="Empty message")
+    if len(text) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=400, detail="Message too long")
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db() as conn:
+        cur = conn.execute(
+            "INSERT INTO messages (sender_id, recipient_id, text, group_id, reply_to_id, "
+            "peer_type, peer_id, created_at) VALUES (?, 0, ?, NULL, NULL, ?, 0, ?)",
+            (user["id"], text, CHANNEL_PEER_TYPE, now),
+        )
+        message_id = int(cur.lastrowid)
+        conn.commit()
+        row = conn.execute(
+            "SELECT m.id, m.sender_id, m.text, m.created_at, m.edited_at, "
+            "u.name AS sender_name, u.username AS sender_username, u.avatar_uuid AS sender_avatar_uuid "
+            "FROM messages m LEFT JOIN users u ON u.id = m.sender_id WHERE m.id = ?",
+            (message_id,),
+        ).fetchone()
+        item = dict(row)
+        item.update({
+            "type": "message",
+            "peer_type": CHANNEL_PEER_TYPE,
+            "peer_id": 0,
+            "is_broadcast": 1,
+            "channel": 1,
+            "group_id": None,
+            "recipient_id": 0,
+            "sender_name": item.get("sender_name") or CHANNEL_NAME_DEFAULT,
+            "sender_username": item.get("sender_username") or "",
+            "sender_avatar_uuid": item.get("sender_avatar_uuid") or "",
+            "attachments": [],
+            "success": True,
+        })
+
+    app_logger.info("объявление в канале: creator_id=%s message_id=%s", user["id"], message_id)
+    await push_to_all(item, exclude_uid=user["id"])
+    return JSONResponse(item)
 
 
 # ============== Phase 6.1: Groups ==============
@@ -1259,9 +2355,10 @@ async def mark_read(request: Request):
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
     body = await request.json()
-    peer_type = body.get("type", "user")
+    # Phase 7.6d-fix: канал присылает type='channel', id=0 — внутри это peer_type='broadcast'
+    peer_type = normalize_read_peer_type(body.get("type", "user"))
     peer_id = body.get("id")
-    if not peer_id:
+    if peer_id is None:
         raise HTTPException(status_code=400, detail="Missing id")
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with get_db() as conn:
@@ -1288,6 +2385,7 @@ async def get_unread(request: Request):
                 CASE WHEN sender_id = ? THEN recipient_id ELSE sender_id END AS peer_id
             FROM messages
             WHERE (sender_id = ? OR recipient_id = ?) AND group_id IS NULL
+              AND IFNULL(peer_type, 'user') != 'broadcast'
         """, (user["id"], user["id"], user["id"])).fetchall()
         for p in peers:
             pid = p["peer_id"]
@@ -1314,6 +2412,19 @@ async def get_unread(request: Request):
             """, (gid, user["id"], last_read)).fetchone()["c"]
             if count > 0:
                 result.append({"type": "group", "id": gid, "count": count})
+        # Phase 7.6d-fix: канал объявлений — общая лента, непрочитанное считаем по created_at
+        row = conn.execute(
+            "SELECT last_read_at FROM reads WHERE user_id = ? AND peer_type = ? AND peer_id = 0",
+            (user["id"], CHANNEL_PEER_TYPE),
+        ).fetchone()
+        last_read = row["last_read_at"] if row else "1970-01-01 00:00:00"
+        count = conn.execute(
+            "SELECT COUNT(*) AS c FROM messages "
+            "WHERE peer_type = ? AND sender_id != ? AND created_at > ?",
+            (CHANNEL_PEER_TYPE, user["id"], last_read),
+        ).fetchone()["c"]
+        if count > 0:
+            result.append({"type": "channel", "id": 0, "count": count})
     return JSONResponse(result)
 
 
@@ -1603,6 +2714,108 @@ async def group_command(request: Request, group_id: int, cmd: str = Form(""), ar
     raise HTTPException(status_code=400, detail="Команда не реализована")
 
 
+# ============== Phase 7.8: присутствие (online / last_seen) ==============
+#
+# online — факт живого WS-подключения (app.state.connections: user_id -> websocket).
+# last_seen — метка в users: пишется на подключении, на отключении и раз в минуту
+# для всех, кто держит соединение (heartbeat). Клиенты получают событие presence.
+
+PRESENCE_HEARTBEAT_SECONDS = 60
+_presence_task = None
+
+
+def touch_last_seen(user_id: int) -> str:
+    """Обновить last_seen пользователя, вернуть новую метку (YYYY-MM-DD HH:MM:SS)."""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with get_db() as conn:
+            conn.execute("UPDATE users SET last_seen = ? WHERE id = ?", (now, user_id))
+            conn.commit()
+    except Exception:
+        app_logger.exception("presence: не обновился last_seen user_id=%s", user_id)
+    return now
+
+
+def presence_visible(conn, viewer_id: int, target_id: int) -> bool:
+    """7.8-fix2 [5]: присутствие взаимное — если хотя бы один из двоих скрывает
+    свой статус, ни один не видит чужой (логика как в Telegram). Себе — всегда видно."""
+    if not viewer_id or not target_id or int(viewer_id) == int(target_id):
+        return True
+    rows = conn.execute(
+        "SELECT id, hide_presence FROM users WHERE id IN (?, ?)", (int(viewer_id), int(target_id))
+    ).fetchall()
+    flags = {int(r["id"]): int(r["hide_presence"] or 0) for r in rows}
+    return not (flags.get(int(viewer_id), 0) or flags.get(int(target_id), 0))
+
+
+def presence_flags(conn, user_ids) -> dict:
+    """Кто из переданных пользователей скрывает присутствие."""
+    ids = [int(i) for i in user_ids if i]
+    if not ids:
+        return {}
+    marks = ", ".join("?" * len(ids))
+    rows = conn.execute(
+        f"SELECT id, hide_presence FROM users WHERE id IN ({marks})", ids
+    ).fetchall()
+    return {int(r["id"]): int(r["hide_presence"] or 0) for r in rows}
+
+
+async def push_presence(user_id: int, online: bool, last_seen: str | None = None) -> None:
+    """Разослать событие присутствия всем, кроме самого пользователя.
+
+    7.8-fix2 [5]: payload считается ПЕРСОНАЛЬНО — если субъект или получатель
+    скрывает присутствие, получателю уходят online=false, last_seen=null, hidden=true.
+    """
+    try:
+        with get_db() as conn:
+            flags = presence_flags(conn, [user_id, *app.state.connections.keys()])
+    except Exception:
+        app_logger.exception("presence: не прочитаны флаги приватности")
+        flags = {}
+    subject_hidden = bool(flags.get(int(user_id), 0))
+    for uid, ws_conn in list(app.state.connections.items()):
+        if int(uid) == int(user_id):
+            continue
+        masked = subject_hidden or bool(flags.get(int(uid), 0))
+        try:
+            await ws_conn.send_json({
+                "type": "presence",
+                "user_id": int(user_id),
+                "online": False if masked else bool(online),
+                "last_seen": "" if masked else (last_seen or ""),
+                "hidden": bool(masked),
+            })
+        except Exception:
+            pass
+
+
+async def presence_heartbeat() -> None:
+    """Пока пользователь онлайн, его last_seen должен идти вперёд (не только на выход)."""
+    while True:
+        await asyncio.sleep(PRESENCE_HEARTBEAT_SECONDS)
+        try:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with get_db() as conn:
+                for uid in list(app.state.connections.keys()):
+                    conn.execute("UPDATE users SET last_seen = ? WHERE id = ?", (now, uid))
+                conn.commit()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            app_logger.exception("presence: сбой heartbeat")
+
+
+def ensure_presence_heartbeat() -> None:
+    """Поднять фоновую задачу один раз, когда появилось первое соединение."""
+    global _presence_task
+    if _presence_task is not None and not _presence_task.done():
+        return
+    try:
+        _presence_task = asyncio.create_task(presence_heartbeat())
+    except RuntimeError:      # нет событийного цикла (импорт/тесты) — просто не страхуемся
+        _presence_task = None
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     try:
@@ -1647,7 +2860,12 @@ async def websocket_endpoint(websocket: WebSocket):
     
     # Store connection
     app.state.connections[user_id] = websocket
+    # Phase 7.8: присутствие — вошёл в сеть, метку тоже обновляем
+    ensure_presence_heartbeat()
+    _last_seen = touch_last_seen(user_id)
+    await push_presence(user_id, True, _last_seen)
     _pulse_emit("ws", f"CONNECT user_id={user_id}")
+    _ws_logger.info("WS подключён: user_id=%s", user_id)
     
     try:
         while True:
@@ -1673,6 +2891,9 @@ async def websocket_endpoint(websocket: WebSocket):
                             try: await ws_conn.send_json(payload)
                             except: pass
                 else:
+                    # Phase 7.6d-fix: «канал печатает» — бессмыслица, канал не собеседник
+                    if data.get("channel"):
+                        continue
                     peer_id = data.get("peer_id")
                     if peer_id:
                         ws_conn = app.state.connections.get(peer_id)
@@ -1694,12 +2915,17 @@ async def websocket_endpoint(websocket: WebSocket):
                         conn.commit()
     except WebSocketDisconnect:
         _pulse_emit("ws", f"DISCONNECT user_id={user_id}")
+        _ws_logger.info("WS отключён: user_id=%s", user_id)
         if user_id in app.state.connections:
             del app.state.connections[user_id]
-    except Exception:
+        # Phase 7.8: вышел из сети — пишем last_seen и рассылаем событие
+        await push_presence(user_id, False, touch_last_seen(user_id))
+    except Exception as exc:
         _pulse_emit("ws", f"DISCONNECT user_id={user_id} (error)")
+        _ws_logger.warning("WS отключён с ошибкой: user_id=%s: %s", user_id, exc)
         if user_id in app.state.connections:
             del app.state.connections[user_id]
+        await push_presence(user_id, False, touch_last_seen(user_id))
 
 
 # Store active connections
@@ -1788,24 +3014,32 @@ async def upload_theme_image(request: Request, image_type: str, image: UploadFil
 
     # Generate UUID filename (keep extension so mimetypes can sniff on serve)
     uuid_name = f"{uuid.uuid4().hex}{Path(image.filename).suffix.lower()}"
-    file_path = os.path.join(THEME_IMAGES_DIR, uuid_name)
+    final_path = os.path.join(THEME_IMAGES_DIR, uuid_name)
+    # Phase R2: *.part + os.replace — клиент не видит недописанный файл
+    part_path = final_path + ".part"
 
     # Save file in chunks with size limit
     total_bytes = 0
-    async with aiofiles.open(file_path, 'wb') as out_file:
-        while True:
-            chunk = await image.read(65536)
-            if not chunk:
-                break
-            total_bytes += len(chunk)
-            if total_bytes > THEME_IMAGE_MAX_BYTES:
-                await out_file.close()
-                await aiofiles.os.remove(file_path)
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Image exceeds size limit ({THEME_IMAGE_MAX_BYTES // 1024} KB)"
-                )
-            await out_file.write(chunk)
+    try:
+        async with aiofiles.open(part_path, 'wb') as out_file:
+            while True:
+                chunk = await image.read(65536)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > THEME_IMAGE_MAX_BYTES:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Image exceeds size limit ({THEME_IMAGE_MAX_BYTES // 1024} KB)"
+                    )
+                await out_file.write(chunk)
+        os.replace(part_path, final_path)
+    except Exception:
+        try:
+            await aiofiles.os.remove(part_path)
+        except OSError:
+            pass
+        raise
 
     # Update user's theme_json, replacing any previous image of this type
     with get_db() as conn:
@@ -1899,11 +3133,20 @@ async def send_message(
     group_id: int = Form(0),
     text: str = Form(""),
     reply_to_id: int = Form(0),
+    channel: int = Form(0),
     files: list[UploadFile] = File(default=[])
 ):
     user = get_current_user_fresh(request)  # Use fresh data to catch ban status
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # Phase 7.6d-fix: канал объявлений — вещание только для creator, остальным 403
+    # (проверяем ДО всех остальных веток: админы тут не имеют привилегий)
+    if channel:
+        require_creator(user)
+        if files:
+            raise HTTPException(status_code=400, detail="Канал объявлений принимает только текст")
+        return await post_channel_message(request, user, text)
     
     # Check if user is banned
     if is_banned(user):
@@ -1970,9 +3213,14 @@ async def send_message(
             if not reply_target:
                 raise HTTPException(status_code=404, detail="Сообщение для ответа не найдено")
         
+        # Phase 7.6d-fix: peer_type/peer_id — явная маркировка получателя (канал = 0)
         conn.execute(
-            "INSERT INTO messages (sender_id, recipient_id, text, group_id, reply_to_id) VALUES (?, ?, ?, ?, ?)",
-            (user["id"], recipient_id, text, group_id if is_group else None, reply_target["id"] if reply_target else None)
+            "INSERT INTO messages (sender_id, recipient_id, text, group_id, reply_to_id, "
+            "peer_type, peer_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (user["id"], recipient_id, text, group_id if is_group else None,
+             reply_target["id"] if reply_target else None,
+             PEER_TYPE_GROUP if is_group else PEER_TYPE_USER,
+             group_id if is_group else recipient_id)
         )
         message_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         
@@ -1998,27 +3246,39 @@ async def send_message(
                 # Generate UUID filename with extension
                 ext = Path(file.filename).suffix.lower()
                 uuid_name = f"{uuid.uuid4().hex}{ext}"
-                file_path = os.path.join(UPLOADS_DIR, uuid_name)
+                final_path = os.path.join(UPLOADS_DIR, uuid_name)
+                # Phase R2: пишем в *.part; финальное имя появляется только целиком
+                part_path = final_path + ".part"
                 
                 # Stream file to disk in 64KB chunks while counting bytes
                 total_bytes = 0
-                async with aiofiles.open(file_path, 'wb') as f:
-                    while True:
-                        chunk_start = time.monotonic()
-                        chunk = await file.read(chunk_bytes)
-                        if not chunk:
-                            break
-                        total_bytes += len(chunk)
-                        if total_bytes > effective_max_bytes:
-                            await aiofiles.os.remove(file_path)
-                            raise HTTPException(status_code=413, detail=f"File '{file.filename}' exceeds {max_upload_mb} MB limit")
-                        await f.write(chunk)
-                        # Phase 7.1b-fix: token-bucket – sleep = budget − elapsed
-                        if chunk_budget > 0:
-                            elapsed = time.monotonic() - chunk_start
-                            sleep_time = chunk_budget - elapsed
-                            if sleep_time > 0:
-                                await asyncio.sleep(sleep_time)
+                try:
+                    async with aiofiles.open(part_path, 'wb') as f:
+                        while True:
+                            chunk_start = time.monotonic()
+                            chunk = await file.read(chunk_bytes)
+                            if not chunk:
+                                break
+                            total_bytes += len(chunk)
+                            if total_bytes > effective_max_bytes:
+                                raise HTTPException(status_code=413, detail=f"File '{file.filename}' exceeds {max_upload_mb} MB limit")
+                            await f.write(chunk)
+                            # Phase 7.1b-fix: token-bucket – sleep = budget − elapsed
+                            if chunk_budget > 0:
+                                elapsed = time.monotonic() - chunk_start
+                                sleep_time = chunk_budget - elapsed
+                                if sleep_time > 0:
+                                    await asyncio.sleep(sleep_time)
+                    # Phase R2: os.replace — атомарное появление готового файла,
+                    # читатель никогда не видит полузаписанное вложение
+                    os.replace(part_path, final_path)
+                except Exception:
+                    # Лимит, обрыв соединения, ошибка диска — полуфайла не остаётся
+                    try:
+                        await aiofiles.os.remove(part_path)
+                    except OSError:
+                        pass
+                    raise
                 
                 # Detect mime type from extension
                 mime_type = mimetypes.guess_type(file.filename)[0] or file.content_type or "application/octet-stream"
@@ -2030,12 +3290,17 @@ async def send_message(
                 )
                 attachment_ids.append(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
                 _pulse_emit("upload", f"file={file.filename} size={total_bytes} mime={mime_type}")
+                _upload_logger.info(
+                    "вложение сохранено: message_id=%s file=%s size=%s mime=%s",
+                    message_id, file.filename, total_bytes, mime_type
+                )
         
         conn.commit()
         
         # Get the inserted message with attachments
         msg = conn.execute(
-            "SELECT id, sender_id, recipient_id, group_id, text, created_at, reply_to_id FROM messages WHERE id = ?",
+            "SELECT id, sender_id, recipient_id, group_id, text, created_at, reply_to_id, "
+            "peer_type, peer_id FROM messages WHERE id = ?",
             (message_id,)
         ).fetchone()
         
@@ -2169,6 +3434,10 @@ def log_admin_action(actor_id, action, target_id=None, detail=None):
             (actor_id, action, target_id, detail)
         )
         conn.commit()
+    admin_logger.info(
+        "админ-действие: actor_id=%s action=%s target_id=%s detail=%s",
+        actor_id, action, target_id, detail
+    )
 
 
 def is_banned(user):
@@ -2411,6 +3680,42 @@ async def get_admin_audit(request: Request):
     return JSONResponse([dict(r) for r in rows])
 
 
+@app.post("/api/admin/cleanup-orphans")
+async def cleanup_orphan_files(request: Request):
+    """
+    Phase R2: удалить файлы-сироты из uploads — те, на которые нет строки в attachments.
+    Аватары/баннеры лежат в подкаталогах и не трогаются; *.part не трогаются
+    (их убирает стартовая чистка по возрасту).
+    """
+    user = get_current_user(request)
+    require_admin(user)
+
+    with get_db() as conn:
+        known = {row[0] for row in conn.execute("SELECT uuid_name FROM attachments").fetchall()}
+
+    deleted, errors = 0, 0
+    try:
+        names = os.listdir(UPLOADS_DIR)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Не удалось прочитать uploads: {exc}")
+
+    for name in names:
+        path = os.path.join(UPLOADS_DIR, name)
+        if not os.path.isfile(path):          # подкаталоги avatars/ и banners/ пропускаем
+            continue
+        if name.endswith(".part") or name in known:
+            continue
+        try:
+            os.remove(path)
+            deleted += 1
+        except OSError:
+            errors += 1
+
+    log_admin_action(user["id"], "cleanup_orphans", None, f"deleted={deleted}; errors={errors}")
+    _pulse_emit("cleanup", f"orphans deleted={deleted}")
+    return JSONResponse({"deleted": deleted, "errors": errors, "kept": len(known)})
+
+
 @app.get("/api/settings/blocks")
 async def get_blocks(request: Request):
     """Get list of users that current user has blocked"""
@@ -2471,6 +3776,206 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 
+# ===================================================================== #
+# Phase R7: подтверждение действий кодами из письма
+# ===================================================================== #
+
+SMTP_HOST = (os.environ.get("SMTP_HOST") or "").strip()
+SMTP_PORT = int(os.environ.get("SMTP_PORT") or "587")
+SMTP_USER = (os.environ.get("SMTP_USER") or "").strip()
+SMTP_PASS = os.environ.get("SMTP_PASS") or ""
+SMTP_FROM = (os.environ.get("SMTP_FROM") or "").strip() or SMTP_USER or "noreply@localhost"
+SMTP_STARTTLS = (os.environ.get("SMTP_STARTTLS") or "yes").strip().lower() in ("1", "yes", "true", "on")
+SMTP_ENABLED = bool(SMTP_HOST)
+# Phase R7: без SMTP_host письма не уходят — в prod это 503, в dev коды видны в app.log
+MAIL_BACKEND = "smtp" if SMTP_ENABLED else ("console" if APP_MODE != "prod" else "none")
+
+CODE_TTL_SECONDS = 600        # TTL кода — 10 минут
+CODE_MAX_ATTEMPTS = 5         # попыток ввода на один код
+CODE_RESEND_INTERVAL = 60     # не чаще одного кода в минуту (на юзера + цель)
+CODE_MAX_PER_HOUR = 5         # и не больше пяти в час на юзера
+CODE_LENGTH = 6
+CODE_PURPOSES = ("verify", "email_change", "password_change")
+
+
+class EmailUnavailable(Exception):
+    """Почта не настроена: в prod это 503, в dev коды уходят в лог."""
+
+
+def _generate_code() -> str:
+    """6 цифр из криптографического ГСЧ (никаких random.randint)."""
+    return "".join(str(secrets.randbelow(10)) for _ in range(CODE_LENGTH))
+
+
+def _code_hash(code: str) -> str:
+    """Храним только sha256: plaintext кода в БД не живёт ни секунды."""
+    return hashlib.sha256(code.strip().encode("utf-8")).hexdigest()
+
+
+def _send_code_email(to_address: str, purpose: str, code: str, user_id: int) -> None:
+    """
+    Отправить код. Реальный SMTP, если задан SMTP_HOST; иначе в dev — console-бэкенд
+    (код виден в app.log), а в prod — 503 «почта не настроена».
+    """
+    if SMTP_ENABLED:
+        subject = "Код подтверждения VibeBunker"
+        body = (
+            f"Код подтверждения: {code}\n\n"
+            f"Действует {CODE_TTL_SECONDS // 60} минут, попыток ввода: {CODE_MAX_ATTEMPTS}.\n"
+            "Если вы это не запрашивали — просто проигнорируйте письмо."
+        )
+        message = EmailMessage()
+        message["Subject"] = subject
+        message["From"] = SMTP_FROM
+        message["To"] = to_address
+        message.set_content(body)
+        try:
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
+                server.ehlo()
+                if SMTP_STARTTLS:
+                    server.starttls(context=ssl.create_default_context())
+                    server.ehlo()
+                if SMTP_USER:
+                    server.login(SMTP_USER, SMTP_PASS)
+                server.send_message(message)
+        except Exception as exc:
+            # в лог — только факт и тип сбоя: ни пароля, ни кода
+            error_logger.error("почта: не удалось отправить код (%s): %s", purpose, type(exc).__name__)
+            raise HTTPException(status_code=502, detail="Не удалось отправить письмо") from exc
+        app_logger.info("код отправлен: purpose=%s user_id=%s (по адресу из профиля)", purpose, user_id)
+        return
+
+    if APP_MODE == "prod":
+        raise EmailUnavailable()
+
+    # console-бэкенд (только dev)
+    app_logger.info("EMAIL CODE user_id=%s purpose=%s code=%s", user_id, purpose, code)
+
+
+def _code_row(user_id: int, purpose: str, conn) -> sqlite3.Row | None:
+    """Актуальная (не использованная, не истёкшая) запись кода."""
+    return conn.execute(
+        """
+        SELECT * FROM email_codes
+        WHERE user_id = ? AND purpose = ? AND used = 0
+        ORDER BY id DESC LIMIT 1
+        """,
+        (user_id, purpose),
+    ).fetchone()
+
+
+def _check_code_rate_limit(user_id: int, purpose: str) -> None:
+    """1 код в 60 секунд и не больше CODE_MAX_PER_HOUR в час на пользователя."""
+    now = datetime.now()
+    with get_db() as conn:
+        last = conn.execute(
+            """
+            SELECT created_at FROM email_codes
+            WHERE user_id = ? AND purpose = ?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (user_id, purpose),
+        ).fetchone()
+        if last:
+            try:
+                created = datetime.fromisoformat(str(last["created_at"]).replace("Z", ""))
+            except ValueError:
+                created = None
+            if created:
+                elapsed = (now - created).total_seconds()
+                if elapsed < CODE_RESEND_INTERVAL:
+                    app_logger.warning(
+                        "код: слишком частая отправка (purpose=%s user_id=%s, %.0fс < %dс)",
+                        purpose, user_id, elapsed, CODE_RESEND_INTERVAL,
+                    )
+                    wait = int(CODE_RESEND_INTERVAL - elapsed)
+                    raise HTTPException(
+                        status_code=429,
+                        detail=f"Следующий код можно запросить через {wait} с",
+                        headers={"Retry-After": str(wait)},
+                    )
+        hour_ago = (now - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+        count = conn.execute(
+            "SELECT COUNT(*) AS n FROM email_codes WHERE user_id = ? AND created_at > ?",
+            (user_id, hour_ago),
+        ).fetchone()["n"]
+        if count >= CODE_MAX_PER_HOUR:
+            app_logger.warning("код: лимит отправок в час (user_id=%s, %s шт.)", user_id, count)
+            raise HTTPException(status_code=429, detail="Слишком много кодов за час, попробуйте позже")
+
+
+def issue_email_code(user_id: int, purpose: str, to_address: str, target: str | None = None) -> None:
+    """Выпустить код, инвалидировать предыдущие и отправить письмо."""
+    if purpose not in CODE_PURPOSES:
+        raise HTTPException(status_code=400, detail="Неизвестная цель кода")
+    _check_code_rate_limit(user_id, purpose)
+    code = _generate_code()
+    now = datetime.now()
+    with get_db() as conn:
+        # все прошлые коды по этой цели сразу гасим: валиден ровно один, последний
+        conn.execute(
+            "UPDATE email_codes SET used = 1 WHERE user_id = ? AND purpose = ? AND used = 0",
+            (user_id, purpose),
+        )
+        conn.execute(
+            """
+            INSERT INTO email_codes (user_id, purpose, target, code_hash, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id, purpose, target, _code_hash(code),
+                now.strftime("%Y-%m-%d %H:%M:%S"),
+                (now + timedelta(seconds=CODE_TTL_SECONDS)).strftime("%Y-%m-%d %H:%M:%S"),
+            ),
+        )
+        conn.commit()
+    _send_code_email(to_address, purpose, code, user_id)
+
+
+def consume_email_code(user_id: int, purpose: str, code: str):
+    """
+    Проверить код. Возвращает запись (нужен target) либо кидает HTTPException.
+    Счётчик попыток растёт, после CODE_MAX_ATTEMPTS код блокируется.
+    """
+    with get_db() as conn:
+        row = _code_row(user_id, purpose, conn)
+        if not row:
+            raise HTTPException(status_code=400, detail="Код не найден или истёк, запросите новый")
+        if row["attempts"] >= CODE_MAX_ATTEMPTS:
+            conn.execute("UPDATE email_codes SET used = 1 WHERE id = ?", (row["id"],))
+            conn.commit()
+            raise HTTPException(status_code=429, detail="Слишком много неверных попыток, запросите новый код")
+        try:
+            expired = datetime.fromisoformat(str(row["expires_at"])) < datetime.now()
+        except ValueError:
+            expired = True
+        if expired:
+            conn.execute("UPDATE email_codes SET used = 1 WHERE id = ?", (row["id"],))
+            conn.commit()
+            raise HTTPException(status_code=400, detail="Срок действия кода истёк, запросите новый")
+        if not hmac.compare_digest(str(row["code_hash"]), _code_hash(code)):
+            attempts = int(row["attempts"]) + 1
+            blocked = attempts >= CODE_MAX_ATTEMPTS
+            conn.execute(
+                "UPDATE email_codes SET attempts = ?, used = ? WHERE id = ?",
+                (attempts, 1 if blocked else 0, row["id"]),
+            )
+            conn.commit()
+            app_logger.warning(
+                "код: неверная попытка (purpose=%s user_id=%s, %d/%d%s)",
+                purpose, user_id, attempts, CODE_MAX_ATTEMPTS, " — код заблокирован" if blocked else "",
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=("Код заблокирован: слишком много попыток, запросите новый"
+                        if blocked else "Неверный код"),
+            )
+        conn.execute("UPDATE email_codes SET used = 1 WHERE id = ?", (row["id"],))
+        conn.commit()
+        app_logger.info("код принят: purpose=%s user_id=%s", purpose, user_id)
+        return dict(row)
+
+
 # ========== PROFILE ENDPOINTS ==========
 @app.get("/api/profile")
 async def get_profile(request: Request):
@@ -2480,18 +3985,27 @@ async def get_profile(request: Request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
     with get_db() as conn:
-        row = conn.execute("SELECT id, name, username, email, avatar_uuid, bio, font_scale, banner_uuid FROM users WHERE id = ?", (user["id"],)).fetchone()
-    
-    return JSONResponse(dict(row))
+        row = conn.execute(
+            "SELECT id, name, username, email, email_verified, avatar_uuid, bio, font_scale, banner_uuid, "
+            "is_creator, hide_presence FROM users WHERE id = ?",
+            (user["id"],),
+        ).fetchone()
+
+    payload = dict(row)
+    # Phase R7: фронту нужны и статус верификации, и доступность почты как таковой
+    payload["mail_backend"] = MAIL_BACKEND
+    # Phase 7.6d-fix: creator оформляет канал объявлений (профиль канала — в settings)
+    payload["is_creator"] = int(user.get("is_creator") or 0)
+    return JSONResponse(payload)
 
 
 @app.post("/api/profile")
 async def update_profile(request: Request, name: str = Form(...), bio: str = Form("")):
-    """Update current user's profile (name and bio)"""
+    """Update current user's profile (name and bio). Профиль канала — POST /api/channel."""
     user = get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
-    
+
     with get_db() as conn:
         conn.execute("UPDATE users SET name = ?, bio = ? WHERE id = ?", (name, bio, user["id"]))
         conn.commit()
@@ -2511,6 +4025,28 @@ async def update_profile_put(request: Request, name: str = Form(...), bio: str =
         conn.commit()
     
     return JSONResponse({"success": True})
+
+
+@app.post("/api/profile/presence")
+async def update_presence_privacy(request: Request, hide: int = Form(...)):
+    """7.8-fix2 [5]: «Показывать, когда я был(а) в сети» (hide_presence).
+
+    Взаимность: выключив показ, я перестаю видеть чужие статусы тоже.
+    После смены рассылаем presence — собеседники сразу увидят «статус скрыт».
+    """
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    hide_flag = 1 if int(hide) else 0
+    with get_db() as conn:
+        conn.execute("UPDATE users SET hide_presence = ? WHERE id = ?", (hide_flag, user["id"]))
+        conn.commit()
+
+    # обновляем присутствие: флаг учитывается внутри push_presence
+    await push_presence(user["id"], int(user["id"]) in app.state.connections,
+                        touch_last_seen(user["id"]))
+    return JSONResponse({"success": True, "hide_presence": hide_flag})
 
 
 @app.post("/api/profile/font")
@@ -2554,59 +4090,179 @@ async def change_username(request: Request, username: str = Form(...), password:
 
 
 @app.post("/api/profile/email")
-async def change_email(request: Request, email: str = Form(...), password: str = Form(...)):
-    """Change current user's email (requires current password)"""
+async def change_email(request: Request, email: str = Form(...), code: str = Form(""), password: str = Form("")):
+    """
+    Phase R7: второй шаг смены почты. Шаг первый — /api/email/code/request
+    с purpose=email_change: код уходит на НОВЫЙ адрес.
+    """
     user = get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
-    
+
     email_clean = email.strip().lower()
     if not validate_email_format(email_clean):
         raise HTTPException(status_code=400, detail="Invalid email format")
-    
-    if not verify_password(password, user["password_hash"]):
-        raise HTTPException(status_code=400, detail="Incorrect password")
-    
+
+    if not code.strip():
+        raise HTTPException(status_code=400, detail="Требуется код из письма (сначала запросите его)")
+
+    row = consume_email_code(user["id"], "email_change", code)
+    target = (row.get("target") or "").strip().lower()
+    if target != email_clean:
+        raise HTTPException(status_code=400, detail="Код был отправлен на другой адрес")
+
     with get_db() as conn:
-        existing = conn.execute("SELECT id FROM users WHERE email = ? AND id != ?", (email_clean, user["id"])).fetchone()
-        if existing:
-            raise HTTPException(status_code=400, detail="Email already registered")
-        conn.execute("UPDATE users SET email = ? WHERE id = ?", (email_clean, user["id"]))
+        conn.execute(
+            "UPDATE users SET email = ?, email_verified = 1 WHERE id = ?", (email_clean, user["id"])
+        )
         conn.commit()
-    
-    return JSONResponse({"success": True, "email": email_clean})
+
+    app_logger.info("смена почты: user_id=%s (код подтверждён)", user["id"])
+    return JSONResponse({"success": True, "email": email_clean, "email_verified": 1})
 
 
-@app.post("/api/profile/password")
-async def change_password(request: Request, current_password: str = Form(...), new_password: str = Form(...), confirm_password: str = Form(...), email_code: str = Form("")):
-    """Change current user's password.
-    If email is set, email_code must match the email address.
-    If email is NULL, only current password is required (with a hint)."""
+# ---------------- Phase R7: запрос и подтверждение кодов ----------------
+@app.post("/api/email/code/request")
+async def request_email_code(
+    request: Request,
+    purpose: str = Form(...),
+    new_email: str = Form(""),
+    current_password: str = Form(""),
+):
+    """
+    Выпустить 6-значный код и отправить его письмом.
+    purpose: verify | email_change | password_change.
+    """
     user = get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
-    
+
+    purpose = (purpose or "").strip()
+    if purpose not in CODE_PURPOSES:
+        raise HTTPException(status_code=400, detail="Неизвестная цель кода")
+
+    if MAIL_BACKEND == "none":
+        raise HTTPException(status_code=503, detail="Почта не настроена: задайте SMTP_HOST")
+
+    recipient = (user.get("email") or "").strip()
+    target: str | None = None
+
+    if purpose == "password_change":
+        if not verify_password(current_password, user["password_hash"]):
+            raise HTTPException(status_code=400, detail="Current password is incorrect")
+        if not recipient:
+            raise HTTPException(status_code=400, detail="У аккаунта нет почты — код некуда отправить")
+    elif purpose == "email_change":
+        if not verify_password(current_password, user["password_hash"]):
+            raise HTTPException(status_code=400, detail="Current password is incorrect")
+        new_email_clean = new_email.strip().lower()
+        if not validate_email_format(new_email_clean):
+            raise HTTPException(status_code=400, detail="Invalid email format")
+        with get_db() as conn:
+            taken = conn.execute(
+                "SELECT id FROM users WHERE email = ? AND id != ?", (new_email_clean, user["id"])
+            ).fetchone()
+        if taken:
+            raise HTTPException(status_code=400, detail="Email already registered")
+        recipient = new_email_clean       # код уходит на НОВУЮ почту
+        target = new_email_clean
+    else:  # verify
+        if not recipient:
+            raise HTTPException(status_code=400, detail="У аккаунта нет почты — код некуда отправить")
+        if new_email.strip():
+            candidate = new_email.strip().lower()
+            if not validate_email_format(candidate):
+                raise HTTPException(status_code=400, detail="Invalid email format")
+            recipient = candidate
+            target = candidate
+
+    # SMTP — синхронный: не блокируем event loop
+    await run_in_threadpool(issue_email_code, user["id"], purpose, recipient, target)
+    return JSONResponse({"success": True, "purpose": purpose, "sent_to": _mask_email(recipient)})
+
+
+def _mask_email(address: str) -> str:
+    """Для ответа клиенту: a****b@domain — сам адрес наружу не светим."""
+    if "@" not in address:
+        return "***"
+    name, domain = address.split("@", 1)
+    if len(name) <= 2:
+        return f"***@{domain}"
+    return f"{name[0]}{'*' * (len(name) - 2)}{name[-1]}@{domain}"
+
+
+@app.post("/api/email/code/confirm")
+async def confirm_email_code(request: Request, purpose: str = Form(...), code: str = Form(...)):
+    """
+    Подтвердить код: verify → email_verified=1, email_change → почта обновлена и верифицирована.
+    (password_change подтверждается в /api/profile/password — там же и меняется пароль.)
+    """
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    purpose = (purpose or "").strip()
+    if purpose not in ("verify", "email_change"):
+        raise HTTPException(status_code=400, detail="Неизвестная цель кода")
+
+    row = consume_email_code(user["id"], purpose, code)
+
+    new_email = (row.get("target") or "").strip().lower() or (user.get("email") or "").strip().lower()
+    with get_db() as conn:
+        if purpose == "email_change" and new_email:
+            taken = conn.execute(
+                "SELECT id FROM users WHERE email = ? AND id != ?", (new_email, user["id"])
+            ).fetchone()
+            if taken:
+                raise HTTPException(status_code=400, detail="Email already registered")
+            conn.execute(
+                "UPDATE users SET email = ?, email_verified = 1 WHERE id = ?", (new_email, user["id"])
+            )
+        else:
+            conn.execute("UPDATE users SET email_verified = 1 WHERE id = ?", (user["id"],))
+        conn.commit()
+        fresh = conn.execute("SELECT email, email_verified FROM users WHERE id = ?", (user["id"],)).fetchone()
+
+    app_logger.info("почта подтверждена: user_id=%s purpose=%s", user["id"], purpose)
+    return JSONResponse({"success": True, "email": fresh["email"], "email_verified": fresh["email_verified"]})
+
+
+@app.post("/api/profile/password")
+async def change_password(request: Request, current_password: str = Form(...), new_password: str = Form(...), confirm_password: str = Form(...), code: str = Form("")):
+    """
+    Phase R7: смена пароля в два шага.
+    Шаг 1 — POST /api/email/code/request с purpose=password_change и текущим паролем,
+    шаг 2 — сюда: код из письма + новый пароль. Плюс session_epoch++ (R6 рвёт чужие сессии).
+    """
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
     if not verify_password(current_password, user["password_hash"]):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
-    
-    # Email verification step
-    if user.get("email"):
-        if not email_code:
-            raise HTTPException(status_code=400, detail="Email confirmation required: enter your email address")
-        if email_code.strip().lower() != user["email"]:
-            raise HTTPException(status_code=400, detail="Email does not match")
-    
+
     if new_password != confirm_password:
         raise HTTPException(status_code=400, detail="New passwords do not match")
-    
+
     if len(new_password) < 4:
         raise HTTPException(status_code=400, detail="New password must be at least 4 characters")
-    
+
+    if not code.strip():
+        raise HTTPException(status_code=400, detail="Требуется код из письма (сначала запросите его)")
+    consume_email_code(user["id"], "password_change", code)
+
     new_hash = hash_password(new_password)
     with get_db() as conn:
-        conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_hash, user["id"]))
+        # Phase R6 (A07): поднимаем epoch — все сессии, кроме текущей, становятся невалидными
+        conn.execute(
+            "UPDATE users SET password_hash = ?, session_epoch = session_epoch + 1 WHERE id = ?",
+            (new_hash, user["id"]),
+        )
         conn.commit()
-    
+        row = conn.execute("SELECT session_epoch FROM users WHERE id = ?", (user["id"],)).fetchone()
+    request.session["epoch"] = row["session_epoch"]
+    app_logger.info("смена пароля: user_id=%s, прочие сессии сброшены (epoch=%s)", user["id"], row["session_epoch"])
+
     return JSONResponse({"success": True})
 
 
@@ -2626,10 +4282,11 @@ async def save_theme_put(request: Request, theme_json: str = Form(...)):
 
 @app.post("/api/profile/avatar")
 async def upload_avatar(request: Request, avatar: UploadFile = File(...)):
-    """Upload avatar for current user"""
+    """Upload avatar for current user (аватар канала — POST /api/channel/avatar)"""
     user = get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
+    target_id = int(user["id"])
     
     # Validate file
     if not avatar.filename:
@@ -2648,14 +4305,23 @@ async def upload_avatar(request: Request, avatar: UploadFile = File(...)):
     # Ensure avatars directory exists
     os.makedirs(os.path.join(UPLOADS_DIR, "avatars"), exist_ok=True)
     
-    # Save file
+    # Save file (Phase R2: *.part + os.replace — полуаватаров не бывает)
+    part_path = file_path + ".part"
     file_data = await avatar.read()
-    async with aiofiles.open(file_path, 'wb') as f:
-        await f.write(file_data)
+    try:
+        async with aiofiles.open(part_path, 'wb') as f:
+            await f.write(file_data)
+        os.replace(part_path, file_path)
+    except Exception:
+        try:
+            await aiofiles.os.remove(part_path)
+        except OSError:
+            pass
+        raise
     
-    # Update user record
+    # Update user record (Phase 7.6d: target_id — свой профиль или канал start для creator)
     with get_db() as conn:
-        conn.execute("UPDATE users SET avatar_uuid = ? WHERE id = ?", (uuid_name, user["id"]))
+        conn.execute("UPDATE users SET avatar_uuid = ? WHERE id = ?", (uuid_name, target_id))
         conn.commit()
     
     return JSONResponse({"avatar_uuid": uuid_name})
@@ -2676,10 +4342,11 @@ async def get_avatar(avatar_uuid: str):
 
 @app.post("/api/profile/banner")
 async def upload_banner(request: Request, banner: UploadFile = File(...)):
-    """Upload banner for current user"""
+    """Upload banner for current user (баннер канала — POST /api/channel/banner)"""
     user = get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
+    target_id = int(user["id"])
     if not banner.filename:
         raise HTTPException(status_code=400, detail="No file provided")
     mime_type = banner.content_type or mimetypes.guess_type(banner.filename)[0]
@@ -2689,11 +4356,21 @@ async def upload_banner(request: Request, banner: UploadFile = File(...)):
     uuid_name = f"{uuid.uuid4().hex}{ext}"
     file_path = os.path.join(UPLOADS_DIR, "banners", uuid_name)
     os.makedirs(os.path.join(UPLOADS_DIR, "banners"), exist_ok=True)
+    # Phase R2: *.part + os.replace
+    part_path = file_path + ".part"
     file_data = await banner.read()
-    async with aiofiles.open(file_path, 'wb') as f:
-        await f.write(file_data)
+    try:
+        async with aiofiles.open(part_path, 'wb') as f:
+            await f.write(file_data)
+        os.replace(part_path, file_path)
+    except Exception:
+        try:
+            await aiofiles.os.remove(part_path)
+        except OSError:
+            pass
+        raise
     with get_db() as conn:
-        conn.execute("UPDATE users SET banner_uuid = ? WHERE id = ?", (uuid_name, user["id"]))
+        conn.execute("UPDATE users SET banner_uuid = ? WHERE id = ?", (uuid_name, target_id))
         conn.commit()
     return JSONResponse({"banner_uuid": uuid_name})
 
@@ -2707,19 +4384,56 @@ async def get_banner(banner_uuid: str):
     return StreamingResponse(stream_file(file_path), media_type="image/jpeg")
 
 
+def _purge_user_references(conn, user_id: int) -> None:
+    """
+    Phase R2: при foreign_keys=ON удалить пользователя можно, только сняв ссылки.
+    Порядок: дочерние строки → владение группами → сообщения → сам пользователь.
+    Файлы удалённых вложений остаются на диске — их уберёт cleanup-orphans.
+    """
+    # группы в собственности: передаём старшему участнику, иначе владельца не будет
+    owned = [row[0] for row in conn.execute("SELECT id FROM groups WHERE owner_id = ?", (user_id,)).fetchall()]
+    for group_id in owned:
+        heir = conn.execute(
+            "SELECT user_id FROM group_members WHERE group_id = ? AND user_id != ? "
+            "ORDER BY joined_at ASC, user_id ASC LIMIT 1",
+            (group_id, user_id),
+        ).fetchone()
+        conn.execute("UPDATE groups SET owner_id = ? WHERE id = ?", (heir[0] if heir else None, group_id))
+
+    conn.execute(
+        "DELETE FROM attachments WHERE message_id IN "
+        "(SELECT id FROM messages WHERE sender_id = ? OR recipient_id = ?)",
+        (user_id, user_id),
+    )
+    conn.execute("DELETE FROM messages WHERE sender_id = ? OR recipient_id = ?", (user_id, user_id))
+    conn.execute("DELETE FROM theme_presets WHERE user_id = ?", (user_id,))
+    conn.execute("DELETE FROM reads WHERE user_id = ?", (user_id,))
+    conn.execute("DELETE FROM group_members WHERE user_id = ?", (user_id,))
+    conn.execute("DELETE FROM pins WHERE user_id = ? OR contact_id = ?", (user_id, user_id))
+    conn.execute("DELETE FROM mutes WHERE user_id = ? OR contact_id = ?", (user_id, user_id))
+    conn.execute("DELETE FROM blocks WHERE blocker_id = ? OR blocked_id = ?", (user_id, user_id))
+    conn.execute("DELETE FROM warns WHERE user_id = ? OR by_admin_id = ?", (user_id, user_id))
+    conn.execute("UPDATE invites SET used_by = NULL WHERE used_by = ?", (user_id,))
+    conn.execute("DELETE FROM invites WHERE created_by = ?", (user_id,))
+
+
 @app.post("/api/delete-account")
 async def delete_account(request: Request):
-    """Delete current user's account"""
+    """Delete current user's account (Phase R2: ссылки снимаются каскадом)"""
     user = get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
     
     with get_db() as conn:
-        conn.execute("UPDATE messages SET deleted_for_sender = 1 WHERE sender_id = ?", (user["id"],))
-        conn.execute("UPDATE messages SET deleted_for_recipient = 1 WHERE recipient_id = ?", (user["id"],))
-        # Phase 6.3: drop the account's custom theme presets along with it
-        conn.execute("DELETE FROM theme_presets WHERE user_id = ?", (user["id"],))
+        was_creator = int(user.get("is_creator") or 0)
+        _purge_user_references(conn, user["id"])
         conn.execute("DELETE FROM users WHERE id = ?", (user["id"],))
+        # Phase 7.6d-fix: creator ушёл — канал переходит к первому живому пользователю
+        if was_creator:
+            heir = conn.execute("SELECT MIN(id) AS id FROM users").fetchone()
+            if heir and heir["id"] is not None:
+                conn.execute("UPDATE users SET is_creator = 1 WHERE id = ?", (int(heir["id"]),))
+                app_logger.info("creator передан: user_id=%s", int(heir["id"]))
         conn.commit()
     
     log_admin_action(user["id"], "delete_self", user["id"], "self-deletion")
@@ -2896,16 +4610,36 @@ async def edit_message(message_id: int, request: Request, text: str = Form(...))
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
     with get_db() as conn:
-        msg = conn.execute("SELECT id, sender_id, group_id, recipient_id FROM messages WHERE id = ?", (message_id,)).fetchone()
+        msg = conn.execute(
+            "SELECT id, sender_id, group_id, recipient_id, peer_type FROM messages WHERE id = ?",
+            (message_id,),
+        ).fetchone()
         if not msg:
             raise HTTPException(status_code=404, detail="Message not found")
         if msg["sender_id"] != user["id"]:
             raise HTTPException(status_code=403, detail="Only author can edit")
         if not text.strip():
             raise HTTPException(status_code=400, detail="Empty message")
+        # Phase 7.6d-fix: объявление канала правит только его автор-создатель
+        is_broadcast = (msg["peer_type"] or PEER_TYPE_USER) == CHANNEL_PEER_TYPE
+        if is_broadcast:
+            require_creator(user)
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("UPDATE messages SET text = ?, edited_at = ? WHERE id = ?", (text, now, message_id))
         conn.commit()
+
+    event = {
+        "type": "message_edited", "message_id": message_id,
+        "text": text, "edited_at": now,
+        "group_id": msg["group_id"], "sender_id": msg["sender_id"],
+        "recipient_id": msg["recipient_id"],
+    }
+    if is_broadcast:
+        # канал читают все — правку видят все онлайн
+        event["peer_type"] = CHANNEL_PEER_TYPE
+        await push_to_all(event)
+        return JSONResponse({"ok": True, "edited_at": now})
+
     # broadcast to participants
     participants = set()
     if msg["group_id"]:
@@ -2918,12 +4652,7 @@ async def edit_message(message_id: int, request: Request, text: str = Form(...))
         ws_conn = app.state.connections.get(uid)
         if ws_conn:
             try:
-                await ws_conn.send_json({
-                    "type": "message_edited", "message_id": message_id,
-                    "text": text, "edited_at": now,
-                    "group_id": msg["group_id"], "sender_id": msg["sender_id"],
-                    "recipient_id": msg["recipient_id"]
-                })
+                await ws_conn.send_json(event)
             except Exception:
                 pass
     return JSONResponse({"ok": True, "edited_at": now})
@@ -2941,7 +4670,20 @@ async def delete_message_endpoint(request: Request, message_id: int = Form(...),
         msg = conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone()
         if not msg:
             raise HTTPException(status_code=404, detail="Message not found")
-        
+
+        # Phase 7.6d-fix: объявление канала удаляет только creator
+        if (msg["peer_type"] or PEER_TYPE_USER) == CHANNEL_PEER_TYPE:
+            require_creator(user)
+            conn.execute("DELETE FROM attachments WHERE message_id = ?", (message_id,))
+            conn.execute("DELETE FROM messages WHERE id = ?", (message_id,))
+            conn.commit()
+            app_logger.info("объявление удалено: creator_id=%s message_id=%s", user["id"], message_id)
+            await push_to_all({
+                "type": "message_deleted", "message_id": message_id,
+                "peer_type": CHANNEL_PEER_TYPE, "peer_id": 0,
+            }, exclude_uid=user["id"])
+            return JSONResponse({"success": True, "deleted": True})
+
         # Phase 7.2b: group messages — check membership instead of recipient_id
         if msg["group_id"]:
             membership = conn.execute(
@@ -2976,11 +4718,15 @@ async def delete_message_endpoint(request: Request, message_id: int = Form(...),
 
 # ========== DELETE CHAT ENDPOINT ==========
 @app.post("/api/delete-chat")
-async def delete_chat_endpoint(request: Request, recipient_id: int = Form(...)):
+async def delete_chat_endpoint(request: Request, recipient_id: int = Form(0), channel: int = Form(0)):
     """Delete entire chat with a user (marks all messages as deleted for current user)"""
     user = get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # Phase 7.6d-fix: канал объявлений не удаляют — ни через чат, ни через «занавес»
+    if channel or not recipient_id:
+        raise HTTPException(status_code=403, detail="Канал объявлений удалить нельзя")
     
     with get_db() as conn:
         conn.execute("""
@@ -2998,6 +4744,10 @@ async def delete_chat_endpoint(request: Request, recipient_id: int = Form(...)):
         conn.commit()
     
     return JSONResponse({"success": True})
+
+
+# Phase R6: CSRF-проверка — самый внешний мидлварь (до логирования и обработки ошибок)
+app.add_middleware(CSRFMiddleware)
 
 
 if __name__ == "__main__":

@@ -29,6 +29,8 @@
         <div class="error">{{ error }}</div>
         {% endif %}
         <form method="POST" action="/register">
+            <!-- Phase R6 (CSRF): double-submit, значение совпадает с cookie csrftoken -->
+            <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
             <div class="form-group">
                 <label for="name">Display Name</label>
                 <input type="text" id="name" name="name" required autocomplete="name" value="{{ name or '' }}">

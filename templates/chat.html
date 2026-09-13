@@ -9,11 +9,36 @@
     <link rel="manifest" href="/static/manifest.webmanifest">
     <link rel="apple-touch-icon" href="/static/icon-192.png">
     <meta name="mobile-web-app-capable" content="yes">
-    <link rel="stylesheet" href="/static/style.css?v=6.6b">
+    <link rel="stylesheet" href="/static/style.css?v=7.8c">
     <script>
       if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => {});
       }
+    </script>
+    <script>
+      // Phase R6 (CSRF, double-submit): значение cookie csrftoken уходит заголовком
+      // X-CSRF-Token на каждом изменяющем запросе. Один патч на все fetch в приложении.
+      (function () {
+        function getCookie(name) {
+          const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const match = document.cookie.match(new RegExp('(?:^|; )' + escaped + '=([^;]*)'));
+          return match ? decodeURIComponent(match[1]) : '';
+        }
+        const originalFetch = window.fetch;
+        window.fetch = function (input, init) {
+          const options = init || {};
+          const method = String(options.method || (input && input.method) || 'GET').toUpperCase();
+          if (method !== 'GET' && method !== 'HEAD') {
+            const token = getCookie('csrftoken');
+            if (token) {
+              const headers = new Headers(options.headers || (input && input.headers) || {});
+              headers.set('X-CSRF-Token', token);
+              return originalFetch(input, Object.assign({}, options, { headers: headers }));
+            }
+          }
+          return originalFetch(input, init);
+        };
+      })();
     </script>
 </head>
 <body>
@@ -58,6 +83,20 @@
                 <ul class="group-list" id="groupList"></ul>
             </div>
             <ul class="user-list" id="userList">
+                <!-- Phase 7.6d-fix: канал объявлений — НЕ пользователь, всегда верхняя строка -->
+                <li class="user-item user-item-system" id="channelItem" data-id="0" data-channel="1"
+                    data-name="{{ channel.name }}" data-username="channel"
+                    data-avatar="{{ channel.avatar_uuid or '' }}" data-pinned="0"
+                    title="{{ channel.bio or channel.subtitle }}">
+                    <div class="curtain-slide">
+                        <img class="user-avatar" src="{% if channel.avatar_uuid %}/api/avatar/{{ channel.avatar_uuid }}{% else %}/static/default-avatar.png{% endif %}" alt="" data-avatar="{{ channel.avatar_uuid or '' }}">
+                        <div class="user-info">
+                            <div class="user-name"><span class="channel-marker" title="Канал объявлений">📢</span>{{ channel.name }}</div>
+                            <div class="user-username">{{ channel.subtitle }}</div>
+                        </div>
+                        <span class="unread-badge" id="unread-channel-0"></span>
+                    </div>
+                </li>
                 {% for u in users %}
                 <li class="user-item" data-id="{{ u.id }}" data-name="{{ u.name }}" data-username="{{ u.username }}" data-avatar="{{ u.avatar_uuid or '' }}" data-pinned="{{ u.pinned or 0 }}">
                     <div class="curtain-actions">
@@ -86,8 +125,12 @@
                 <button type="button" class="chat-back-btn" id="chatBackBtn" aria-label="Назад">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
                 </button>
-                <img class="chat-header-avatar" id="chatHeaderAvatar" src="/static/default-avatar.png" alt="" title="View profile" style="width: 32px; height: 32px; border-radius: 50%; margin-right: 8px; cursor: pointer;">
-                <span id="chatHeaderNameWrap" class="marquee-wrap" title="View profile"><span id="chatHeaderName" class="marquee-inner" style="cursor: pointer;">Select a contact</span></span>
+                <!-- Phase 7.8: вложенный остров «ава + ник» (на десктопе и на мобиле) -->
+                <div class="chat-peer-island" id="chatPeerIsland" title="View profile">
+                    <img class="chat-peer-banner" id="chatHeaderBanner" src="" alt="" style="display: none;">
+                    <img class="chat-header-avatar" id="chatHeaderAvatar" src="/static/default-avatar.png" alt="">
+                    <span id="chatHeaderNameWrap" class="marquee-wrap"><span id="chatHeaderName" class="marquee-inner">Select a contact</span></span>
+                </div>
                 <div class="chat-header-actions" id="chatHeaderActions" style="display: none;">
                     <button id="groupMembersBtn" class="delete-chat-btn" title="Участники" style="display: none;">👥 Участники</button>
                     <!-- Phase 6.5: glass trash chip, neutral SVG icon -->
@@ -99,6 +142,8 @@
                 </div>
             </div>
             <div class="messages" id="messages">
+                <!-- Phase 7.8: островок присутствия («был(а) в сети …») -->
+                <div class="presence-island" id="presenceIsland" style="display: none;"></div>
                 <!-- Phase 7.3-fix: typing island at end of messages -->
                 <div class="typing-island" id="typingIsland"></div>
             </div>
@@ -147,6 +192,16 @@
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
                     </button>
                 </div>
+                <!-- Phase 7.6d-fix: вместо инпута плашка (писать в канал может только creator) -->
+                <div class="channel-notice" id="channelNotice" style="display: none;">
+                    <span class="channel-notice-icon">📢</span>
+                    <span>канал объявлений — ответы отключены</span>
+                </div>
+                <div class="channel-notice channel-notice-creator" id="creatorNotice" style="display: none;">
+                    <span class="channel-notice-icon">📢</span>
+                    <span>Напиши первое объявление</span>
+                    <button type="button" class="cmd-chip" id="insertTemplateBtn" title="Вставить шаблон приветствия">Вставить шаблон</button>
+                </div>
             </div>
             <!-- Phase 7.4a-fix: mobile accessory island (emoji + chips panel below input) -->
             <div class="accessory-island" id="accessoryIsland">
@@ -163,22 +218,13 @@
             <!-- Phase 6.5: message delete mini-menu - Liquid Glass island anchored to a bubble -->
             <div class="msg-del-menu" id="msgDelMenu" style="display: none;"></div>
 
-            <!-- Phase 6.5: delete-chat confirmation island (Да/Отмена), 1-on-1 only -->
-            <div class="chat-del-confirm" id="deleteChatConfirm" style="display: none;">
-                <div class="chat-del-title">Удалить чат?</div>
-                <p class="chat-del-text">Вся переписка с <strong id="deleteChatUserName"></strong> исчезнет у вас. Контакт останется в списке.</p>
-                <div class="chat-del-buttons">
-                    <button type="button" class="cancel-btn" id="cancelDeleteChatBtn">Отмена</button>
-                    <button type="button" class="btn_danger" id="confirmDeleteChatBtn">Да</button>
-                </div>
-            </div>
         </div>
 
         <!-- Theme Drawer (Phase 5.2g): flex child of .main so it squeezes the messenger area -->
         <aside class="theme-drawer" id="themeDrawer">
             <div class="theme-drawer-header">
                 <h2>Настройки темы</h2>
-                <button class="slot-btn theme-drawer-close" id="themeDrawerClose" title="Закрыть">&times;</button>
+                <button type="button" class="island-close" id="themeDrawerClose" title="Закрыть" aria-label="Закрыть"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg></button>
             </div>
             <div class="theme-drawer-body">
                 <div class="settings-section">
@@ -197,6 +243,11 @@
                 <div class="settings-section">
                     <h3>Размеры</h3>
                     <div id="sizingSliders"></div>
+                </div>
+                <!-- Phase 7.8: бинарные настройки темы -->
+                <div class="settings-section">
+                    <h3>Переключатели</h3>
+                    <div id="toggleRows"></div>
                 </div>
                 <div class="settings-section">
                     <h3>Пресеты</h3>
@@ -220,7 +271,7 @@
         <aside class="theme-drawer profile-drawer" id="profileDrawer">
             <div class="theme-drawer-header">
                 <h2>Профиль</h2>
-                <button class="theme-drawer-close" id="profileDrawerClose" title="Закрыть">&times;</button>
+                <button type="button" class="island-close" id="profileDrawerClose" title="Закрыть" aria-label="Закрыть"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg></button>
             </div>
             <div class="theme-drawer-body">
                 <div class="profile-banner-area" id="profileBannerArea">
@@ -236,7 +287,8 @@
                     <input type="file" id="avatarInput" accept="image/*" style="display: none;">
                     <button id="changeAvatarBtn" class="slot-btn">Сменить аватарку</button>
                 </div>
-                <div class="settings-section">
+                <!-- Phase 7.6d-fix:channel-editable — имя и био остаются и в режиме канала -->
+                <div class="settings-section channel-editable">
                     <h3>Основное</h3>
                     <div class="profile-form-group">
                         <label>Имя</label>
@@ -247,6 +299,19 @@
                         <textarea id="profileBio" maxlength="200" placeholder="Расскажите о себе..." rows="3"></textarea>
                     </div>
                     <button class="slot-btn" id="saveProfileBtn" style="width: 100%;">Сохранить</button>
+                </div>
+
+                <!-- 7.8-fix2 [5]: приватность присутствия -->
+                <div class="settings-section">
+                    <h3>Присутствие</h3>
+                    <div class="theme-toggle-row">
+                        <label for="hidePresenceToggle">Показывать, когда я был(а) в сети</label>
+                        <button type="button" id="hidePresenceToggle" class="glass-toggle" aria-pressed="true"
+                                title="Выкл — вы не видите чужие статусы и не показываете свой">
+                            <span class="glass-toggle-track"><span class="glass-toggle-thumb"></span></span>
+                        </button>
+                    </div>
+                    <p class="profile-hint">Выключите — и вы тоже перестанете видеть, когда были в сети другие.</p>
                 </div>
 
                 <div class="settings-section">
@@ -266,8 +331,9 @@
                     <button class="slot-btn" id="changeUsernameBtn" style="width: 100%;">Сменить username</button>
                 </div>
 
+                <!-- Phase R7: почта — статус верификации + смена по коду -->
                 <div class="settings-section">
-                    <h3>Почта</h3>
+                    <h3>Почта <span id="emailVerifiedBadge" class="email-badge email-badge-unknown" hidden>—</span></h3>
                     <div class="profile-form-group">
                         <label>Текущая почта</label>
                         <input type="email" id="profileCurrentEmail" readonly>
@@ -280,7 +346,17 @@
                         <label>Пароль (для подтверждения)</label>
                         <input type="password" id="profileEmailPassword" autocomplete="current-password">
                     </div>
-                    <button class="slot-btn" id="changeEmailBtn" style="width: 100%;">Сменить почту</button>
+                    <div class="profile-form-group" id="emailCodeGroup" style="display: none;">
+                        <label>Код из письма (6 цифр)</label>
+                        <input type="text" id="profileEmailCodeInput" inputmode="numeric" pattern="[0-9]{6}"
+                               maxlength="6" autocomplete="one-time-code" placeholder="123456">
+                    </div>
+                    <div style="display: flex; gap: 8px;">
+                        <button class="slot-btn" id="requestEmailCodeBtn" style="flex: 1;">Отправить код</button>
+                        <button class="slot-btn" id="changeEmailBtn" style="flex: 1;">Сменить почту</button>
+                    </div>
+                    <button class="slot-btn" id="verifyEmailBtn" style="width: 100%; margin-top: 8px;">Подтвердить текущую почту</button>
+                    <div id="emailCodeHint" style="font-size: 0.8rem; opacity: 0.75; margin-top: 6px;"></div>
                 </div>
 
                 <div class="settings-section">
@@ -289,10 +365,15 @@
                         <label>Текущий пароль</label>
                         <input type="password" id="profileCurrentPassword" autocomplete="current-password">
                     </div>
-                    <div class="profile-form-group" id="emailCodeGroup" style="display: none;">
-                        <label>Подтверждение почты (введите свой email)</label>
-                        <input type="email" id="profileEmailCode" placeholder="user@example.com">
+                    <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                        <button class="slot-btn" id="requestPasswordCodeBtn" style="flex: 1;">Отправить код на почту</button>
                     </div>
+                    <div class="profile-form-group" id="passwordCodeGroup" style="display: none;">
+                        <label>Код из письма (6 цифр)</label>
+                        <input type="text" id="profilePasswordCode" inputmode="numeric" pattern="[0-9]{6}"
+                               maxlength="6" autocomplete="one-time-code" placeholder="123456">
+                    </div>
+                    <div id="passwordCodeHint" style="font-size: 0.8rem; opacity: 0.75; margin-bottom: 8px;"></div>
                     <div class="profile-form-group">
                         <label>Новый пароль</label>
                         <input type="password" id="profileNewPassword" autocomplete="new-password">
@@ -334,7 +415,7 @@
     <!-- Image Modal -->
     <div class="modal" id="imageModal">
         <div class="modal-content">
-            <button class="modal-close" id="modalClose">&times;</button>
+            <button type="button" class="island-close modal-close" id="modalClose" title="Закрыть" aria-label="Закрыть"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg></button>
             <img class="modal-img" id="modalImg" src="" alt="">
             <a class="modal-download" id="modalDownload" download>Download</a>
         </div>
@@ -353,13 +434,16 @@
                 <p id="otherProfileUsername" style="color: var(--text-secondary, #666); margin: 0.25rem 0;"></p>
                 <p id="otherProfileBio" style="color: var(--text-secondary, #444); margin-top: 0.75rem; font-style: italic;"></p>
             </div>
-            <button class="glass-chip" id="closeOtherProfileBtn" style="width: 100%; margin-top: 1rem;">Закрыть</button>
+            <!-- Phase 7.6d: оформить канал может только creator -->
+            <button class="glass-chip" id="decorateChannelBtn" style="width: 100%; margin-top: 0.75rem; display: none;">Оформить канал</button>
+            <button type="button" class="island-close" id="closeOtherProfileBtn" title="Закрыть" aria-label="Закрыть"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg></button>
         </div>
     </div>
     
     <!-- Create Group Modal (Phase 6.1) -->
     <div class="modal" id="createGroupModal">
         <div class="profile-modal-content">
+            <button type="button" class="island-close" id="createGroupCloseBtn" title="Закрыть" aria-label="Закрыть"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg></button>
             <h2>Новая группа</h2>
             <div class="profile-form-group">
                 <label>Название</label>
@@ -382,13 +466,14 @@
                 <button type="button" id="addMemberBtn" class="member-add-btn">Добавить</button>
             </div>
             <ul class="members-list" id="membersList"></ul>
-            <button class="glass-chip" id="closeMembersBtn">Закрыть</button>
+            <button type="button" class="island-close" id="closeMembersBtn" title="Закрыть" aria-label="Закрыть"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg></button>
         </div>
     </div>
 
     <!-- Delete Account Modal -->
     <div class="modal" id="deleteAccountModal">
         <div class="delete-account-modal-content">
+            <button type="button" class="island-close" id="deleteAccountCloseBtn" title="Закрыть" aria-label="Закрыть"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg></button>
             <h2>Удаление аккаунта</h2>
             <p>Это действие необратимо. Все ваши сообщения и данные будут удалены.</p>
             <div class="warning">⚠️ Введите ваш username для подтверждения: <strong id="confirmUsernameDisplay"></strong></div>
@@ -397,6 +482,20 @@
                 <button class="cancel-btn" id="cancelDeleteAccountBtn">Отмена</button>
                 <button class="delete-confirm-btn" id="confirmDeleteAccountBtn">Удалить аккаунт</button>
             </div>
+        </div>
+    </div>
+
+    <!-- Phase 7.8: подтверждение удаления чата — фиксированная модалка.
+         Раньше островок жил внутри .chat-area, а на мобиле она уведена за экран:
+         из контактов (сайдбар) подтверждение открывалось «в пустоту». -->
+    <div class="modal-backdrop" id="deleteChatBackdrop" style="display: none;"></div>
+    <div class="chat-del-confirm" id="deleteChatConfirm" style="display: none;" role="dialog" aria-modal="true" aria-label="Удалить чат?">
+        <button type="button" class="island-close" id="deleteChatCloseBtn" title="Закрыть" aria-label="Закрыть"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg></button>
+        <div class="chat-del-title">Удалить чат?</div>
+        <p class="chat-del-text">Вся переписка с <strong id="deleteChatUserName"></strong> исчезнет у вас. Контакт останется в списке.</p>
+        <div class="chat-del-buttons">
+            <button type="button" class="cancel-btn" id="cancelDeleteChatBtn">Отмена</button>
+            <button type="button" class="btn_danger" id="confirmDeleteChatBtn">Да</button>
         </div>
     </div>
 
@@ -414,9 +513,20 @@
         const currentUsername = {{ user.username | tojson }};
         const currentName = {{ (user.name or user.username) | tojson }}; // Phase 6.6: for reply labels
         const currentIsAdmin = {{ user.is_admin | tojson }}; // Phase 6.1b: for group member management
+        // Phase 7.6d-fix: канал объявлений — отдельная сущность, а не пользователь
+        const CHANNEL_ID = 0;
+        let amCreator = {{ (is_creator or 0) | tojson }} ? true : false;
+        let channelState = {{ channel | tojson }};
+        let selectedChannel = false;   // открыт канал (selectedUserId и selectedGroupId = null)
+        let profileMode = 'self';      // 'self' — свой профиль, 'channel' — оформление канала
+        const WELCOME_TEMPLATE = {{ welcome_template | tojson }};
         const userThemeJson = {{ user.theme_json | tojson }} || '{}';
         let selectedUserId = null;
         let selectedGroupId = null; // Phase 6.1: active group chat (null = 1-on-1 mode)
+        // 7.8-fix [3]: объявлено рядом с остальным состоянием — renderHeader()
+        // вызывается на bootstrap, который по файлу выполняется гораздо раньше
+        let peerBannerUuid = '';   // баннер собеседника для шапки (пусто у канала — свой)
+        const bannerByUser = {};   // 7.8-fix [3]: кэш баннеров — шапка на месте без мигания
         let ws = null;
         let attachedFiles = [];
         const MAX_FILE_SIZE = {{ max_upload_bytes | tojson }};
@@ -433,10 +543,12 @@
         // Phase 7.3: unread state
         let unreadState = {}; // { "user:5": 3, "group:2": 7 }
         // Phase 7.3-fix2: clear messages but keep the typing island alive
+        // Phase 7.8: presence-островок живёт рядом с typing — его тоже возвращаем,
+        // иначе после первого же открытия диалога «был(а) в сети» исчезал из DOM
         function clearMessages() {
-            const island = typingIsland;
+            const islands = [presenceIsland, typingIsland].filter(Boolean);
             messagesDiv.innerHTML = '';
-            if (island) messagesDiv.appendChild(island);
+            islands.forEach(island => messagesDiv.appendChild(island));
             messagesDiv.dataset.lastDateKey = '';
         }
 
@@ -445,6 +557,9 @@
         let typingNames = {}; // { userId: name }
         let typingIndicator = document.getElementById('typingIndicator');
         let typingIsland = document.getElementById('typingIsland');
+        const presenceIsland = document.getElementById('presenceIsland');   // Phase 7.8
+        const chatPeerIsland = document.getElementById('chatPeerIsland');
+        const chatHeaderBanner = document.getElementById('chatHeaderBanner');
         let typingTimeout = null;
         let lastTypingSent = 0;
 
@@ -479,6 +594,12 @@
         }
         const messagesDiv = document.getElementById('messages');
         const inputArea = document.getElementById('inputArea');
+        const channelNotice = document.getElementById('channelNotice');
+        const creatorNotice = document.getElementById('creatorNotice');
+        const insertTemplateBtn = document.getElementById('insertTemplateBtn');
+        const channelItem = document.getElementById('channelItem');
+        const decorateChannelBtn = document.getElementById('decorateChannelBtn');
+        const inputRow = document.querySelector('.input-row');
         const messageInput = document.getElementById('messageInput');
         const sendBtn = document.getElementById('sendBtn');
         const attachBtn = document.getElementById('attachBtn');
@@ -527,6 +648,7 @@
         const profileName = document.getElementById('profileName');
         const profileBio = document.getElementById('profileBio');
         const saveProfileBtn = document.getElementById('saveProfileBtn');
+        const hidePresenceToggle = document.getElementById('hidePresenceToggle');   // 7.8-fix2 [5]
         const deleteAccountBtn = document.getElementById('deleteAccountBtn');
         
         // Other user profile modal elements
@@ -544,6 +666,7 @@
         const imageSlots = document.getElementById('imageSlots');
         const effectSliders = document.getElementById('effectSliders');
         const sizingSliders = document.getElementById('sizingSliders');
+        const toggleRows = document.getElementById('toggleRows');   // Phase 7.8
         const presetButtons = document.getElementById('presetButtons');
         const resetThemeBtn = document.getElementById('resetThemeBtn');
         // Phase 6.3: custom theme presets
@@ -560,6 +683,7 @@
         const deleteChatConfirm = document.getElementById('deleteChatConfirm');
         const deleteChatBtn = document.getElementById('deleteChatBtn');
         const deleteChatUserName = document.getElementById('deleteChatUserName');
+        const deleteChatBackdrop = document.getElementById('deleteChatBackdrop');
         const cancelDeleteChatBtn = document.getElementById('cancelDeleteChatBtn');
         const confirmDeleteChatBtn = document.getElementById('confirmDeleteChatBtn');
         const settingsBtn = document.getElementById('settingsBtn');
@@ -577,14 +701,26 @@
             muted: '#666666', accent: '#0084ff', btn_primary: '#0084ff', btn_danger: '#dc3545',
             bubble_sent: '#0084ff', bubble_received: '#e4e6eb', input_bg: '#ffffff',
             border: '#dddddd', modal_bg: '#ffffff', hover: '#f5f5f5', active: '#e6f2ff',
-            select_border: '#0084ff', chip_cmd: '#dbe7ff'
+            select_border: '#0084ff', chip_cmd: '#dbe7ff',
+            // Phase 7.8
+            header_color: '#ffffff', name_color: '#0084ff', broadcast_bg: '#e4e6eb',
+            presence_online: '#2ecc71', presence_offline: '#9aa0a6', presence_text: '#666666'
         };
+        // Phase 7.8: тумблеры темы (бинарные настройки, не цвета)
+        const FALLBACK_TOGGLES = { name_color_auto: true, peer_banner_header: false };
         const TOKEN_CSS_VARS = {
             bg: '--bg-color', panel: '--panel-color', header: '--header-color', text: '--text-primary',
             muted: '--text-secondary', accent: '--accent-color', btn_primary: '--btn-primary-bg',
             btn_danger: '--btn-danger-bg', bubble_sent: '--bubble-sent-bg', bubble_received: '--bubble-received-bg',
             input_bg: '--input-bg', border: '--border-color', modal_bg: '--modal-bg', hover: '--hover-bg', active: '--active-bg',
-            select_border: '--select-border', chip_cmd: '--chip-cmd-bg'
+            select_border: '--select-border', chip_cmd: '--chip-cmd-bg',
+            // Phase 7.8
+            // header_color здесь НАМЕРЕННО отсутствует: 7.8-fix [4] — это цвет
+            // острова шапки чата, он ставится переменной на ЭЛЕМЕНТ #chatHeader
+            // (см. applyThemeDirect), а не на root, чтобы не красить верхнюю панель
+            name_color: '--name-color', broadcast_bg: '--broadcast-bg',
+            presence_online: '--presence-online', presence_offline: '--presence-offline',
+            presence_text: '--presence-text'
         };
         const FALLBACK_EFFECTS = { wallpaper_blur: 0, bubble_blur: 0 };
         const EFFECT_CSS_VARS = {
@@ -635,7 +771,7 @@
             if (theme.sent) colors.bubble_sent = theme.sent;
             if (theme.received) colors.bubble_received = theme.received;
             if (theme.bg) colors.bg = theme.bg;
-            return { colors: colors, images: {}, effects: {}, sizing: {} };
+            return { colors: colors, images: {}, effects: {}, sizing: {}, toggles: {} };
         }
 
         function clampEffect(val, key) {
@@ -678,10 +814,26 @@
                 v = Math.max(spec.min || 0.5, Math.min(spec.max || 2, v));
                 s.setProperty(SIZING_CSS_VARS[szKey], String(v));
             }
-            // derived tokens
+            // Phase 7.8: derived + presence/name tokens
             const bg = t.colors.bg || FALLBACK_COLORS.bg;
+            const islandBg = t.colors.header_color || FALLBACK_COLORS.header_color;
             s.setProperty('--border-color', deriveBorderColor(bg));
             s.setProperty('--header-text', contrastText(t.colors.header || FALLBACK_COLORS.header));
+            // 7.8-fix [4]: header_color — ТОЛЬКО на элементе шапки чата.
+            // Ни root, ни body: верхняя панель мессенджера красится своим токеном
+            // (--header-color / --panel-color) и от этой настройки не зависит.
+            if (chatHeader) {
+                chatHeader.style.setProperty('--header-island-color', islandBg);
+                chatHeader.style.setProperty('--header-island-text', contrastText(islandBg));
+            }
+            s.setProperty('--presence-online', t.colors.presence_online || FALLBACK_COLORS.presence_online);
+            s.setProperty('--presence-offline', t.colors.presence_offline || FALLBACK_COLORS.presence_offline);
+            s.setProperty('--presence-text', t.colors.presence_text || FALLBACK_COLORS.presence_text);
+            // цвет ника: по умолчанию авто-контраст из панели темы, иначе токен
+            const nameAuto = t.toggles.name_color_auto !== false;
+            const panelBg = t.colors.panel || FALLBACK_COLORS.panel;
+            s.setProperty('--name-color',
+                nameAuto ? contrastText(panelBg) : (t.colors.name_color || FALLBACK_COLORS.name_color));
         applyContrast();
 
         // Profile modal buttons exist statically - contrast them once styles are ready
@@ -717,6 +869,18 @@
             s.setProperty('--input-bg', t.colors.input_bg || FALLBACK_COLORS.input_bg);
             s.setProperty('--bubble-sent-bg', t.colors.bubble_sent || FALLBACK_COLORS.bubble_sent);
             s.setProperty('--bubble-received-bg', t.colors.bubble_received || FALLBACK_COLORS.bubble_received);
+            // Phase 7.8: те же производные токены, что и на корне (иначе в чужой теме чёрный ник)
+            const islandBgEl = t.colors.header_color || FALLBACK_COLORS.header_color;
+            s.setProperty('--header-island-color', islandBgEl);
+            s.setProperty('--header-island-text', contrastText(islandBgEl));
+            s.setProperty('--presence-online', t.colors.presence_online || FALLBACK_COLORS.presence_online);
+            s.setProperty('--presence-offline', t.colors.presence_offline || FALLBACK_COLORS.presence_offline);
+            s.setProperty('--presence-text', t.colors.presence_text || FALLBACK_COLORS.presence_text);
+            const panelBgEl = t.colors.panel || FALLBACK_COLORS.panel;
+            s.setProperty('--name-color',
+                (t.toggles.name_color_auto !== false)
+                    ? contrastText(panelBgEl)
+                    : (t.colors.name_color || FALLBACK_COLORS.name_color));
         }
         
         // YIQ-based contrast: returns dark or light text color for a given hex background
@@ -772,6 +936,11 @@
             s.setProperty('--input-text', contrastText(inputBg));
             // Phase 6.2: command chip label auto-contrasts with the chip_cmd token
             s.setProperty('--chip-cmd-text', contrastText(chipCmdBg));
+            // 7.8-fix [5]: объявления канала — фон из токена темы, текст по YIQ.
+            // Раньше фон брался из --chip-bg, которого нет в манифесте: в тёмной
+            // теме он оставался светлым и текст сливался.
+            const broadcastBg = readVar('--broadcast-bg', '#e4e6eb');
+            s.setProperty('--broadcast-text', contrastText(broadcastBg));
             // Phase 6.6c: toggle icon color auto-contrasts with the panel (island) background
             const panelBg = readVar('--panel-color', '#ffffff');
             s.setProperty('--chip-toggle-text', contrastText(panelBg));
@@ -788,11 +957,53 @@
         
         applyContrast();
         
+        // Phase R7: бейдж статуса почты в профиле
+        function renderEmailStatus(data) {
+            const badge = document.getElementById('emailVerifiedBadge');
+            if (!badge) return;
+            badge.hidden = false;
+            if (!data || !data.email) {
+                badge.textContent = 'почта не задана';
+                badge.className = 'email-badge email-badge-unknown';
+                return;
+            }
+            if (data.email_verified) {
+                badge.textContent = '✓ подтверждена';
+                badge.className = 'email-badge email-badge-yes';
+            } else {
+                badge.textContent = 'не подтверждена';
+                badge.className = 'email-badge email-badge-no';
+            }
+        }
+
+        // Phase R7: единая отправка запроса на код (показываем поле ввода)
+        async function requestCode(purpose, extraFields, codeGroupId, hintId, okMessage) {
+            const fd = new FormData();
+            fd.append('purpose', purpose);
+            Object.keys(extraFields || {}).forEach(k => fd.append(k, extraFields[k]));
+            try {
+                const res = await fetch('/api/email/code/request', { method: 'POST', body: fd });
+                const data = await res.json().catch(() => ({}));
+                if (res.ok) {
+                    document.getElementById(codeGroupId).style.display = '';
+                    document.getElementById(hintId).textContent =
+                        okMessage + (data.sent_to ? ' (' + data.sent_to + ')' : '');
+                    return true;
+                }
+                alert(data.detail || 'Не удалось отправить код');
+            } catch (e) {
+                alert('Ошибка сети при запросе кода');
+            }
+            return false;
+        }
+
         // Load profile data
         let loadedProfileData = null;
         async function loadProfile() {
             try {
-                const res = await fetch('/api/profile');
+                // Phase 7.6d-fix: profileMode='channel' → профиль канала из settings
+                const url = profileMode === 'channel' ? '/api/channel' : '/api/profile';
+                const res = await fetch(url);
                 if (res.ok) {
                     const data = await res.json();
                     loadedProfileData = data;
@@ -808,18 +1019,26 @@
                         profileBannerPreview.src = '/api/banner/' + data.banner_uuid;
                         profileBannerPreview.style.display = '';
                         profileBannerPlaceholder.style.display = 'none';
+                    } else {
+                        profileBannerPreview.style.display = 'none';
+                        profileBannerPlaceholder.style.display = '';
                     }
+                    // 7.8-fix2 [5]: приватность присутствия (по умолчанию — показывать)
+                    if (hidePresenceToggle) {
+                        const show = !data.hide_presence;
+                        hidePresenceToggle.classList.toggle('on', show);
+                        hidePresenceToggle.setAttribute('aria-pressed', show ? 'true' : 'false');
+                    }
+                    if (profileMode === 'channel') return;   // дальше — поля пользователя
                     // Phase 7.1a: populate username/email fields
                     const el = (id) => document.getElementById(id);
                     el('profileCurrentUsername').value = '@' + (data.username || '');
                     el('profileCurrentEmail').value = data.email || '(не задана)';
-                    // Show email code field only if email is set
-                    const emailCodeGroup = el('emailCodeGroup');
-                    if (data.email) {
-                        emailCodeGroup.style.display = '';
-                    } else {
-                        emailCodeGroup.style.display = 'none';
-                    }
+                    // Phase R7: статус верификации почты — бейдж рядом с заголовком
+                    renderEmailStatus(data);
+                    // поля кодов появляются после запроса кода, а не сразу
+                    el('emailCodeGroup').style.display = 'none';
+                    el('passwordCodeGroup').style.display = 'none';
                     // Phase micro: apply font scale from profile
                     initFontScale(data.font_scale);
                 }
@@ -861,7 +1080,7 @@
         const THEME_IMAGE_LIMIT = 5 * 1024 * 1024; // ~5MB, mirrors THEME_IMAGE_MAX_BYTES on server
         let themeManifest = null;
         let themePresets = null;
-        let currentTheme = { colors: {}, images: {}, effects: {}, sizing: {} };
+        let currentTheme = { colors: {}, images: {}, effects: {}, sizing: {}, toggles: {} };
         const TOKEN_LABELS = {
             bg: 'Фон', panel: 'Панели', header: 'Шапка', text: 'Текст', muted: 'Второстепенный текст',
             accent: 'Акцент', btn_primary: 'Основная кнопка', btn_danger: 'Опасная кнопка',
@@ -871,7 +1090,16 @@
             select_border: 'Рамка выделения', chip_cmd: 'Фон командных чипов',
             header_img: 'Картинка шапки', wallpaper: 'Обои чата', bubble_img: 'Картинка пузырей',
             wallpaper_blur: 'Размытие обоев', bubble_blur: 'Размытие пузырей',
-            chip_size: 'Размер чипов'
+            chip_size: 'Размер чипов',
+            // Phase 7.8
+            header_color: 'Остров шапки чата', name_color: 'Ник собеседника',
+            broadcast_bg: 'Объявления канала',
+            presence_online: 'Онлайн (граница авы)', presence_offline: 'Оффлайн (граница авы)',
+            presence_text: 'Островок «был в сети»'
+        };
+        const TOGGLE_LABELS = {
+            name_color_auto: 'Цвет ника: авто-контраст из темы',
+            peer_banner_header: 'Баннер собеседника в шапке'
         };
         const PRESET_LABELS = { default: 'Дефолт', dark: 'Тёмная' };
 
@@ -890,7 +1118,7 @@
                         fetchJson('/api/theme/presets')
                     ]);
                 }
-                currentTheme = await fetchJson('/api/theme');
+                currentTheme = normalizeTheme(await fetchJson('/api/theme'));
                 renderEditor();
                 loadCustomPresets();
             } catch (e) {
@@ -903,8 +1131,47 @@
             renderImageSlots();
             renderEffectSliders();
             renderSizingSliders();
+            renderToggleRows();          // Phase 7.8: бинарные настройки темы
             renderPresetButtons();
             applyEditorContrast();
+        }
+
+        // Phase 7.8: один тумблер на переключатель из манифеста (как цвета — без хардкода)
+        function renderToggleRows() {
+            if (!toggleRows) return;
+            toggleRows.innerHTML = '';
+            const toggles = (themeManifest && themeManifest.toggles) || {};
+            for (const key of Object.keys(toggles)) {
+                const row = document.createElement('div');
+                row.className = 'color-picker-row theme-toggle-row';
+                const label = document.createElement('label');
+                label.textContent = TOGGLE_LABELS[key] || toggles[key].label || key;
+                label.htmlFor = 'theme-toggle-' + key;
+                const track = document.createElement('button');
+                track.type = 'button';
+                track.id = 'theme-toggle-' + key;
+                track.className = 'glass-toggle';
+                track.setAttribute('aria-label', label.textContent);
+                const on = currentTheme.toggles[key] !== undefined
+                    ? !!currentTheme.toggles[key]
+                    : FALLBACK_TOGGLES[key];
+                track.classList.toggle('on', !!on);
+                track.setAttribute('aria-pressed', on ? 'true' : 'false');
+                track.innerHTML = '<span class="glass-toggle-track"><span class="glass-toggle-thumb"></span></span>';
+                track.addEventListener('click', () => {
+                    const next = !track.classList.contains('on');
+                    track.classList.toggle('on', next);
+                    track.setAttribute('aria-pressed', next ? 'true' : 'false');
+                    currentTheme.toggles[key] = next;
+                    applyThemeDirect(currentTheme);
+                    renderPeerBanner();     // тумблер баннера применяется к открытой шапке сразу
+                    scheduleThemeSave();
+                    applyEditorContrast();
+                });
+                row.appendChild(label);
+                row.appendChild(track);
+                toggleRows.appendChild(row);
+            }
         }
 
         // One color input per color token of the manifest - no hardcoded control list
@@ -1114,6 +1381,10 @@
                     // and blur sliders keep their current state (and their labels)
                     const preset = normalizeTheme(JSON.parse(JSON.stringify(presets[name])));
                     currentTheme.colors = Object.assign({}, preset.colors);
+                    // Phase 7.8: тумблеры пресета тоже применяем (иначе «Тёмная» едет с чужими)
+                    if (preset.toggles && Object.keys(preset.toggles).length) {
+                        currentTheme.toggles = Object.assign({}, preset.toggles);
+                    }
                     applyThemeDirect(currentTheme);
                     syncEditorInputs();
                     scheduleThemeSave();
@@ -1184,6 +1455,10 @@
                     currentTheme.colors = Object.assign({}, preset.colors);
                     currentTheme.effects = Object.assign({}, preset.effects);
                     currentTheme.sizing = Object.assign({}, preset.sizing);
+                    // Phase 7.8: тумблеры — часть конфига, иначе пресет теряет настройки шапки
+                    if (preset.toggles && Object.keys(preset.toggles).length) {
+                        currentTheme.toggles = Object.assign({}, preset.toggles);
+                    }
                     applyThemeDirect(currentTheme);
                     syncEditorInputs();
                     scheduleThemeSave();
@@ -1226,7 +1501,7 @@
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                     body: new URLSearchParams({
                         name: name,
-                        theme_json: JSON.stringify({ colors: currentTheme.colors, effects: currentTheme.effects, sizing: currentTheme.sizing })
+                        theme_json: JSON.stringify({ colors: currentTheme.colors, effects: currentTheme.effects, sizing: currentTheme.sizing, toggles: currentTheme.toggles })
                     }).toString()
                 });
                 presetNameInput.value = '';
@@ -1308,7 +1583,8 @@
         // Self-defense: autocontrast text + visible border on every button in the theme drawer
         // (.preset-del-btn excluded: transparent by design, CSS drives its danger colors)
         function applyEditorContrast() {
-            themeDrawer.querySelectorAll('button:not(.preset-del-btn)').forEach(btn => {
+            // 7.8-fix2 [3]: тумблеры — чистая пилюля, рамку им не рисуем
+            themeDrawer.querySelectorAll('button:not(.preset-del-btn):not(.glass-toggle)').forEach(btn => {
                 if (btn.disabled) return;
                 const bg = getComputedStyle(btn).backgroundColor;
                 btn.style.color = contrastText(rgbToHex(bg));
@@ -1327,6 +1603,8 @@
         document.addEventListener('DOMContentLoaded', () => {
             // Open profile drawer
             profileBtn.addEventListener('click', async () => {
+                profileMode = 'self';   // Phase 7.6d-fix: ящик по умолчанию про меня
+                profileDrawer.classList.remove('profile-channel-mode');
                 await loadProfile();
                 profileDrawer.classList.add('open');
                 deleteAccountConfirm.value = '';
@@ -1347,6 +1625,8 @@
 
             document.getElementById('profileDrawerClose').addEventListener('click', () => {
                 profileDrawer.classList.remove('open');
+                // Phase 7.6d: выходим из режима оформления канала — ящик снова про свой профиль
+                exitChannelEditMode();
             });
             
             // Change avatar button
@@ -1361,9 +1641,10 @@
                 
                 const formData = new FormData();
                 formData.append('avatar', file);
+                const avatarUrl = profileMode === 'channel' ? '/api/channel/avatar' : '/api/profile/avatar';
                 
                 try {
-                    const res = await fetch('/api/profile/avatar', { method: 'POST', body: formData });
+                    const res = await fetch(avatarUrl, { method: 'POST', body: formData });
                     if (res.ok) {
                         const data = await res.json();
                         profileAvatarPreview.src = '/api/avatar/' + data.avatar_uuid;
@@ -1389,8 +1670,9 @@
                 if (!file) return;
                 const formData = new FormData();
                 formData.append('banner', file);
+                const bannerUrl = profileMode === 'channel' ? '/api/channel/banner' : '/api/profile/banner';
                 try {
-                    const res = await fetch('/api/profile/banner', { method: 'POST', body: formData });
+                    const res = await fetch(bannerUrl, { method: 'POST', body: formData });
                     if (res.ok) {
                         const data = await res.json();
                         profileBannerPreview.src = '/api/banner/' + data.banner_uuid;
@@ -1401,6 +1683,30 @@
             });
 
             // Save profile
+            // 7.8-fix2 [5]: «Показывать, когда я был(а) в сети» — переключатель
+            // пишет hide_presence сразу; приватность взаимная, поэтому после
+            // смены перечитываем присутствие всех контактов
+            if (hidePresenceToggle) {
+                hidePresenceToggle.addEventListener('click', async () => {
+                    const show = !hidePresenceToggle.classList.contains('on');
+                    hidePresenceToggle.classList.toggle('on', show);
+                    hidePresenceToggle.setAttribute('aria-pressed', show ? 'true' : 'false');
+                    try {
+                        const body = new URLSearchParams({ hide: show ? '0' : '1' }).toString();
+                        await fetchJson('/api/profile/presence', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                            body: body
+                        });
+                        await loadPresence();
+                    } catch (err) {
+                        console.error('Presence privacy save failed:', err);
+                        hidePresenceToggle.classList.toggle('on', !show);
+                        hidePresenceToggle.setAttribute('aria-pressed', !show ? 'true' : 'false');
+                    }
+                });
+            }
+
             saveProfileBtn.addEventListener('click', async () => {
                 const name = profileName.value.trim();
                 const bio = profileBio.value.trim();
@@ -1413,9 +1719,10 @@
                 const formData = new FormData();
                 formData.append('name', name);
                 formData.append('bio', bio);
+                const saveUrl = profileMode === 'channel' ? '/api/channel' : '/api/profile';
                 
                 try {
-                    const res = await fetch('/api/profile', { method: 'POST', body: formData });
+                    const res = await fetch(saveUrl, { method: 'POST', body: formData });
                     if (res.ok) {
                         profileDrawer.classList.remove('open');
                         location.reload(); // Reload to update header
@@ -1448,18 +1755,56 @@
                 } catch (e) { alert('Ошибка сети'); }
             });
             
-            // Phase 7.1a: Change email
-            document.getElementById('changeEmailBtn').addEventListener('click', async () => {
+            // Phase R7: запрос кода на новую почту (шаг 1 смены почты)
+            document.getElementById('requestEmailCodeBtn').addEventListener('click', async () => {
                 const newEmail = document.getElementById('profileNewEmail').value.trim();
                 const password = document.getElementById('profileEmailPassword').value;
                 if (!newEmail) { alert('Введите новый email'); return; }
-                if (!password) { alert('Введите пароль'); return; }
+                if (!password) { alert('Введите текущий пароль'); return; }
+                await requestCode(
+                    'email_change',
+                    { new_email: newEmail, current_password: password },
+                    'emailCodeGroup', 'emailCodeHint',
+                    'Код отправлен на новую почту'
+                );
+            });
+
+            // Phase R7: подтверждение текущей почты
+            document.getElementById('verifyEmailBtn').addEventListener('click', async () => {
+                const ok = await requestCode(
+                    'verify', {}, 'emailCodeGroup', 'emailCodeHint', 'Код отправлен на почту'
+                );
+                if (!ok) return;
+                const code = document.getElementById('profileEmailCodeInput').value.trim();
+                if (!code) { alert('Введите код из письма'); return; }
+                const fd = new FormData();
+                fd.append('purpose', 'verify');
+                fd.append('code', code);
+                try {
+                    const res = await fetch('/api/email/code/confirm', { method: 'POST', body: fd });
+                    const data = await res.json().catch(() => ({}));
+                    if (res.ok) {
+                        document.getElementById('profileEmailCodeInput').value = '';
+                        document.getElementById('emailCodeHint').textContent = 'Почта подтверждена ✓';
+                        await loadProfile();
+                    } else {
+                        alert(data.detail || 'Код не принят');
+                    }
+                } catch (e) { alert('Ошибка сети'); }
+            });
+
+            // Phase R7: Change email — шаг 2 (код, пришедший на новый адрес)
+            document.getElementById('changeEmailBtn').addEventListener('click', async () => {
+                const newEmail = document.getElementById('profileNewEmail').value.trim();
+                const code = document.getElementById('profileEmailCodeInput').value.trim();
+                if (!newEmail) { alert('Введите новый email'); return; }
+                if (!code) { alert('Сначала запросите код на новую почту'); return; }
                 const fd = new FormData();
                 fd.append('email', newEmail);
-                fd.append('password', password);
+                fd.append('code', code);
                 try {
                     const res = await fetch('/api/profile/email', { method: 'POST', body: fd });
-                    const data = await res.json();
+                    const data = await res.json().catch(() => ({}));
                     if (res.ok) {
                         location.reload();
                     } else {
@@ -1467,30 +1812,45 @@
                     }
                 } catch (e) { alert('Ошибка сети'); }
             });
-            
-            // Phase 7.1a: Change password
+
+            // Phase R7: смена пароля — шаг 1: текущий пароль → код на почту
+            document.getElementById('requestPasswordCodeBtn').addEventListener('click', async () => {
+                const current = document.getElementById('profileCurrentPassword').value;
+                if (!current) { alert('Введите текущий пароль'); return; }
+                await requestCode(
+                    'password_change',
+                    { current_password: current },
+                    'passwordCodeGroup', 'passwordCodeHint',
+                    'Код отправлен, действует 10 минут'
+                );
+            });
+
+            // Phase R7: Change password — шаг 2: код + новый пароль
             document.getElementById('changePasswordBtn').addEventListener('click', async () => {
                 const current = document.getElementById('profileCurrentPassword').value;
-                const emailCode = document.getElementById('profileEmailCode').value.trim();
+                const code = document.getElementById('profilePasswordCode').value.trim();
                 const newPw = document.getElementById('profileNewPassword').value;
                 const confirmPw = document.getElementById('profileConfirmPassword').value;
                 if (!current) { alert('Введите текущий пароль'); return; }
+                if (!code) { alert('Сначала запросите код на почту'); return; }
                 if (!newPw) { alert('Введите новый пароль'); return; }
                 if (newPw !== confirmPw) { alert('Пароли не совпадают'); return; }
                 const fd = new FormData();
                 fd.append('current_password', current);
                 fd.append('new_password', newPw);
                 fd.append('confirm_password', confirmPw);
-                fd.append('email_code', emailCode);
+                fd.append('code', code);
                 try {
                     const res = await fetch('/api/profile/password', { method: 'POST', body: fd });
-                    const data = await res.json();
+                    const data = await res.json().catch(() => ({}));
                     if (res.ok) {
-                        alert('Пароль изменён');
+                        alert('Пароль изменён, остальные устройства разлогинены');
                         document.getElementById('profileCurrentPassword').value = '';
                         document.getElementById('profileNewPassword').value = '';
                         document.getElementById('profileConfirmPassword').value = '';
-                        document.getElementById('profileEmailCode').value = '';
+                        document.getElementById('profilePasswordCode').value = '';
+                        document.getElementById('passwordCodeGroup').style.display = 'none';
+                        document.getElementById('passwordCodeHint').textContent = '';
                     } else {
                         alert(data.detail || 'Ошибка смены пароля');
                     }
@@ -1505,6 +1865,10 @@
                 deleteAccountConfirm.value = '';
             });
             
+            const deleteAccountCloseBtn = document.getElementById('deleteAccountCloseBtn');
+            if (deleteAccountCloseBtn) deleteAccountCloseBtn.addEventListener('click', () => {
+                deleteAccountModal.classList.remove('active');
+            });
             cancelDeleteAccountBtn.addEventListener('click', () => {
                 deleteAccountModal.classList.remove('active');
             });
@@ -1593,6 +1957,11 @@
             cancelCreateGroupBtn.addEventListener('click', () => {
                 createGroupModal.classList.remove('active');
             });
+            // Phase 7.8: единое круглое закрытие
+            const createGroupCloseBtn = document.getElementById('createGroupCloseBtn');
+            if (createGroupCloseBtn) createGroupCloseBtn.addEventListener('click', () => {
+                createGroupModal.classList.remove('active');
+            });
             
             createGroupModal.addEventListener('click', (e) => {
                 if (e.target === createGroupModal) {
@@ -1656,6 +2025,10 @@
             });
 
             cancelDeleteChatBtn.addEventListener('click', closeChatDelConfirm);
+            // Phase 7.8: тап по затемнению и круглая кнопка закрытия
+            if (deleteChatBackdrop) deleteChatBackdrop.addEventListener('click', closeChatDelConfirm);
+            const deleteChatCloseBtn = document.getElementById('deleteChatCloseBtn');
+            if (deleteChatCloseBtn) deleteChatCloseBtn.addEventListener('click', closeChatDelConfirm);
 
             confirmDeleteChatBtn.addEventListener('click', async () => {
                 const target = chatDeleteTarget;
@@ -1715,11 +2088,132 @@
             });
         });
 
+        // ===== Phase 7.6d-fix: канал объявлений =====
+        // Канал — не пользователь: свои права, своя лента, отдельная строка контактов.
+        // creator видит обычный инпут (в пустом канале — плашку с шаблоном приветствия),
+        // все остальные — плашку «канал объявлений — ответы отключены» вместо инпута.
+        function channelIsEmpty() {
+            return messagesDiv.querySelectorAll('.message').length === 0;
+        }
+
+        function applyChannelMode(isChannel) {
+            if (isChannel === undefined) isChannel = selectedChannel;
+            if (!inputRow || !channelNotice || !creatorNotice) return;
+            const readOnly = isChannel && !amCreator;
+            inputRow.style.display = readOnly ? 'none' : '';
+            channelNotice.style.display = readOnly ? '' : 'none';
+            // плашка creator живёт только в пустом канале
+            creatorNotice.style.display =
+                (isChannel && amCreator && channelIsEmpty()) ? '' : 'none';
+        }
+
+        async function loadChannel() {
+            const res = await fetch('/api/channel/messages');
+            if (!res.ok) return;
+            const data = await res.json();
+            channelState = data.channel || channelState;
+            amCreator = !!data.is_creator;
+            clearMessages();
+            (data.messages || []).forEach(m => appendMessage(
+                Object.assign({}, m, { is_broadcast: 1, peer_type: 'broadcast' })
+            ));
+            scrollToBottom();
+            applyChannelMode(true);
+            markAsRead('channel', 0);   // Phase 7.3: канал тоже participates in unread
+        }
+
+        async function openChannel() {
+            document.querySelectorAll('.user-item').forEach(i => i.classList.remove('active'));
+            document.querySelectorAll('.group-item').forEach(i => i.classList.remove('active'));
+            channelItem.classList.add('active');
+            document.querySelector('.main').classList.add('chat-active');
+
+            selectedUserId = null;
+            selectedGroupId = null;
+            selectedChannel = true;
+            location.hash = 'c=channel';
+            try { sessionStorage.setItem('vb_last_chat', 'channel'); } catch (e) {}
+
+            exitEditMode(); exitDeleteMode();
+            cancelReply();
+            closeAllCurtains();
+            searchInput.value = '';
+            messagesDiv.dataset.lastDateKey = '';
+            Object.keys(typingTimers).forEach(k => clearTimeout(typingTimers[k]));
+            typingTimers = {}; typingNames = {}; renderTypingIsland();
+
+            chatHeader.style.display = '';
+            renderPresenceIsland();
+            // 7.8-fix [1]: аватар канала рендерится безусловно (нет uuid -> default)
+            renderHeader(channelState.name || 'ВайбБункер', channelState.avatar_uuid, '');
+            chatHeaderAvatar.style.display = '';
+            // Phase 7.6d-fix: канал не удаляют, участников и команд у него нет
+            chatHeaderActions.style.display = 'none';
+            groupMembersBtn.style.display = 'none';
+            blockModeBar.style.display = 'none';
+            cmdChips.style.display = 'none';
+            inputArea.style.display = 'flex';
+            await loadChannel();
+        }
+
+        async function openChannelProfile() {
+            // просмотр канала: имя, био, баннер, аватар (оформление — только creator)
+            const res = await fetch('/api/channel');
+            if (!res.ok) return;
+            const data = await res.json();
+            channelState = data;
+            amCreator = !!data.is_creator;
+            otherProfileAvatar.src = getAvatarUrl(data.avatar_uuid);
+            otherProfileName.textContent = data.name;
+            otherProfileUsername.textContent = data.subtitle || 'канал объявлений';
+            otherProfileBio.textContent = data.bio || 'Объявления ВайбБункера';
+            if (data.banner_uuid) {
+                otherProfileBanner.src = '/api/banner/' + data.banner_uuid;
+                otherProfileBanner.style.display = '';
+                otherProfileBannerPlaceholder.style.display = 'none';
+            } else {
+                otherProfileBanner.style.display = 'none';
+                otherProfileBannerPlaceholder.style.display = '';
+            }
+            if (decorateChannelBtn) {
+                decorateChannelBtn.style.display = amCreator ? '' : 'none';
+            }
+            otherProfileModal.classList.add('active');
+        }
+
+        if (channelItem) {
+            channelItem.addEventListener('click', (e) => {
+                if (e.target.closest('button')) return;
+                closeAllCurtains();
+                openChannel();
+            });
+            const channelAvatar = channelItem.querySelector('.user-avatar');
+            if (channelAvatar) {
+                channelAvatar.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    openChannelProfile();
+                });
+            }
+        }
+
+        if (insertTemplateBtn) {
+            insertTemplateBtn.addEventListener('click', () => {
+                messageInput.value = WELCOME_TEMPLATE;
+                if (creatorNotice) creatorNotice.style.display = 'none';
+                messageInput.focus();
+            });
+        }
+
         // Search functionality
         searchInput.addEventListener('input', (e) => {
             const query = e.target.value.toLowerCase().trim();
             const users = document.querySelectorAll('.user-item');
             users.forEach(item => {
+                // Phase 7.6d-fix: канал объявлений в поиске не участвует
+                if (item.dataset.channel === '1') {
+                    item.style.display = query ? 'none' : '';
+                    return;
+                }
                 const name = item.dataset.name.toLowerCase();
                 const username = item.dataset.username.toLowerCase();
                 // Search by display name or @username (with or without @)
@@ -1800,18 +2294,27 @@
             ws.onmessage = (event) => {
                 const msg = JSON.parse(event.data);
                 // Phase 7.2b: message edited via WS
+                // Phase 7.6d-fix: объявление удалено (канал) — убираем пузырь
+                if (msg.type === 'message_deleted') {
+                    const gone = document.querySelector(`[data-msg-id="${msg.message_id}"]`);
+                    if (gone) gone.remove();
+                    return;
+                }
                 if (msg.type === 'message_edited') {
                     const bubble = document.querySelector(`[data-msg-id="${msg.message_id}"]`);
                     if (bubble) {
                         // Update text content
+                        // Phase 7.6d-fix: текст всегда лежит в .message-text
+                        const textEl = bubble.querySelector('.message-text');
+                        if (textEl) textEl.innerHTML = renderMarkdown(msg.text);
                         const body = bubble.querySelector('.message-body');
-                        if (body) {
+                        if (body && !textEl) {
                             // group: find text node in body
                             const nodes = body.childNodes;
                             for (let i = 0; i < nodes.length; i++) {
                                 if (nodes[i].nodeType === 3) { nodes[i].textContent = msg.text; break; }
                             }
-                        } else {
+                        } else if (!textEl) {
                             // flat: update direct text (skip avatar, quote, atts)
                             const children = bubble.childNodes;
                             for (let i = 0; i < children.length; i++) {
@@ -1834,9 +2337,37 @@
                     handleTyping(msg);
                     return;
                 }
+                // Phase 7.8: присутствие — кто-то вошёл в сеть или вышел из неё
+                if (msg.type === 'presence' && msg.user_id) {
+                    presenceMap[msg.user_id] = {
+                        online: !!msg.online,
+                        last_seen: msg.last_seen || (presenceMap[msg.user_id] || {}).last_seen || null,
+                        hidden: !!msg.hidden   // 7.8-fix2 [5]: статус закрыт (взаимно)
+                    };
+                    renderPresenceRings();
+                    renderPresenceIsland();
+                    return;
+                }
                 // Phase 6.1b: sidebar refresh signal when someone adds me to a group
                 if (msg.type === 'group_added') {
                     loadGroups();
+                    return;
+                }
+                // Phase 7.6d-fix: объявление канала — общая лента для всех
+                if (msg.peer_type === 'broadcast' || Number(msg.is_broadcast || 0) === 1) {
+                    if (selectedChannel) {
+                        appendMessage(msg);
+                        if (isNearBottom()) scrollToBottom();
+                    } else {
+                        bumpUnread('channel', 0);
+                    }
+                    if (msg.sender_id !== currentUser) {
+                        playBlip();
+                        if (document.hidden) {
+                            const senderName = msg.sender_name || 'ВайбБункер';
+                            showDesktopNotification(senderName, msg.text || '📢 Объявление', 0);
+                        }
+                    }
                     return;
                 }
                 // Phase 6.1: group messages route by group_id, dialogs by participant ids
@@ -1922,14 +2453,34 @@
         }
         
         // Helper function to set avatar on user list items
+        // 7.8-fix [1]: аватар в контактах рендерится БЕЗУСЛОВНО — нет uuid,
+        // значит default-avatar.png. Никаких «подождём баннер/профиль».
         function renderUserAvatars() {
             document.querySelectorAll('.user-item').forEach(item => {
-                const avatarUuid = item.dataset.avatar;
                 const img = item.querySelector('.user-avatar');
-                if (img && avatarUuid) {
-                    img.src = getAvatarUrl(avatarUuid);
-                }
+                if (!img) return;
+                img.src = getAvatarUrl(item.dataset.avatar);
             });
+        }
+
+        // 7.8-fix [1][3]: одна точка сборки шапки чата — аватар, ник, баннер.
+        // Вызывается и при клике по контакту, и на bootstrap (hash/sessionStorage):
+        // после перезагрузки шапка на месте сразу, не дожидаясь загрузки диалога.
+        function renderHeader(name, avatarUuid, bannerUuid) {
+            // 7.8-fix [3]: шапка видима сразу — не ждём открытия диалога
+            if (chatHeader) chatHeader.style.display = '';
+            if (chatHeaderAvatar) {
+                // аватар всегда: uuid -> /api/avatar/<uuid>, иначе default-avatar.png
+                chatHeaderAvatar.src = getAvatarUrl(avatarUuid);
+                chatHeaderAvatar.style.display = '';
+            }
+            if (chatHeaderName) chatHeaderName.textContent = name || '';
+            checkMarquee();
+            // баннер: явный uuid, иначе из кэша собеседника (без мигания при переключении)
+            peerBannerUuid = (bannerUuid !== undefined)
+                ? (bannerUuid || '')
+                : (bannerByUser[selectedUserId] || '');
+            renderPeerBanner();
         }
         
         // Render avatars on page load
@@ -1954,21 +2505,47 @@
                 const uid = parseInt(chatKey.slice(5));
                 if (uid) {
                     const item = document.querySelector(`.user-item[data-id="${uid}"]`);
+                    // 7.8-fix [3]: шапка рендерится СРАЗУ из данных строки —
+                    // не ждём ни профиля, ни загрузки диалога, ни переключения чата
+                    if (item) {
+                        selectedUserId = uid;
+                        renderHeader(item.dataset.name, item.dataset.avatar);
+                    } else {
+                        // строки уже нет (удалён контакт?) — берём имя из профиля
+                        fetch(`/api/user/${uid}/profile`).then(r => r.ok ? r.json() : null)
+                            .then(data => {
+                                if (!data) return;
+                                selectedUserId = uid;
+                                bannerByUser[uid] = data.banner_uuid || '';
+                                renderHeader(data.name || '', data.avatar_uuid, data.banner_uuid);
+                            }).catch(() => {});
+                    }
                     if (item) item.click();
                 }
             } else if (chatKey.startsWith('group:')) {
                 const gid = parseInt(chatKey.slice(6));
                 if (gid) {
                     const item = document.querySelector(`.group-item[data-group-id="${gid}"]`);
+                    // 7.8-fix [3]: в группе тоже имя и аватар по умолчанию — сразу
+                    if (item) renderHeader(item.dataset.groupName, '', '');
                     if (item) item.click();
+                }
+            } else if (chatKey === 'channel') {
+                if (channelItem) {
+                    selectedChannel = true;
+                    renderHeader(channelState.name || 'ВайбБункер', channelState.avatar_uuid, '');
+                    channelItem.click();   // Phase 7.6d-fix: канал
                 }
             }
         });
         // Phase 7.3: load unread counts on page load
         loadUnread();
+        // Phase 7.8: присутствие — первая загрузка и фоновое обновление
+        loadPresence();
+        setInterval(loadPresence, 45000);
         
-        // Load users and handle selection
-        document.querySelectorAll('.user-item').forEach(item => {
+        // Load users and handle selection (Phase 7.6d-fix: канал — отдельная строка)
+        document.querySelectorAll('.user-item:not(#channelItem)').forEach(item => {
             item.addEventListener('click', async (e) => {
                 // If curtain is open or click is on a button, don't open chat
                 if (item.classList.contains('curtain-open') ||
@@ -1987,18 +2564,18 @@
                 try { sessionStorage.setItem('vb_last_chat', 'user:' + selectedUserId); } catch(e) {}
                 exitEditMode(); exitDeleteMode(); // Phase 7.2b: reset modes on chat switch
                 if (typeof closeAccessoryIsland === 'function') closeAccessoryIsland();
-                const userName = item.dataset.name;
-                const userAvatar = item.dataset.avatar;
-                
-                chatHeaderName.textContent = userName;
-                checkMarquee();
-                chatHeaderAvatar.src = getAvatarUrl(userAvatar);
+                // 7.8-fix [1]: шапка собирается одной функцией — аватар всегда,
+                // баннер подхватится из presenceMap/профиля ниже (refreshPeerMeta)
+                renderHeader(item.dataset.name, item.dataset.avatar, peerBannerUuid);
                 // restore dialog-mode header controls
                 chatHeaderAvatar.style.display = '';
                 // Phase 6.5: 1-on-1 shows the "Удалить чат" trash chip (members btn stays group-only)
                 chatHeaderActions.style.display = 'flex';
                 groupMembersBtn.style.display = 'none';
+                // Phase 7.6d: канал «start» — удалять нельзя, писать может только creator
+                selectedChannel = false;   // Phase 7.6d-fix: вышли из канала
                 deleteChatBtn.style.display = '';
+                applyChannelMode(false);
                 inputArea.style.display = 'flex';
                 renderBlockMode(); // Phase 7.4a-fix3: check block state on dialog open
                 cancelReply();          // Phase 6.6: never carry a reply across chats
@@ -2012,6 +2589,9 @@
                 typingTimers = {}; typingNames = {};
                 renderTypingIsland();
                 loadDialogChips(selectedUserId);
+                // Phase 7.8: присутствие собеседника + его баннер для шапки
+                renderPresenceIsland();
+                renderPeerBanner();
                 
                 // Load messages
                 const res = await fetch(`/api/messages/${selectedUserId}`);
@@ -2021,6 +2601,7 @@
                 scrollToBottom();
                 // Phase 7.3: mark dialog as read
                 markAsRead('user', selectedUserId);
+                refreshPeerMeta(selectedUserId);   // Phase 7.8: presence + banner шапки
                 // Phase 7.1d: sync mute state from server
                 if (data.muted_by_me !== undefined) {
                     dialogStateCache.muted_by_me = data.muted_by_me;
@@ -2088,16 +2669,18 @@
             
             selectedUserId = null;
             selectedGroupId = groupId;
+            selectedChannel = false;   // Phase 7.6d-fix: вышли из канала
             location.hash = 'c=group:' + groupId; // Phase micro: hash for chat persistence
             try { sessionStorage.setItem('vb_last_chat', 'group:' + groupId); } catch(e) {}
             exitEditMode(); exitDeleteMode(); // Phase 7.2b: reset modes on chat switch
             
-            chatHeaderName.textContent = groupName;
-            checkMarquee();
-            chatHeaderAvatar.style.display = 'none'; // no peer avatar in group mode
+            // 7.8-fix [1]: в группе тоже рендерим аватар (нет uuid -> default-avatar.png)
+            renderHeader(groupName, '', '');
+            chatHeaderAvatar.style.display = '';
             chatHeaderActions.style.display = 'flex';
             deleteChatBtn.style.display = 'none';    // dialog deletion is 1-on-1 only for now
             groupMembersBtn.style.display = '';
+            applyChannelMode(false);                 // Phase 7.6d: в группе инпут всегда обычный
             inputArea.style.display = 'flex';
             cancelReply();          // Phase 6.6: reply is dialog-scoped
             closeAllCurtains();     // Phase 6.6: nor curtains across modes
@@ -2607,6 +3190,7 @@
             chatDeleteTarget = uid;
             deleteChatUserName.textContent = displayName;
             closeMsgDelMenu();
+            if (deleteChatBackdrop) deleteChatBackdrop.style.display = 'block';
             deleteChatConfirm.style.display = 'block';
         }
         
@@ -2713,11 +3297,15 @@
         }
         
         function appendMessage(msg) {
+            // Phase 7.6d-fix: объявление канала (peer_type='broadcast')
+            const isChannelMsg = Number(msg.is_broadcast || 0) === 1 || msg.peer_type === 'broadcast';
+
             // Phase 7.3: date separator — check if day changed from previous message
+            // Phase 7.6d-fix: без валидного created_at разделитель не создаётся вовсе
             if (msg.created_at) {
                 const key = getDateKey(msg.created_at);
                 const lastKey = messagesDiv.dataset.lastDateKey || '';
-                if (key !== lastKey) {
+                if (key && key !== lastKey) {
                     const sep = document.createElement('div');
                     sep.className = 'date-separator';
                     sep.innerHTML = `<span class="date-sep-label">${formatDateSep(msg.created_at)}</span>`;
@@ -2729,7 +3317,10 @@
 
             const div = document.createElement('div');
             const mine = msg.sender_id === currentUser;
-            div.className = `message ${mine ? 'sent' : 'received'}`;
+            const isSystemMsg = isChannelMsg || Number(msg.is_system || 0) === 1;
+            div.className = isSystemMsg
+                ? 'message system-announcement'
+                : `message ${mine ? 'sent' : 'received'}`;
             const isGroupMsg = !!msg.group_id;
             
             // Build avatar URL for received messages
@@ -2775,16 +3366,24 @@
             
             const editedHtml = msg.edited_at ? '<span class="message-edited"> (изм.)</span>' : '';
             const timeHtml = `<div class="message-time">${formatTime(msg.created_at)}${editedHtml}</div>`;
+            // Phase 7.6d-fix: markdown-подмножество (escapeHtml внутри renderMarkdown)
+            const textHtml = `<span class="message-text">${renderMarkdown(msg.text)}</span>`;
             
             // Phase 6.1: in groups other people's bubbles show sender name above the text;
             // messages WITHOUT a reply keep the legacy structure byte-for-byte (regression safety)
-            if (isGroupMsg && !mine) {
+            if (isSystemMsg) {
+                // Phase 7.6d-fix: объявление канала — по центру, без аватара и без цитаты
+                div.innerHTML = `<div class="message-body">${textHtml}${timeHtml}</div>`;
+            } else if (isGroupMsg && !mine) {
                 const nameHtml = msg.sender_name
                     ? `<div class="message-sender-name">${escapeHtml(msg.sender_name)}</div>`
                     : '';
-                div.innerHTML = avatarHtml + `<div class="message-body">${nameHtml}${quoteHtml}${escapeHtml(msg.text)}${attsHtml}${timeHtml}</div>`;
+                div.innerHTML = avatarHtml + `<div class="message-body">${nameHtml}${quoteHtml}${textHtml}${attsHtml}${timeHtml}</div>`;
             } else {
-                div.innerHTML = avatarHtml + quoteHtml + escapeHtml(msg.text) + attsHtml + timeHtml;
+                // 7.8-fix2 [4]: как в своём пузыре — одна колонка: цитата СВЕРХУ,
+                // текст ниже. Раньше quote и text были соседями flex-строки (бок-о-бок).
+                div.innerHTML = avatarHtml +
+                    `<div class="message-body">${quoteHtml}${textHtml}${attsHtml}${timeHtml}</div>`;
             }
             
             // Phase 6.1b FIX: the div was built but never attached to the DOM
@@ -2805,7 +3404,10 @@
             });
             
             // Phase 6.6: swipe gestures (light left = reply, snap = delete panel)
-            attachBubbleGestures(div, msg);
+            // Phase 7.6d: объявления канала не свайпаются и не цитируются
+            if (!isSystemMsg) {
+                attachBubbleGestures(div, msg);
+            }
         }
         
         // ===== Phase 6.6c: bubble gestures - Pointer Events (mouse + touch) =====
@@ -3140,6 +3742,7 @@
         
         function closeChatDelConfirm() {
             deleteChatConfirm.style.display = 'none';
+            if (deleteChatBackdrop) deleteChatBackdrop.style.display = 'none';
         }
         
         // Modal functions
@@ -3166,9 +3769,61 @@
             div.textContent = text;
             return div.innerHTML;
         }
+
+        // ===== Phase 7.6d-fix: markdown-подмножество в пузырях =====
+        // Порядок обязателен и не меняется: сначала escapeHtml (сырого HTML в пузыре
+        // не бывает никогда), потом только наши теги. XSS-безопасно по построению.
+        function renderMarkdown(text) {
+            let s = escapeHtml(text || '');
+            // ```блок кода``` — выносим в плейсхолдер: внутри <pre> переносы остаются
+            // настоящими переводами строк (white-space: pre-wrap), <br> там не нужен
+            const codeBlocks = [];
+            s = s.replace(/```([\s\S]+?)```/g, function (m, code) {
+                codeBlocks.push(code.replace(/^\n+|\n+$/g, ''));
+                return '\u0001CODE' + (codeBlocks.length - 1) + '\u0001';
+            });
+            // `код`
+            s = s.replace(/`([^`\n]+)`/g, '<code class="md-code">$1</code>');
+            // **жирный**
+            s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+            // ~~зачёркнутый~~
+            s = s.replace(/~~([^~]+)~~/g, '<del>$1</del>');
+            // *курсив* (не начинается внутри слова)
+            s = s.replace(/(^|[^*\w])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
+            // автоссылки http(s) — всегда в новой вкладке и без opener
+            s = s.replace(/(https?:\/\/[^\s<]+)/g, function (url) {
+                const clean = url.replace(/[.,;:!?)\]}'"]+$/, '');
+                const tail = url.slice(clean.length);
+                return '<a href="' + clean + '" target="_blank" rel="noopener noreferrer">' + clean + '</a>' + tail;
+            });
+            // переносы строк — только вне code-блоков (ТЗ 7.8, п.4)
+            s = s.replace(/\n/g, '<br>');
+            // возвращаем code-блоки на место
+            s = s.replace(/\u0001CODE(\d+)\u0001/g, function (m, i) {
+                return '<pre class="md-code-block"><code>' + codeBlocks[+i] + '</code></pre>';
+            });
+            return s;
+        }
+
+        // ===== Phase 7.6d-fix: разбор дат =====
+        // SQLite отдаёт 'YYYY-MM-DD HH:MM:SS'; new Date() на такой строке в части
+        // браузеров возвращает Invalid Date. Разбираем по компонентам, локальное время.
+        function parseTs(timestamp) {
+            if (!timestamp && timestamp !== 0) return null;
+            if (timestamp instanceof Date) return isNaN(timestamp.getTime()) ? null : timestamp;
+            const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/.exec(String(timestamp));
+            let d;
+            if (m) {
+                d = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0));
+            } else {
+                d = new Date(timestamp);
+            }
+            return isNaN(d.getTime()) ? null : d;
+        }
         
         function formatTime(timestamp) {
-            const d = new Date(timestamp);
+            const d = parseTs(timestamp);
+            if (!d) return '';           // нет валидного ts — пузырь просто без часов
             return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         }
         
@@ -3194,6 +3849,13 @@
                 badge.textContent = count;
                 badge.classList.toggle('visible', count > 0);
             });
+            // Phase 7.6d-fix: канал объявлений
+            const chBadge = document.getElementById('unread-channel-0');
+            if (chBadge) {
+                const count = unreadState['channel:0'] || 0;
+                chBadge.textContent = count;
+                chBadge.classList.toggle('visible', count > 0);
+            }
             // group badges
             document.querySelectorAll('.group-item').forEach(el => {
                 const gid = el.dataset.groupId;
@@ -3231,6 +3893,7 @@
             const now = Date.now();
             if (now - lastTypingSent < 1500) return; // throttle 1.5s
             lastTypingSent = now;
+            if (selectedChannel) return;   // Phase 7.6d-fix: канал не «печатает»
             if (!ws || ws.readyState !== 1) return;
             const payload = { type: 'typing' };
             if (selectedGroupId) payload.group_id = selectedGroupId;
@@ -3282,11 +3945,121 @@
             if (isNearBottom()) {
                 typingIsland.scrollIntoView({ behavior: 'smooth', block: 'end' });
             }
+            renderPresenceIsland();   // Phase 7.8: пока печатает — островок «был в сети» не нужен
+        }
+
+        // ===== Phase 7.8: присутствие (online / last_seen) =====
+        // Сервер хранит online (живое WS-подключение) и last_seen (users).
+        // Клиент держит кэш, обновляет его по WS-событию presence и раз в 45 секунд.
+        const presenceMap = {};   // { user_id: { online: bool, last_seen: 'YYYY-MM-DD HH:MM:SS' } }
+
+        function formatLastSeen(ts) {
+            const d = parseTs(ts);
+            if (!d) return '';
+            const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            const now = new Date();
+            const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+            const day = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+            const diff = Math.round((today - day) / 86400000);
+            if (diff === 0) return 'сегодня в ' + time;
+            if (diff === 1) return 'вчера в ' + time;
+            const date = new Intl.DateTimeFormat('ru', { day: 'numeric', month: 'long' }).format(d);
+            return date + ' в ' + time;
+        }
+
+        async function loadPresence() {
+            try {
+                const res = await fetch('/api/users');
+                if (!res.ok) return;
+                const users = await res.json();
+                users.forEach(u => {
+                    presenceMap[u.id] = {
+                        online: !!u.online, last_seen: u.last_seen || null, hidden: !!u.hidden
+                    };
+                });
+                renderPresenceRings();
+                renderPresenceIsland();
+            } catch (e) { console.error('Failed to load presence:', e); }
+        }
+
+        function renderPresenceRings() {
+            // границы авы в контактах: зелёная — онлайн, серая — оффлайн
+            document.querySelectorAll('.user-item').forEach(li => {
+                const uid = parseInt(li.dataset.id);
+                const img = li.querySelector('.user-avatar');
+                if (!img || !uid) return;
+                const state = presenceMap[uid];
+                if (!state) { img.removeAttribute('data-presence'); return; }
+                // 7.8-fix2 [5]: скрытый статус = серая граница без last-seen
+                img.dataset.presence = (state.online && !state.hidden) ? 'online' : 'offline';
+            });
+        }
+
+        function peerPresenceText(uid) {
+            const state = presenceMap[uid];
+            if (!state) return '';
+            // 7.8-fix2 [5]: кто-то из двоих скрывает присутствие — статус не показываем
+            if (state.hidden) return 'статус скрыт';
+            if (state.online) return '';
+            if (!state.last_seen) return 'был(а) в сети давно';
+            const when = formatLastSeen(state.last_seen);
+            return when ? ('был(а) в сети ' + when) : 'был(а) в сети давно';
+        }
+
+        function renderPresenceIsland() {
+            if (!presenceIsland) return;
+            // приоритет у «печатает»: пока собеседник печатает, островок присутствия скрыт
+            const hide = !selectedUserId || selectedChannel ||
+                         Object.keys(typingNames || {}).length > 0;
+            const text = hide ? '' : peerPresenceText(selectedUserId);
+            if (!text) {
+                presenceIsland.style.display = 'none';
+                presenceIsland.textContent = '';
+                return;
+            }
+            presenceIsland.textContent = text;
+            presenceIsland.style.display = '';
+        }
+
+        // мета собеседника: присутствие + баннер для шапки (per-user тумблер темы)
+        async function refreshPeerMeta(uid) {
+            if (!uid) return;
+            try {
+                const res = await fetch(`/api/user/${uid}/profile`);
+                if (!res.ok) return;
+                const data = await res.json();
+                presenceMap[uid] = {
+                    online: !!data.online, last_seen: data.last_seen || null, hidden: !!data.hidden
+                };
+                bannerByUser[uid] = data.banner_uuid || '';
+                peerBannerUuid = bannerByUser[uid];
+                renderPresenceRings();
+                renderPresenceIsland();
+                renderPeerBanner();
+            } catch (e) { console.error('Failed to load peer meta:', e); }
+        }
+
+
+
+        function renderPeerBanner() {
+            if (!chatHeaderBanner) return;
+            const on = !!(currentTheme.toggles && currentTheme.toggles.peer_banner_header);
+            const uuid = selectedChannel ? (channelState.banner_uuid || '') : peerBannerUuid;
+            if (on && uuid) {
+                chatHeaderBanner.src = '/api/banner/' + uuid;
+                chatHeaderBanner.style.display = '';
+                if (chatPeerIsland) chatPeerIsland.classList.add('with-banner');
+            } else {
+                chatHeaderBanner.removeAttribute('src');
+                chatHeaderBanner.style.display = 'none';
+                if (chatPeerIsland) chatPeerIsland.classList.remove('with-banner');
+            }
         }
 
         // ===== Phase 7.3: date separator =====
         function formatDateSep(dateStr) {
-            const d = new Date(dateStr);
+            const d = parseTs(dateStr);
+            if (!d) return '';
             const now = new Date();
             const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
             const msgDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
@@ -3297,7 +4070,11 @@
         }
 
         function getDateKey(dateStr) {
-            return dateStr.slice(0, 10); // YYYY-MM-DD
+            const d = parseTs(dateStr);
+            if (!d) return '';           // нет валидного ts — разделитель не создаём
+            return d.getFullYear() + '-' +
+                   String(d.getMonth() + 1).padStart(2, '0') + '-' +
+                   String(d.getDate()).padStart(2, '0');
         }
 
         // ===== Phase 7.3: scroll-to-bottom =====
@@ -3334,7 +4111,14 @@
             }
 
             // Phase 6.1: need either a dialog or a group selected
-            if (!selectedUserId && !selectedGroupId) return;
+            // Phase 7.6d-fix: канал — третий допустимый контекст
+            if (!selectedUserId && !selectedGroupId && !selectedChannel) return;
+
+            // Phase 7.6d-fix: объявления канала — только текст
+            if (selectedChannel && attachedFiles.length > 0) {
+                alert('Канал объявлений принимает только текст');
+                return;
+            }
             
             // Phase 6.2: "/" in a group is a COMMAND, never a message
             if (selectedGroupId && text.startsWith('/')) {
@@ -3351,14 +4135,19 @@
             }
             
             const formData = new FormData();
-            formData.append('recipient_id', selectedUserId || 0);
-            if (selectedGroupId) {
-                formData.append('group_id', selectedGroupId);
+            if (selectedChannel) {
+                formData.append('channel', '1');   // Phase 7.6d-fix: объявление в канал
+            } else {
+                formData.append('recipient_id', selectedUserId || 0);
+                if (selectedGroupId) {
+                    formData.append('group_id', selectedGroupId);
+                }
             }
             formData.append('text', text);
             
             // Phase 6.6: armed reply rides along if it still belongs to THIS chat
-            const currentChatKey = selectedGroupId ? 'g' + selectedGroupId : 'u' + selectedUserId;
+            const currentChatKey = selectedChannel ? 'ch'
+                : (selectedGroupId ? 'g' + selectedGroupId : 'u' + selectedUserId);
             if (replyCtx && replyCtx.chatKey === currentChatKey) {
                 formData.append('reply_to_id', replyCtx.id);
             }
@@ -3389,6 +4178,7 @@
                     const msg = await res.json();
                     appendMessage(msg);
                     scrollToBottom();
+                    if (selectedChannel) applyChannelMode(true);   // плашка «первое объявление» больше не нужна
                 } else {
                     const err = await res.json();
                     alert(err.detail || 'Failed to send message');
@@ -3443,6 +4233,7 @@
                         const msg = JSON.parse(xhr.responseText);
                         appendMessage(msg);
                         scrollToBottom();
+                        if (selectedChannel) applyChannelMode(true);
                     } catch (e) {
                         alert('Failed to parse server response');
                     }
@@ -3655,7 +4446,7 @@
         
         // Click on user avatar to open other user's profile modal
         // The rest of the user-item row opens the chat dialog
-        document.querySelectorAll('.user-item').forEach(item => {
+        document.querySelectorAll('.user-item:not(#channelItem)').forEach(item => {
             const userAvatar = item.querySelector('.user-avatar');
             
             if (userAvatar) {
@@ -3705,12 +4496,33 @@
                     } catch(e) {}
                 }
 
+                // Phase 7.6d-fix: оформление канала — только в модалке канала (openChannelProfile)
+                if (decorateChannelBtn) decorateChannelBtn.style.display = 'none';
+
                 otherProfileModal.classList.add('active');
             } catch (err) {
                 console.error('Error loading profile:', err);
             }
         }
         
+        // Phase 7.6d: creator оформляет канал — тот же ящик профиля, но цель = канал start
+        function exitChannelEditMode() {
+            if (profileMode !== 'channel') return;
+            profileMode = 'self';
+            profileDrawer.classList.remove('profile-channel-mode');
+            loadProfile();   // вернули ящик к своему профилю
+        }
+
+        if (decorateChannelBtn) {
+            decorateChannelBtn.addEventListener('click', async () => {
+                otherProfileModal.classList.remove('active');
+                profileMode = 'channel';
+                profileDrawer.classList.add('profile-channel-mode');
+                await loadProfile();
+                profileDrawer.classList.add('open');
+            });
+        }
+
         // Close other profile modal
         closeOtherProfileBtn.addEventListener('click', () => {
             otherProfileModal.classList.remove('active');
@@ -3763,13 +4575,16 @@
         })();
 
         // Click on chat header avatar or name to open other user's profile modal
+        // Phase 7.6d-fix: в канале шапка открывает профиль канала
         chatHeaderAvatar.addEventListener('click', async () => {
+            if (selectedChannel) { await openChannelProfile(); return; }
             if (selectedUserId) {
                 await openOtherUserProfile(selectedUserId);
             }
         });
         
         chatHeaderName.addEventListener('click', async () => {
+            if (selectedChannel) { await openChannelProfile(); return; }
             if (selectedUserId) {
                 await openOtherUserProfile(selectedUserId);
             }
