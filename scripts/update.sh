@@ -34,7 +34,68 @@ set -uo pipefail  # без -e: ошибки обрабатываем сами, �
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT" || exit 4
 
-PY="${PYTHON:-python3}"
+# --------------------------------------------------------------------------- #
+# Micro update-env: .env в окружение ДО чтения любых настроек.
+#
+# Боевые DATA_DIR/BACKUP_DIR живут в .env. Раньше update.sh их не читал, и
+# scripts/backup.py брал дефолты /var/lib/messenger/*, где БД нет — бэкап падал,
+# а без бэкапа обновление запрещено, так что апдейт вставал намертво.
+#
+# `set -a` помечает всё присвоенное на экспорт, поэтому переменные видят и
+# дочерние процессы (backup.py, selftest.py, log_event.py). Значения, уже
+# заданные в шелле, восстанавливаются после подгрузки файла: явный запуск
+# вида `BACKUP_DIR=/tmp/x bash scripts/update.sh` важнее .env — тот же контракт,
+# что у scripts/load_env.py.
+# --------------------------------------------------------------------------- #
+if [ -f .env ]; then
+    # запоминаем то, что пришло из шелла (пустое значение = переменная не задана)
+    _PRE_DATA_DIR="${DATA_DIR:-}"
+    _PRE_BACKUP_DIR="${BACKUP_DIR:-}"
+    _PRE_RETAIN_COUNT="${RETAIN_COUNT:-}"
+    _PRE_DB_NAME="${DB_NAME:-}"
+    _PRE_SECRET_KEY="${SECRET_KEY:-}"
+    _PRE_APP_MODE="${APP_MODE:-}"
+    _PRE_APP_HOST="${APP_HOST:-}"
+    _PRE_APP_PORT="${APP_PORT:-}"
+    _PRE_MAX_UPLOAD_BYTES="${MAX_UPLOAD_BYTES:-}"
+    _PRE_FIRST_USER_ADMIN="${FIRST_USER_ADMIN:-}"
+    _PRE_PYTHON="${PYTHON:-}"
+    _PRE_UPDATE_BRANCH="${UPDATE_BRANCH:-}"
+    _PRE_HEALTH_URL="${HEALTH_URL:-}"
+
+    set -a
+    # shellcheck disable=SC1091  # путь известен только на целевой машине
+    . ./.env
+    set +a
+
+    # шелл побеждает файл
+    [ -n "$_PRE_DATA_DIR" ]         && export DATA_DIR="$_PRE_DATA_DIR"
+    [ -n "$_PRE_BACKUP_DIR" ]       && export BACKUP_DIR="$_PRE_BACKUP_DIR"
+    [ -n "$_PRE_RETAIN_COUNT" ]     && export RETAIN_COUNT="$_PRE_RETAIN_COUNT"
+    [ -n "$_PRE_DB_NAME" ]          && export DB_NAME="$_PRE_DB_NAME"
+    [ -n "$_PRE_SECRET_KEY" ]       && export SECRET_KEY="$_PRE_SECRET_KEY"
+    [ -n "$_PRE_APP_MODE" ]         && export APP_MODE="$_PRE_APP_MODE"
+    [ -n "$_PRE_APP_HOST" ]         && export APP_HOST="$_PRE_APP_HOST"
+    [ -n "$_PRE_APP_PORT" ]         && export APP_PORT="$_PRE_APP_PORT"
+    [ -n "$_PRE_MAX_UPLOAD_BYTES" ] && export MAX_UPLOAD_BYTES="$_PRE_MAX_UPLOAD_BYTES"
+    [ -n "$_PRE_FIRST_USER_ADMIN" ] && export FIRST_USER_ADMIN="$_PRE_FIRST_USER_ADMIN"
+    [ -n "$_PRE_PYTHON" ]           && export PYTHON="$_PRE_PYTHON"
+    [ -n "$_PRE_UPDATE_BRANCH" ]    && export UPDATE_BRANCH="$_PRE_UPDATE_BRANCH"
+    [ -n "$_PRE_HEALTH_URL" ]       && export HEALTH_URL="$_PRE_HEALTH_URL"
+    unset _PRE_DATA_DIR _PRE_BACKUP_DIR _PRE_RETAIN_COUNT _PRE_DB_NAME \
+          _PRE_SECRET_KEY _PRE_APP_MODE _PRE_APP_HOST _PRE_APP_PORT \
+          _PRE_MAX_UPLOAD_BYTES _PRE_FIRST_USER_ADMIN _PRE_PYTHON \
+          _PRE_UPDATE_BRANCH _PRE_HEALTH_URL
+    ENV_FILE_LOADED=1
+else
+    ENV_FILE_LOADED=0
+fi
+
+# Micro update-env [3]: интерпретатор пинуется на venv репозитория — там лежат
+# зависимости. Системный python3 — только запасной вариант.
+PY="${PYTHON:-$REPO_ROOT/.venv/bin/python}"
+[ -x "$PY" ] || PY="$(command -v python3)"
+
 DATA_DIR="${DATA_DIR:-/var/lib/messenger/data}"
 BACKUP_DIR="${BACKUP_DIR:-/var/lib/messenger/backups}"
 RETAIN_COUNT="${RETAIN_COUNT:-5}"
@@ -44,6 +105,10 @@ APP_PORT="${APP_PORT:-8000}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:${APP_PORT}/health}"
 DEV_LOG="${DATA_DIR}/dev_server.log"
 LAST_GOOD="${DATA_DIR}/last_good_hash"
+
+# Micro update-env: значения после слияния «.env + шелл» уезжают дочерним процессам.
+# backup.py и selftest.py читают именно их, а не дефолты /var/lib/messenger/*.
+export DATA_DIR BACKUP_DIR RETAIN_COUNT DB_NAME APP_HOST APP_PORT HEALTH_URL
 
 DRY_RUN=0
 if [ "${1:-}" = "--dry-run" ]; then
@@ -164,6 +229,12 @@ PREV_HASH="$(git rev-parse HEAD 2>/dev/null || echo 'unknown')"
 if [ "$DRY_RUN" = "1" ]; then
     echo "==================== UPDATE DRY-RUN ===================="
     echo "репозиторий:     $REPO_ROOT"
+    if [ "$ENV_FILE_LOADED" = "1" ]; then
+        echo ".env:            загружен и экспортирован дочерним процессам"
+    else
+        echo ".env:            не найден — работают дефолты и переменные шелла"
+    fi
+    echo "интерпретатор:   $PY"
     echo "ветка:           $UPDATE_BRANCH"
     echo "текущий HEAD:    $PREV_HASH"
     echo "режим сервиса:   $SERVICE_MODE"
@@ -183,6 +254,12 @@ if [ "$DRY_RUN" = "1" ]; then
 fi
 
 echo "==================== UPDATE ===================="
+if [ "$ENV_FILE_LOADED" = "1" ]; then
+    log ".env загружен: DATA_DIR=$DATA_DIR BACKUP_DIR=$BACKUP_DIR"
+else
+    log ".env не найден: DATA_DIR=$DATA_DIR BACKUP_DIR=$BACKUP_DIR (дефолты/шелл)"
+fi
+log "интерпретатор: $PY"
 log "ветка: $UPDATE_BRANCH, HEAD: $PREV_HASH, режим: $SERVICE_MODE"
 
 # --------------------------------------------------------------------------- #

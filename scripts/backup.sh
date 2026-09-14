@@ -12,6 +12,11 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PY="${PYTHON:-python3}"
+ROOT="$(cd "$HERE/.." && pwd)"
+
+# Micro update-env [3]: тот же пин интерпретатора, что в update.sh — зависимости
+# лежат в venv репозитория, системный python3 только запасной.
+PY="${PYTHON:-$ROOT/.venv/bin/python}"
+[ -x "$PY" ] || PY="$(command -v python3)"
 
 exec "$PY" "$HERE/backup.py" "$@"

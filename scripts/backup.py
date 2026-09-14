@@ -8,15 +8,21 @@ Phase R2: онлайн-бэкап SQLite.
 по КОПИИ, не по источнику): битый результат — ненулевой exit и явное сообщение.
 
 Env (совместимы со старым backup.sh и cron):
-    DATA_DIR      — где лежит messenger.db (default /var/lib/messenger/data)
-    BACKUP_DIR    — куда складываем (default /var/lib/messenger/backups)
+    DATA_DIR      — где лежит messenger.db (обязателен: env или .env репозитория)
+    BACKUP_DIR    — куда складываем (обязателен: env или .env репозитория)
     DB_NAME       — имя файла БД (default messenger.db)
     RETAIN_COUNT  — сколько последних копий хранить (default 5)
     PYTHON        — не используется здесь, нужен shim'у backup.sh
 
+Micro update-env: DATA_DIR/BACKUP_DIR больше НЕ имеют молчаливых дефолтов
+/var/lib/messenger/*. Раньше отсутствие переменной уводило бэкап в пустой каталог,
+скрипт падал на «база не найдена», и понять, что виноват несчитанный .env, было
+нельзя. Теперь путь ищется в окружении, затем в .env репозитория (через
+scripts/load_env.py), а если его нет нигде — ошибка с прямой подсказкой.
+
 Exit-коды:
     0 — всё ok
-    2 — ошибка ввода-вывода/окружения (нет БД, нельзя создать каталог)
+    2 — ошибка ввода-вывода/окружения (нет БД, нельзя создать каталог, не задан путь)
     3 — копия не прошла integrity_check
     4 — сбой Online Backup API
 """
@@ -35,10 +41,32 @@ EXIT_IO = 2
 EXIT_INTEGRITY = 3
 EXIT_BACKUP = 4
 
-DATA_DIR = os.environ.get("DATA_DIR", "/var/lib/messenger/data")
-BACKUP_DIR = os.environ.get("BACKUP_DIR", "/var/lib/messenger/backups")
+# .env репозитория — подстраховка на случай запуска руками или из cron без префиксов
+# (update.sh экспортирует переменные сам, тогда этот вызов ничего не меняет:
+# load_env по контракту не перезаписывает уже заданное окружение).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    import load_env                      # noqa: E402
+
+    load_env.load()
+except ImportError:                      # scripts/load_env.py убрали — не повод падать
+    pass
+
 DB_NAME = os.environ.get("DB_NAME", "messenger.db")
 RETAIN_COUNT = int(os.environ.get("RETAIN_COUNT", "5"))
+
+
+def required_dir(name: str) -> str | None:
+    """
+    Путь из окружения (.env уже подгружен). Пусто → None: вызывающий код печатает
+    подсказку и выходит с EXIT_IO, вместо того чтобы тихо уехать в /var/lib/messenger.
+    """
+    value = (os.environ.get(name) or "").strip()
+    return value or None
+
+
+DATA_DIR = required_dir("DATA_DIR")
+BACKUP_DIR = required_dir("BACKUP_DIR")
 
 
 def log(message: str) -> None:
@@ -118,6 +146,22 @@ def main(argv: list[str]) -> int:
             return EXIT_INTEGRITY
         log("Копия целая, восстановление возможно")
         return EXIT_OK
+
+    # Micro update-env: без явных путей бэкап не начинаем. Молчаливый дефолт
+    # /var/lib/messenger/* маскировал настоящую причину («.env не прочитан»)
+    # и выглядел как «база не найдена».
+    missing = [name for name, value in (("DATA_DIR", DATA_DIR), ("BACKUP_DIR", BACKUP_DIR))
+               if not value]
+    if missing:
+        env_file = Path(__file__).resolve().parents[1] / ".env"
+        log(f"ERROR: не задан{'ы' if len(missing) > 1 else ''} {', '.join(missing)}")
+        log(f"       задай переменные окружения или пропиши их в {env_file}, например:")
+        log("         DATA_DIR=/home/vibebunker/vibe_mes/data")
+        log("         BACKUP_DIR=/home/vibebunker/backups")
+        log("       разовый запуск: DATA_DIR=... BACKUP_DIR=... python3 scripts/backup.py")
+        log(f"       или: cd {env_file.parent} && set -a && . ./.env && set +a && "
+            f".venv/bin/python scripts/backup.py")
+        return EXIT_IO
 
     data_dir = Path(DATA_DIR)
     backup_dir = Path(BACKUP_DIR)
