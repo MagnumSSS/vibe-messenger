@@ -9,7 +9,7 @@
     <link rel="manifest" href="/static/manifest.webmanifest">
     <link rel="apple-touch-icon" href="/static/icon-192.png">
     <meta name="mobile-web-app-capable" content="yes">
-    <link rel="stylesheet" href="/static/style.css?v=7.9">
+    <link rel="stylesheet" href="/static/style.css?v=7.9b">
     <script>
       if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => {});
@@ -298,6 +298,10 @@
             </div>
         </aside>
 
+        <!-- Phase 7.9b [2]: подложка под свой профиль. На мобиле профиль — лист во весь
+             экран, и тап мимо него должен закрывать окно; на десктопе подложка не видна. -->
+        <div class="profile-drawer-backdrop" id="profileDrawerBackdrop" hidden></div>
+
         <!-- Profile Drawer (Phase 7.1a) — same style as theme drawer, slides from right -->
         <aside class="theme-drawer profile-drawer" id="profileDrawer">
             <div class="theme-drawer-header">
@@ -444,11 +448,16 @@
     </div>
 
     <!-- Image Modal -->
+    <!-- Phase 7.9b [4]: кнопки живут в ОДНОМ ряду над картинкой (и на ПК, и на мобиле).
+         Раньше «скачать» абсолютно позиционировалась под картинкой и на телефоне
+         уезжала за нижнюю кромку экрана. -->
     <div class="modal" id="imageModal">
         <div class="modal-content">
-            <button type="button" class="island-close modal-close" id="modalClose" title="Закрыть" aria-label="Закрыть"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg></button>
+            <div class="modal-toolbar">
+                <a class="modal-download" id="modalDownload" download>Скачать</a>
+                <button type="button" class="island-close modal-close" id="modalClose" title="Закрыть" aria-label="Закрыть"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg></button>
+            </div>
             <img class="modal-img" id="modalImg" src="" alt="">
-            <a class="modal-download" id="modalDownload" download>Download</a>
         </div>
     </div>
     
@@ -672,6 +681,22 @@
         
         // Profile modal elements
         const profileDrawer = document.getElementById('profileDrawer');
+        const profileDrawerBackdrop = document.getElementById('profileDrawerBackdrop');
+
+        // Phase 7.9b [2]: единственная пара функций открытия/закрытия своего профиля.
+        // Раньше 'open' навешивали и снимали в пяти местах вразнобой, из-за чего
+        // подложку и блокировку скролла было некуда повесить.
+        function openProfileDrawer() {
+            profileDrawer.classList.add('open');
+            if (profileDrawerBackdrop) profileDrawerBackdrop.hidden = false;
+            document.body.classList.add('profile-sheet-open');   // фон не скроллится
+        }
+
+        function closeProfileDrawer() {
+            profileDrawer.classList.remove('open');
+            if (profileDrawerBackdrop) profileDrawerBackdrop.hidden = true;
+            document.body.classList.remove('profile-sheet-open');
+        }
         const profileBtn = document.getElementById('profileBtn');
         const profileAvatarPreview = document.getElementById('profileAvatarPreview');
         const avatarInput = document.getElementById('avatarInput');
@@ -1637,8 +1662,22 @@
                 profileMode = 'self';   // Phase 7.6d-fix: ящик по умолчанию про меня
                 profileDrawer.classList.remove('profile-channel-mode');
                 await loadProfile();
-                profileDrawer.classList.add('open');
+                openProfileDrawer();
                 deleteAccountConfirm.value = '';
+            });
+
+            // Phase 7.9b [2]: закрытие своего профиля — тап по подложке и Esc
+            // (крестик в шапке слушается ниже). Пока лист открыт, страница под ним
+            // не скроллится: класс на <body> вешает overflow:hidden.
+            profileDrawerBackdrop.addEventListener('click', () => {
+                closeProfileDrawer();
+                exitChannelEditMode();
+            });
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape' && profileDrawer.classList.contains('open')) {
+                    closeProfileDrawer();
+                    exitChannelEditMode();
+                }
             });
             
             // Open/close theme drawer (toggle, state not persisted)
@@ -1655,7 +1694,7 @@
             });
 
             document.getElementById('profileDrawerClose').addEventListener('click', () => {
-                profileDrawer.classList.remove('open');
+                closeProfileDrawer();
                 // Phase 7.6d: выходим из режима оформления канала — ящик снова про свой профиль
                 exitChannelEditMode();
             });
@@ -1755,7 +1794,7 @@
                 try {
                     const res = await fetch(saveUrl, { method: 'POST', body: formData });
                     if (res.ok) {
-                        profileDrawer.classList.remove('open');
+                        closeProfileDrawer();
                         location.reload(); // Reload to update header
                     } else {
                         alert('Failed to save profile');
@@ -1891,7 +1930,7 @@
             // Delete account
             deleteAccountBtn.addEventListener('click', () => {
                 confirmUsernameDisplay.textContent = '@' + currentUsername;
-                profileDrawer.classList.remove('open');
+                closeProfileDrawer();
                 deleteAccountModal.classList.add('active');
                 deleteAccountConfirm.value = '';
             });
@@ -3934,24 +3973,27 @@
             return s;
         }
 
-        // ===== Phase 7.6d-fix: разбор дат =====
-        // SQLite отдаёт 'YYYY-MM-DD HH:MM:SS'; new Date() на такой строке в части
-        // браузеров возвращает Invalid Date. Разбираем по компонентам, локальное время.
-        function parseTs(timestamp) {
-            if (!timestamp && timestamp !== 0) return null;
-            if (timestamp instanceof Date) return isNaN(timestamp.getTime()) ? null : timestamp;
-            const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/.exec(String(timestamp));
+        // ===== Phase 7.9b [1]: разбор времени — ОДНА функция на всё приложение =====
+        // Сервер хранит и отдаёт время в UTC строкой 'YYYY-MM-DD HH:MM:SS[.f]'
+        // (так пишет и CURRENT_TIMESTAMP, и utc_stamp()). Строка без зоны — это UTC,
+        // поэтому дописываем 'Z': дальше браузер сам покажет время в своей зоне.
+        // Раньше такая строка разбиралась как ЛОКАЛЬНАЯ — отсюда «сообщения из будущего»
+        // и неверный last_seen у всех, кто не в зоне сервера.
+        function parseUTC(ts) {
+            if (!ts && ts !== 0) return null;
+            if (ts instanceof Date) return isNaN(ts.getTime()) ? null : ts;
+            const raw = String(ts).trim();
             let d;
-            if (m) {
-                d = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0));
+            if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?(\.\d+)?$/.test(raw)) {
+                d = new Date(raw.replace(' ', 'T') + 'Z');       // без зоны → это UTC
             } else {
-                d = new Date(timestamp);
+                d = new Date(raw);                                // ISO со смещением/«Z»
             }
             return isNaN(d.getTime()) ? null : d;
         }
         
         function formatTime(timestamp) {
-            const d = parseTs(timestamp);
+            const d = parseUTC(timestamp);
             if (!d) return '';           // нет валидного ts — пузырь просто без часов
             return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         }
@@ -4083,7 +4125,7 @@
         const presenceMap = {};   // { user_id: { online: bool, last_seen: 'YYYY-MM-DD HH:MM:SS' } }
 
         function formatLastSeen(ts) {
-            const d = parseTs(ts);
+            const d = parseUTC(ts);
             if (!d) return '';
             const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
             const now = new Date();
@@ -4187,7 +4229,7 @@
 
         // ===== Phase 7.3: date separator =====
         function formatDateSep(dateStr) {
-            const d = parseTs(dateStr);
+            const d = parseUTC(dateStr);
             if (!d) return '';
             const now = new Date();
             const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -4199,7 +4241,7 @@
         }
 
         function getDateKey(dateStr) {
-            const d = parseTs(dateStr);
+            const d = parseUTC(dateStr);
             if (!d) return '';           // нет валидного ts — разделитель не создаём
             return d.getFullYear() + '-' +
                    String(d.getMonth() + 1).padStart(2, '0') + '-' +
@@ -4676,7 +4718,7 @@
                 profileMode = 'channel';
                 profileDrawer.classList.add('profile-channel-mode');
                 await loadProfile();
-                profileDrawer.classList.add('open');
+                openProfileDrawer();
             });
         }
 

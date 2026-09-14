@@ -425,7 +425,7 @@
                 const data = await res.json();
                 
                 if (data.auto_banned) {
-                    alert(`User warned and auto-banned until ${new Date(data.banned_until).toLocaleDateString()}`);
+                    alert(`User warned and auto-banned until ${(parseUTC(data.banned_until) || new Date()).toLocaleString()}`);
                 } else {
                     alert(`Warning issued (${data.warn_count}/3)`);
                 }
@@ -597,7 +597,7 @@
             const keep = PULSE_FILTERS[pulseFilter] || PULSE_FILTERS.all;
             const tbody = document.getElementById('pulseTable');
             tbody.innerHTML = pulseCache.filter(keep).map(r => `<tr class="pulse-row-${escapeHtml(r.kind)}">
-                <td style="white-space:nowrap">${escapeHtml(r.ts)}</td>
+                <td style="white-space:nowrap">${escapeHtml(pulseTime(r.ts))}</td>
                 <td><span class="pulse-kind pulse-kind-${escapeHtml(r.kind)}">${escapeHtml(r.kind)}</span></td>
                 <td>${escapeHtml(r.detail)}</td>
             </tr>`).join('');
@@ -617,10 +617,33 @@
             if (m > 0) return m + ' мин';
             return Math.round(seconds) + ' с';
         }
+        // Phase 7.9b [1]: сервер отдаёт время в UTC. Строка без указания зоны
+        // ('YYYY-MM-DD HH:MM:SS') — это UTC, дописываем 'Z', иначе браузер счёл бы
+        // её локальной и лента пульса «уезжала» на разницу часовых поясов.
+        function parseUTC(ts) {
+            if (!ts && ts !== 0) return null;
+            if (ts instanceof Date) return isNaN(ts.getTime()) ? null : ts;
+            const raw = String(ts).trim();
+            let d;
+            if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?(\.\d+)?$/.test(raw)) {
+                d = new Date(raw.replace(' ', 'T') + 'Z');
+            } else {
+                d = new Date(raw);
+            }
+            return isNaN(d.getTime()) ? null : d;
+        }
+
         function humanTime(iso) {
             if (!iso) return 'нет данных';
-            const d = new Date(iso);
-            return isNaN(d.getTime()) ? iso : d.toLocaleString();
+            const d = parseUTC(iso);
+            return d ? d.toLocaleString() : iso;
+        }
+
+        // время события в ленте пульса — часы:минуты:секунды в зоне браузера
+        function pulseTime(ts) {
+            const d = parseUTC(ts);
+            if (!d) return String(ts || '');
+            return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         }
 
         // Phase R4: карточки метрик

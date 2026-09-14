@@ -38,7 +38,7 @@ import sys
 import tempfile
 import time
 import urllib.error
-from datetime import datetime
+from datetime import datetime, timezone
 import urllib.parse
 import urllib.request
 import uuid
@@ -306,6 +306,10 @@ def start_server(data_dir: str) -> subprocess.Popen:
         SESSION_SAME_SITE="lax",
         SESSION_SECURE="0",
         FRAME_OPTIONS="deny",
+        # Phase 7.9b [1]: сервер намеренно живёт в НЕ-UTC зоне (+07). Если хоть одна
+        # запись времени снова уйдёт через naive datetime.now(), она разъедется с
+        # CURRENT_TIMESTAMP на 7 часов — это ловит сценарий gg.
+        TZ="Asia/Novosibirsk",
     )
     proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "main:app",
@@ -1370,6 +1374,75 @@ async def run_scenarios(report: Report, data_dir: str) -> None:
         assert any("channel_message_delete" in str(e.get("detail", "")) for e in admin_events), \
             f"удаление объявления админом не попало в admin-ленту пульса: {admin_events[:5]}"
     await report.step("ff", "канал: админ-не-creator правит и удаляет объявление, обычный юзер → 403", scenario_ff)
+
+    # Phase 7.9b [1]: ВРЕМЯ. Сервер запущен в зоне +07 (см. start_server). Всё, что
+    # он кладёт в БД и отдаёт клиенту, обязано быть в UTC: иначе пузыри «из будущего»
+    # на 7 часов и неверный «был(а) в сети». Порог 5 минут — с запасом на медленный
+    # прогон, но втрое меньше любого сдвига часового пояса.
+    def scenario_gg():
+        skew_limit = 300.0
+
+        def as_utc(raw, label):
+            assert raw, f"{label}: пустая метка времени"
+            text = str(raw).strip().replace("Z", "+00:00")
+            parsed = datetime.fromisoformat(text)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+
+        def skew(raw, label):
+            delta = abs((as_utc(raw, label) - datetime.now(timezone.utc)).total_seconds())
+            assert delta <= skew_limit, (
+                f"{label}: метка {raw!r} разъехалась с UTC на {delta:.0f}s "
+                f"(> {skew_limit:.0f}s) — время пишется в локальной зоне сервера, не в UTC"
+            )
+            return delta
+
+        # created_at нового сообщения
+        sent = alice.json("/api/send", data={"recipient_id": state["b_id"], "text": "сверка часов"})
+        mid = sent["id"]
+        history = dialog_history(alice, state["b_id"])
+        row = next((m for m in history if m["id"] == mid), None)
+        assert row is not None, "сообщение для сверки часов не найдено в истории"
+        skew(row["created_at"], "created_at сообщения")
+
+        # edited_at правки
+        edited = alice.json(f"/api/messages/{mid}/edit", data={"text": "сверка часов (правка)"})
+        skew(edited["edited_at"], "edited_at правки")
+
+        # created_at объявления в канале: этот путь пишет время сам (не CURRENT_TIMESTAMP)
+        posted = alice.json("/api/send", data={"channel": 1, "text": "сверка часов в канале"})
+        skew(posted["created_at"], "created_at объявления канала")
+        feed = alice.json("/api/channel/messages", method="GET")
+        chan_row = next((m for m in feed["messages"] if m["id"] == posted["id"]), None)
+        assert chan_row is not None, "объявление для сверки часов не найдено в ленте канала"
+        skew(chan_row["created_at"], "created_at объявления в ленте")
+        alice.json("/api/delete-message", data={"message_id": posted["id"], "mode": "all"})
+
+        # last_seen в /api/users
+        users = alice.json("/api/users", method="GET")
+        seen = [u for u in users if u.get("last_seen")]
+        for user in seen[:3]:
+            skew(user["last_seen"], f"last_seen @{user.get('username')}")
+
+        # лента пульса отдаёт полную UTC-метку, а не голое HH:MM:SS локальной зоны
+        pulse = alice.json("/api/admin/pulse", method="GET")
+        events = pulse.get("events") or []
+        assert events, "пульс пуст — нечем проверить формат времени"
+        latest = events[-1]["ts"]
+        assert re.match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$", str(latest)), \
+            f"пульс отдаёт время не в формате UTC-метки: {latest!r}"
+        skew(latest, "ts события пульса")
+
+        # и клиент разбирает всё это ОДНОЙ функцией parseUTC (никакого старого parseTs)
+        chat_html = (REPO_ROOT / "templates" / "chat.html").read_text(encoding="utf-8")
+        assert "function parseUTC(" in chat_html, "в chat.html нет функции parseUTC"
+        assert "'T') + 'Z'" in chat_html or '"T") + "Z"' in chat_html, \
+            "parseUTC не дописывает 'Z' — строка из БД снова читается как локальное время"
+        assert "parseTs(" not in chat_html, "в chat.html остались вызовы старого parseTs"
+        admin_html = (REPO_ROOT / "templates" / "admin.html").read_text(encoding="utf-8")
+        assert "function parseUTC(" in admin_html, "в admin.html нет parseUTC — пульс покажет чужое время"
+    await report.step("gg", "время: сервер в зоне +07 пишет UTC, клиент разбирает через parseUTC", scenario_gg)
 
     # ---------------- закрытие WS ----------------
     for ws in (state.get("ws_a"), state.get("ws_b")):

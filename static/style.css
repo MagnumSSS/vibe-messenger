@@ -1092,41 +1092,54 @@ header h1 {
 
 .modal.active { display: flex; }
 
-.modal-content { 
-    position: relative; 
-    max-width: 90%; 
-    max-height: 90%; 
+/* Phase 7.9b [4]: просмотр картинки — колонка «ряд кнопок сверху, картинка под ним».
+   Обе кнопки в потоке (никакого position:absolute с отрицательными отступами),
+   поэтому на узком экране ничего не уезжает за кромку. */
+.modal-content {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.6rem;
+    max-width: 90%;
+    max-height: 90%;
 }
 
-.modal-img { 
-    max-width: 100%; 
-    max-height: 90vh; 
-    border-radius: 8px; 
+.modal-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.6rem;
+    width: 100%;
+    flex-shrink: 0;
 }
 
-.modal-close { 
-    position: absolute; 
-    top: -40px; 
-    right: 0; 
-    background: none; 
-    border: none; 
-    color: white; 
-    font-size: 2rem; 
-    cursor: pointer; 
+.modal-img {
+    max-width: 100%;
+    max-height: 80vh;
+    max-height: 80dvh;
+    object-fit: contain;
+    border-radius: 8px;
 }
 
-.modal-download { 
-    position: absolute; 
-    bottom: -40px; 
-    right: 0; 
-    background: var(--primary-color); 
-    color: white; 
-    border: none; 
-    padding: 0.5rem 1rem; 
-    border-radius: 4px; 
-    cursor: pointer; 
-    text-decoration: none; 
-    font-size: 0.9rem; 
+.modal-close {
+    position: static;
+    background: none;
+    border: none;
+    color: white;
+    cursor: pointer;
+}
+
+.modal-download {
+    position: static;
+    background: var(--primary-color);
+    color: white;
+    border: none;
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    cursor: pointer;
+    text-decoration: none;
+    font-size: 0.9rem;
 }
 
 /* Search highlight */
@@ -2586,7 +2599,12 @@ header h1 {
 }
 
 /* Phase 7.4a-fix2: hide old cmd-chips row and emoji popup globally (replaced by accessory island) */
-.cmd-chips, .chips-container { display: none !important; }
+.cmd-chips { display: none !important; }
+/* Phase 7.9b [3]: .chips-container ВЫВЕДЕН из этого правила. Ряд чипов вложений —
+   живой элемент, его показывает JS (style.display = 'flex'); правило с !important
+   било инлайновый стиль, и после выбора файлов чипы не появлялись нигде, в том числе
+   на мобиле. Пустой ряд прячется сам, высоты над полем ввода не занимает. */
+.chips-container:empty { display: none !important; }
 .emoji-grid { display: none !important; }
 
 /* Phase 5.3: mobile - two-panel layout + responsive islands */
@@ -3226,10 +3244,11 @@ header h1 {
     text-align: center;
 }
 
-/* модалка картинки: кнопка живёт сверху над контентом */
+/* Phase 7.9b [4]: крестик картинки — обычный элемент ряда .modal-toolbar,
+   абсолютное позиционирование .island-close для него отменяется. */
 .island-close.modal-close {
-    top: -40px;
-    right: 0;
+    position: static;
+    flex-shrink: 0;
 }
 
 /* ---- тумблеры темы в редакторе (7.8-fix2 [3]: чистая пилюля, без рамок) ---- */
@@ -3353,5 +3372,155 @@ header h1 {
     .chat-del-confirm {
         width: min(320px, calc(100% - 32px));
         padding: 1.1rem 1rem 1rem;
+    }
+}
+
+/* =====================================================================
+   Phase 7.9b — фикс-пак: профиль-лист на мобиле, баннер, чипы вложений
+   ===================================================================== */
+
+/* ---- [5] Баннер профиля: остров обрезает картинку, скроллбара нет ----
+   Общее правило * { overflow-x: hidden } из мобильного блока не спасало:
+   .profile-banner-img на 100% ширины внутри острова с padding давал
+   горизонтальную полосу прокрутки в пузыре профиля. Теперь картинка лежит
+   абсолютом внутри обрезающего острова и просто кадрируется. */
+.profile-banner-area {
+    overflow: hidden;
+    flex-shrink: 0;
+}
+
+.profile-banner-area .profile-banner-img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+/* ---- [2] Свой профиль на мобиле: лист во весь экран ---- */
+.profile-drawer-backdrop {
+    display: none;
+}
+
+@media (max-width: 768px) {
+    .profile-drawer-backdrop {
+        display: block;
+        position: fixed;
+        inset: 0;
+        z-index: 1090;            /* под листом (1100), над всем остальным */
+        background: var(--overlay-bg, rgba(0, 0, 0, 0.5));
+    }
+    .profile-drawer-backdrop[hidden] { display: none; }
+
+    /* перекрывает «пузырь» из блока 7.8-fix3/7.9 выше по файлу */
+    .profile-drawer,
+    .profile-drawer.open {
+        position: fixed;
+        inset: 0;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        width: 100% !important;
+        max-width: 100%;
+        height: 100dvh;
+        max-height: 100dvh;
+        margin: 0;
+        transform: none;
+        border-radius: 0;
+        box-shadow: none;
+        z-index: 1100;
+        overflow: hidden;          /* скроллится тело, не сам лист */
+    }
+    .profile-drawer.open {
+        display: flex;
+        flex-direction: column;
+    }
+
+    /* шапка листа фиксирована, тело — единственная скроллируемая область */
+    .profile-drawer .theme-drawer-header {
+        position: relative;
+        flex-shrink: 0;
+        padding-top: calc(env(safe-area-inset-top, 0px) + 0.75rem);
+    }
+    .profile-drawer .theme-drawer-body {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 1rem);
+    }
+
+    /* крестик — тач-цель 44×44 по рекомендации мобильных гайдлайнов */
+    .profile-drawer .theme-drawer-header .island-close {
+        width: 44px;
+        height: 44px;
+        top: 50%;
+        right: 10px;
+        transform: translateY(-50%);
+    }
+    .profile-drawer .theme-drawer-header .island-close svg {
+        width: 20px;
+        height: 20px;
+    }
+
+    /* пока лист открыт — фон под ним не скроллится */
+    body.profile-sheet-open {
+        overflow: hidden;
+        touch-action: none;
+    }
+
+    /* ---- [3] Чипы вложений над полем ввода ---- */
+    .chips-container {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        gap: 0.4rem;
+        padding: 0 2px 4px;
+        margin-bottom: 0.35rem;
+    }
+    .chip.attach-chip {
+        max-width: min(78vw, 240px);
+    }
+    /* превью крупнее пальца: 44px в диапазоне 40–48 из требований */
+    .chip.attach-chip .chip-preview {
+        width: 44px;
+        height: 44px;
+    }
+    .chip.attach-chip .chip-remove {
+        width: 28px;
+        height: 28px;
+    }
+
+    /* ---- [4] Просмотр картинки: центр экрана, кнопки сверху ---- */
+    #imageModal {
+        align-items: center;
+        justify-content: center;
+        padding: calc(env(safe-area-inset-top, 0px) + 10px) 10px
+                 calc(env(safe-area-inset-bottom, 0px) + 10px);
+    }
+    #imageModal .modal-content {
+        width: auto;
+        max-width: 92vw;
+        max-height: 100%;
+        border-radius: 0;
+        justify-content: center;
+    }
+    #imageModal .modal-img {
+        max-width: 92vw;
+        max-height: 70dvh;
+        object-fit: contain;
+    }
+    #imageModal .modal-toolbar {
+        justify-content: center;
+    }
+    #imageModal .modal-download {
+        min-height: 44px;
+        display: inline-flex;
+        align-items: center;
+    }
+    #imageModal .island-close.modal-close {
+        width: 44px;
+        height: 44px;
     }
 }

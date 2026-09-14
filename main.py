@@ -170,6 +170,42 @@ elif len(SECRET_KEY) < 32:
 else:
     app_logger.info("dev-режим: SECRET_KEY задан (%d символов)", len(SECRET_KEY))
 
+# ========== Phase 7.9b [1]: ВРЕМЯ — единый источник правды ==========
+# В БД всё хранится в UTC и в формате 'YYYY-MM-DD HH:MM:SS' (без суффикса зоны) —
+# ровно так пишет SQLite'овский CURRENT_TIMESTAMP, который уже UTC. Раньше часть
+# записей шла через datetime.now() (локальная зона сервера), и одна и та же лента
+# смешивала два часовых пояса: пузыри «из будущего», кривой last_seen, баны не той
+# длины. Теперь любое время, попадающее в БД или сравниваемое со значением из БД,
+# проходит через эти три функции.
+
+def utc_now() -> datetime:
+    """Текущий момент как aware-datetime в UTC."""
+    return datetime.now(timezone.utc)
+
+
+def utc_stamp(moment: datetime | None = None) -> str:
+    """UTC-метка в формате БД: 'YYYY-MM-DD HH:MM:SS' (naive-представление UTC)."""
+    return (moment or utc_now()).astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def parse_db_time(value) -> datetime | None:
+    """
+    Значение из БД → aware-datetime в UTC.
+    Строки без зоны считаются UTC (так их пишет и CURRENT_TIMESTAMP, и utc_stamp);
+    строки со смещением/«Z» приводятся к UTC. Мусор → None.
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    text = str(value).strip().replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed.astimezone(timezone.utc) if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
 # uptime считается от момента импорта приложения
 START_TIME = time.monotonic()
 # результат стартовой проверки целостности (для /api/admin/pulse)
@@ -745,8 +781,15 @@ _ws_logger = logging.getLogger("messenger.pulse.ws")
 
 
 def _pulse_emit(kind: str, detail: str):
-    ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-    _pulse_buffer.append({"ts": ts, "kind": kind, "detail": detail})
+    # Phase 7.9b [1]: в ленту кладём ПОЛНУЮ UTC-метку — админка сама переводит её
+    # в зону браузера (раньше было голое локальное HH:MM:SS сервера, непереводимое).
+    moment = utc_now()
+    _pulse_buffer.append({
+        "ts": utc_stamp(moment),
+        "ts_ms": moment.strftime("%H:%M:%S.%f")[:-3],   # миллисекунды для отладки
+        "kind": kind,
+        "detail": detail,
+    })
 
 
 # Phase 7.9 [7]: отказы безопасности идут в ленту пульса отдельными типами.
@@ -799,8 +842,9 @@ def pulse_admin_events(limit: int = 100) -> list:
         return []
     events = []
     for row in rows:
-        created = str(row["created_at"] or "")
-        ts = created[11:19] if len(created) >= 19 else created
+        # Phase 7.9b [1]: отдаём полную UTC-метку, формат времени — забота клиента
+        moment = parse_db_time(row["created_at"])
+        ts = utc_stamp(moment) if moment else str(row["created_at"] or "")
         target = f" → @{row['target']}" if row["target"] else ""
         detail = f" ({row['detail']})" if row["detail"] else ""
         events.append({
@@ -1523,7 +1567,7 @@ def init_db() -> None:
         if not ok:
             error_logger.error("integrity_check провален: %s", detail)
         LAST_INTEGRITY.update(
-            ok=ok, detail=detail, ts=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ok=ok, detail=detail, ts=utc_stamp()
         )
         _pulse_emit("integrity", f"{'ok' if ok else 'FAIL'}: {detail}")
 
@@ -2146,7 +2190,7 @@ async def post_channel_message(request: Request, user, text: str) -> JSONRespons
     if len(text) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=400, detail="Message too long")
 
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = utc_stamp()          # Phase 7.9b [1]: в БД — UTC
     with get_db() as conn:
         cur = conn.execute(
             "INSERT INTO messages (sender_id, recipient_id, text, group_id, reply_to_id, "
@@ -2435,7 +2479,7 @@ async def mark_read(request: Request):
     peer_id = body.get("id")
     if peer_id is None:
         raise HTTPException(status_code=400, detail="Missing id")
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = utc_stamp()          # Phase 7.9b [1]
     with get_db() as conn:
         conn.execute(
             "INSERT INTO reads (user_id, peer_type, peer_id, last_read_at) VALUES (?, ?, ?, ?) "
@@ -2800,8 +2844,8 @@ _presence_task = None
 
 
 def touch_last_seen(user_id: int) -> str:
-    """Обновить last_seen пользователя, вернуть новую метку (YYYY-MM-DD HH:MM:SS)."""
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    """Обновить last_seen пользователя, вернуть новую метку (UTC, YYYY-MM-DD HH:MM:SS)."""
+    now = utc_stamp()          # Phase 7.9b [1]: last_seen — UTC, клиент сам переводит в свою зону
     try:
         with get_db() as conn:
             conn.execute("UPDATE users SET last_seen = ? WHERE id = ?", (now, user_id))
@@ -2869,7 +2913,7 @@ async def presence_heartbeat() -> None:
     while True:
         await asyncio.sleep(PRESENCE_HEARTBEAT_SECONDS)
         try:
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            now = utc_stamp()  # Phase 7.9b [1]
             with get_db() as conn:
                 for uid in list(app.state.connections.keys()):
                     conn.execute("UPDATE users SET last_seen = ? WHERE id = ?", (now, uid))
@@ -2980,7 +3024,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 peer_type = data.get("peer_type", "user")
                 peer_id = data.get("peer_id")
                 if peer_id:
-                    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    now = utc_stamp()      # Phase 7.9b [1]
                     with get_db() as conn:
                         conn.execute(
                             "INSERT INTO reads (user_id, peer_type, peer_id, last_read_at) VALUES (?, ?, ?, ?) "
@@ -3265,8 +3309,8 @@ async def send_message(
             recipient_row = conn.execute("SELECT banned_until FROM users WHERE id = ?", (recipient_id,)).fetchone()
             if recipient_row and recipient_row[0]:
                 try:
-                    banned_until = datetime.fromisoformat(recipient_row[0].replace("Z", "+00:00").replace("+00:00", ""))
-                    if banned_until > datetime.now():
+                    banned_until = parse_db_time(recipient_row[0])   # Phase 7.9b [1]: сравнение в UTC
+                    if banned_until and banned_until > utc_now():
                         raise HTTPException(status_code=403, detail="Пользователь недоступен")
                 except (ValueError, AttributeError):
                     pass
@@ -3522,10 +3566,9 @@ def is_banned(user):
     """Check if user is currently banned"""
     if not user.get("banned_until"):
         return False
-    banned_until = datetime.fromisoformat(user["banned_until"].replace("Z", "+00:00").replace("+00:00", ""))
-    if banned_until > datetime.now():
-        return True
-    return False
+    # Phase 7.9b [1]: обе стороны сравнения — aware-UTC
+    banned_until = parse_db_time(user["banned_until"])
+    return bool(banned_until and banned_until > utc_now())
 
 
 def check_block(sender_id, recipient_id):
@@ -3625,7 +3668,7 @@ async def warn_user(request: Request, target_user_id: int = Form(...), reason: s
         
         # Auto-ban if 3 warnings
         if warn_count >= 3:
-            banned_until = datetime.now() + timedelta(days=7)  # Default 7 day ban
+            banned_until = utc_now() + timedelta(days=7)  # Default 7 day ban (Phase 7.9b [1]: UTC)
             conn.execute("UPDATE users SET banned_until = ? WHERE id = ?", (banned_until.isoformat(), target_user_id))
             conn.commit()
             log_admin_action(user["id"], "warn+auto_ban", target_user_id, f"reason={reason}; banned until {banned_until.strftime('%Y-%m-%d')}")
@@ -3648,7 +3691,7 @@ async def ban_user(request: Request, target_user_id: int = Form(...), days: int 
         if not target:
             raise HTTPException(status_code=404, detail="User not found")
         
-        banned_until = datetime.now() + timedelta(days=days)
+        banned_until = utc_now() + timedelta(days=days)      # Phase 7.9b [1]: UTC
         conn.execute("UPDATE users SET banned_until = ? WHERE id = ?", (banned_until.isoformat(), target_user_id))
         conn.commit()
     
@@ -3944,7 +3987,7 @@ def _code_row(user_id: int, purpose: str, conn) -> sqlite3.Row | None:
 
 def _check_code_rate_limit(user_id: int, purpose: str) -> None:
     """1 код в 60 секунд и не больше CODE_MAX_PER_HOUR в час на пользователя."""
-    now = datetime.now()
+    now = utc_now()            # Phase 7.9b [1]: окна лимитов считаем в UTC
     with get_db() as conn:
         last = conn.execute(
             """
@@ -3955,10 +3998,7 @@ def _check_code_rate_limit(user_id: int, purpose: str) -> None:
             (user_id, purpose),
         ).fetchone()
         if last:
-            try:
-                created = datetime.fromisoformat(str(last["created_at"]).replace("Z", ""))
-            except ValueError:
-                created = None
+            created = parse_db_time(last["created_at"])
             if created:
                 elapsed = (now - created).total_seconds()
                 if elapsed < CODE_RESEND_INTERVAL:
@@ -3972,7 +4012,7 @@ def _check_code_rate_limit(user_id: int, purpose: str) -> None:
                         detail=f"Следующий код можно запросить через {wait} с",
                         headers={"Retry-After": str(wait)},
                     )
-        hour_ago = (now - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+        hour_ago = utc_stamp(now - timedelta(hours=1))
         count = conn.execute(
             "SELECT COUNT(*) AS n FROM email_codes WHERE user_id = ? AND created_at > ?",
             (user_id, hour_ago),
@@ -3988,7 +4028,7 @@ def issue_email_code(user_id: int, purpose: str, to_address: str, target: str | 
         raise HTTPException(status_code=400, detail="Неизвестная цель кода")
     _check_code_rate_limit(user_id, purpose)
     code = _generate_code()
-    now = datetime.now()
+    now = utc_now()            # Phase 7.9b [1]: created_at/expires_at кодов — UTC
     with get_db() as conn:
         # все прошлые коды по этой цели сразу гасим: валиден ровно один, последний
         conn.execute(
@@ -4002,8 +4042,8 @@ def issue_email_code(user_id: int, purpose: str, to_address: str, target: str | 
             """,
             (
                 user_id, purpose, target, _code_hash(code),
-                now.strftime("%Y-%m-%d %H:%M:%S"),
-                (now + timedelta(seconds=CODE_TTL_SECONDS)).strftime("%Y-%m-%d %H:%M:%S"),
+                utc_stamp(now),
+                utc_stamp(now + timedelta(seconds=CODE_TTL_SECONDS)),
             ),
         )
         conn.commit()
@@ -4023,10 +4063,8 @@ def consume_email_code(user_id: int, purpose: str, code: str):
             conn.execute("UPDATE email_codes SET used = 1 WHERE id = ?", (row["id"],))
             conn.commit()
             raise HTTPException(status_code=429, detail="Слишком много неверных попыток, запросите новый код")
-        try:
-            expired = datetime.fromisoformat(str(row["expires_at"])) < datetime.now()
-        except ValueError:
-            expired = True
+        expires = parse_db_time(row["expires_at"])     # Phase 7.9b [1]: сравнение в UTC
+        expired = (expires is None) or (expires < utc_now())
         if expired:
             conn.execute("UPDATE email_codes SET used = 1 WHERE id = ?", (row["id"],))
             conn.commit()
@@ -4703,7 +4741,7 @@ async def edit_message(message_id: int, request: Request, text: str = Form(...))
             raise HTTPException(status_code=403, detail="Only author can edit")
         if not text.strip():
             raise HTTPException(status_code=400, detail="Empty message")
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now = utc_stamp()      # Phase 7.9b [1]: edited_at — UTC
         conn.execute("UPDATE messages SET text = ?, edited_at = ? WHERE id = ?", (text, now, message_id))
         conn.commit()
 
