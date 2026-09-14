@@ -1326,6 +1326,51 @@ async def run_scenarios(report: Report, data_dir: str) -> None:
 
     await report.step("ee", "приватность присутствия: hide_presence скрывает статус взаимно (обе стороны null)", scenario_ee)
 
+    # ---------------- ff) модерация канала: админ правит и удаляет ----------------
+    # Phase 7.9 [9]: писать в канал по-прежнему может только creator, но ПРАВИТЬ и
+    # УДАЛЯТЬ объявления вправе также админ; обычному пользователю — 403 на оба действия.
+    def scenario_ff():
+        eve = state.get("eve")
+        assert eve is not None, "нет админа-не-creator из сценария bb"
+
+        posted = alice.json("/api/send", data={"channel": 1, "text": "ОБЪЯВЛЕНИЕ ДЛЯ МОДЕРАЦИИ"})
+        mid = posted["id"]
+        assert posted.get("is_broadcast") == 1, f"объявление без флага канала: {posted}"
+
+        # обычный пользователь не правит и не удаляет
+        status, raw = bob.request(f"/api/messages/{mid}/edit", data={"text": "правка от чужака"})
+        assert status == 403, f"обычный юзер правит объявление: HTTP {status} (ожидали 403): {raw[:160]!r}"
+        status, raw = bob.request("/api/delete-message", data={"message_id": mid, "mode": "all"})
+        assert status == 403, f"обычный юзер удаляет объявление: HTTP {status} (ожидали 403): {raw[:160]!r}"
+
+        # админ (не creator) правит — и пометка «изменено» проставлена
+        edited = eve.json(f"/api/messages/{mid}/edit", data={"text": "ОБЪЯВЛЕНИЕ ПОПРАВЛЕНО АДМИНОМ"})
+        assert edited.get("ok") is True, f"админ не смог поправить объявление: {edited}"
+        assert edited.get("edited_at"), f"правка без edited_at: {edited}"
+
+        feed = bob.json("/api/channel/messages", method="GET")
+        row = next((m for m in feed["messages"] if m["id"] == mid), None)
+        assert row is not None, f"объявление пропало из ленты после правки: {feed['messages']}"
+        assert row["text"] == "ОБЪЯВЛЕНИЕ ПОПРАВЛЕНО АДМИНОМ", f"правка админа не видна: {row}"
+        assert row.get("edited_at"), f"в ленте нет пометки «изменено»: {row}"
+
+        # админ (не creator) удаляет
+        deleted = eve.json("/api/delete-message", data={"message_id": mid, "mode": "all"})
+        assert deleted.get("deleted") is True, f"админ не удалил объявление: {deleted}"
+        feed = bob.json("/api/channel/messages", method="GET")
+        assert not any(m["id"] == mid for m in feed["messages"]), "объявление осталось в ленте после удаления админом"
+
+        # публиковать админ по-прежнему не может — модератор, но не автор канала
+        status, raw = eve.request("/api/send", data={"channel": 1, "text": "админское объявление"})
+        assert status == 403, f"админ опубликовал в канал: HTTP {status} (ожидали 403): {raw[:160]!r}"
+
+        # удаление админом записано в admin_log → попадает в ленту пульса типом admin
+        pulse = alice.json("/api/admin/pulse", method="GET")
+        admin_events = pulse.get("admin_events") or []
+        assert any("channel_message_delete" in str(e.get("detail", "")) for e in admin_events), \
+            f"удаление объявления админом не попало в admin-ленту пульса: {admin_events[:5]}"
+    await report.step("ff", "канал: админ-не-creator правит и удаляет объявление, обычный юзер → 403", scenario_ff)
+
     # ---------------- закрытие WS ----------------
     for ws in (state.get("ws_a"), state.get("ws_b")):
         if ws is not None:

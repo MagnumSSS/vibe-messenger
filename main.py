@@ -643,6 +643,8 @@ class CSRFMiddleware:
                 body += message.get("body", b"")
                 more_body = message.get("more_body", False)
                 if len(body) > self.BODY_LIMIT:
+                    # Phase 7.9 [7]: слишком большое тело — тоже отказ, видимый в пульсе
+                    _pulse_emit("error", f"413 тело больше лимита: {method} {scope.get('path', '?')}")
                     await self._reject(send, status=413, detail="Payload too large")
                     return
             buffered = body
@@ -653,6 +655,9 @@ class CSRFMiddleware:
                 "CSRF отклонён: %s %s (client=%s)", method, scope.get("path", "?"),
                 (scope.get("client") or ["?"])[0]
             )
+            # Phase 7.9 [7]: CSRF-мидлварь стоит СНАРУЖИ pulse_middleware — его отказ
+            # иначе в ленту не попадал бы вовсе. Пишем сами.
+            _pulse_emit("security", f"CSRF 403: {method} {scope.get('path', '?')}")
             await self._reject(send, status=403, detail="CSRF token missing or invalid")
             return
 
@@ -744,24 +749,78 @@ def _pulse_emit(kind: str, detail: str):
     _pulse_buffer.append({"ts": ts, "kind": kind, "detail": detail})
 
 
+# Phase 7.9 [7]: отказы безопасности идут в ленту пульса отдельными типами.
+# 'security' — запрет по правам/токену/лимиту, 'error' — сбой запроса (аплоад, 5xx).
+SECURITY_STATUSES = {401, 403, 429}
+ERROR_STATUSES = {400, 413, 500, 502, 503}
+
+
+def _pulse_classify(status: int, path: str) -> str:
+    """Тип события ленты по коду ответа: security | error | http."""
+    if status in SECURITY_STATUSES:
+        return "security"
+    if status in ERROR_STATUSES or status >= 500:
+        return "error"
+    return "http"
+
+
 @app.middleware("http")
 async def pulse_middleware(request: Request, call_next):
     start = time.monotonic()
     response = await call_next(request)
     elapsed_ms = round((time.monotonic() - start) * 1000, 1)
     path = request.url.path
-    if path.startswith("/static") or path.startswith("/api/avatar"):
+    status = response.status_code
+    kind = _pulse_classify(status, path)
+    # статику и аватарки в ленту не пишем — но их ОТКАЗЫ (403/404/5xx) видеть надо
+    if kind == "http" and (path.startswith("/static") or path.startswith("/api/avatar")):
         return response
-    _pulse_emit("http", f"{request.method} {path} → {response.status_code} ({elapsed_ms}ms)")
+    _pulse_emit(kind, f"{request.method} {path} → {status} ({elapsed_ms}ms)")
     return response
+
+
+def pulse_admin_events(limit: int = 100) -> list:
+    """
+    Phase 7.9 [7]: действия админа для ленты пульса — читаются из admin_log
+    (секция «Аудит» в админке упразднена, её содержимое живёт здесь типом 'admin').
+    """
+    try:
+        with get_db() as conn:
+            rows = conn.execute("""
+                SELECT a.created_at, u.username AS actor, a.action,
+                       t.username AS target, a.detail
+                FROM admin_log a
+                LEFT JOIN users u ON a.actor_id = u.id
+                LEFT JOIN users t ON a.target_id = t.id
+                ORDER BY a.id DESC
+                LIMIT ?
+            """, (limit,)).fetchall()
+    except sqlite3.DatabaseError:
+        return []
+    events = []
+    for row in rows:
+        created = str(row["created_at"] or "")
+        ts = created[11:19] if len(created) >= 19 else created
+        target = f" → @{row['target']}" if row["target"] else ""
+        detail = f" ({row['detail']})" if row["detail"] else ""
+        events.append({
+            "ts": ts,
+            "kind": "admin",
+            "detail": f"@{row['actor'] or '?'}: {row['action']}{target}{detail}",
+        })
+    return events
 
 
 @app.get("/api/admin/pulse")
 async def get_pulse(request: Request):
-    """События (ring buffer) + метрики состояния (фаза R4)."""
+    """События (ring buffer + admin_log) и метрики состояния (R4 / 7.9)."""
     user = get_current_user(request)
     require_admin(user)
-    return JSONResponse({"events": list(_pulse_buffer), "metrics": pulse_metrics()})
+    return JSONResponse({
+        "events": list(_pulse_buffer),
+        "admin_events": pulse_admin_events(),
+        "metrics": pulse_metrics(),
+    })
 
 
 def pulse_metrics() -> dict:
@@ -965,12 +1024,28 @@ def is_creator_user(user) -> bool:
 
 
 def require_creator(user) -> None:
-    """Писать, править и удалять в канале может только создатель (админы — читатели)."""
+    """Писать и оформлять канал может только создатель (админы — читатели)."""
     if not is_creator_user(user):
         raise HTTPException(
             status_code=403,
             detail="Канал объявлений: писать и оформлять может только создатель",
         )
+
+
+def require_channel_moderator(user) -> None:
+    """
+    Phase 7.9 [9]: МОДЕРАЦИЯ объявлений (правка и удаление) — creator ИЛИ админ.
+    Публикация новых объявлений и оформление канала остаются только у creator
+    (см. require_creator): админ — модератор, но не второй голос канала.
+    """
+    if is_creator_user(user):
+        return
+    if user and user.get("is_admin"):
+        return
+    raise HTTPException(
+        status_code=403,
+        detail="Канал объявлений: править и удалять может создатель или админ",
+    )
 
 
 def normalize_read_peer_type(peer_type: str) -> str:
@@ -3241,6 +3316,8 @@ async def send_message(
             if file.filename:
                 # Phase 7.1b: pre-check file size hint if available
                 if file.size and file.size > effective_max_bytes:
+                    # Phase 7.9 [7]: неудачный аплоад виден в ленте пульса
+                    _pulse_emit("error", f"upload 413: file={file.filename} size={file.size} limit={max_upload_mb}MB")
                     raise HTTPException(status_code=413, detail=f"File '{file.filename}' exceeds {max_upload_mb} MB limit")
 
                 # Generate UUID filename with extension
@@ -3261,6 +3338,7 @@ async def send_message(
                                 break
                             total_bytes += len(chunk)
                             if total_bytes > effective_max_bytes:
+                                _pulse_emit("error", f"upload 413: file={file.filename} size>{effective_max_bytes} limit={max_upload_mb}MB")
                                 raise HTTPException(status_code=413, detail=f"File '{file.filename}' exceeds {max_upload_mb} MB limit")
                             await f.write(chunk)
                             # Phase 7.1b-fix: token-bucket – sleep = budget − elapsed
@@ -4616,14 +4694,15 @@ async def edit_message(message_id: int, request: Request, text: str = Form(...))
         ).fetchone()
         if not msg:
             raise HTTPException(status_code=404, detail="Message not found")
-        if msg["sender_id"] != user["id"]:
+        # Phase 7.9 [9]: объявление канала правит creator ИЛИ админ (остальным 403);
+        # в обычных чатах правка по-прежнему только автору
+        is_broadcast = (msg["peer_type"] or PEER_TYPE_USER) == CHANNEL_PEER_TYPE
+        if is_broadcast:
+            require_channel_moderator(user)
+        elif msg["sender_id"] != user["id"]:
             raise HTTPException(status_code=403, detail="Only author can edit")
         if not text.strip():
             raise HTTPException(status_code=400, detail="Empty message")
-        # Phase 7.6d-fix: объявление канала правит только его автор-создатель
-        is_broadcast = (msg["peer_type"] or PEER_TYPE_USER) == CHANNEL_PEER_TYPE
-        if is_broadcast:
-            require_creator(user)
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("UPDATE messages SET text = ?, edited_at = ? WHERE id = ?", (text, now, message_id))
         conn.commit()
@@ -4671,13 +4750,16 @@ async def delete_message_endpoint(request: Request, message_id: int = Form(...),
         if not msg:
             raise HTTPException(status_code=404, detail="Message not found")
 
-        # Phase 7.6d-fix: объявление канала удаляет только creator
+        # Phase 7.9 [9]: объявление канала удаляет creator ИЛИ админ
         if (msg["peer_type"] or PEER_TYPE_USER) == CHANNEL_PEER_TYPE:
-            require_creator(user)
+            require_channel_moderator(user)
             conn.execute("DELETE FROM attachments WHERE message_id = ?", (message_id,))
             conn.execute("DELETE FROM messages WHERE id = ?", (message_id,))
             conn.commit()
-            app_logger.info("объявление удалено: creator_id=%s message_id=%s", user["id"], message_id)
+            app_logger.info("объявление удалено: actor_id=%s message_id=%s", user["id"], message_id)
+            # Phase 7.9 [9]: удаление объявления админом — действие модерации, в admin_log
+            if not is_creator_user(user):
+                log_admin_action(user["id"], "channel_message_delete", None, f"message_id={message_id}")
             await push_to_all({
                 "type": "message_deleted", "message_id": message_id,
                 "peer_type": CHANNEL_PEER_TYPE, "peer_id": 0,

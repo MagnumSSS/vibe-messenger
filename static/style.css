@@ -627,6 +627,23 @@ header h1 {
 .message.sent,
 .message.received { overflow: hidden; flex-shrink: 0; }
 
+/* ===== Phase 7.9 [3]: лента КАНАЛА живёт по тем же правилам, что и чат =====
+   Объявление — .message.system-announcement, у него нет ни .sent, ни .received,
+   поэтому правило flex-shrink выше его не накрывало: при 20+ объявлениях колонка
+   сжимала пузыри вместо того, чтобы дать контейнеру прокрутку.
+   Тот же щит ставим системным сообщениям, разделителям дат и typing-острову. */
+.messages > .message,
+.message.system-announcement,
+.date-separator {
+    flex-shrink: 0;
+}
+
+/* Phase 7.9 [4]: typing-остров не сплющивается на узком экране */
+.typing-island {
+    flex-shrink: 0;
+    min-height: 0;
+}
+
 .message.sent::before,
 .message.received::before {
     content: "";
@@ -877,10 +894,56 @@ header h1 {
 
 .chip-remove { cursor: pointer; font-weight: bold; }
 
+/* ===== Phase 7.9 [2]: чипы вложений — превью + имя + размер + крестик =====
+   Ряд .chips-container виден сразу после выбора файлов (display:flex ставит JS).
+   Чип не сжимается (правило .chips-container > * { flex-shrink: 0 }), длинное
+   имя обрезается многоточием, крестик — палец-френдли 24px. */
+.chip.attach-chip {
+    max-width: min(70vw, 260px);
+    padding: 0.25rem 0.4rem 0.25rem 0.25rem;
+    border: 1px solid var(--border-color, #dddddd);
+    gap: 0.35rem;
+}
+
+.chip.attach-chip .chip-preview {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    object-fit: cover;
+    flex-shrink: 0;
+    display: block;
+}
+
+.chip.attach-chip .chip-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-primary, #333333);
+}
+
+.chip.attach-chip .chip-remove {
+    width: 24px;
+    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    flex-shrink: 0;
+    font-size: 1rem;
+    line-height: 1;
+    color: var(--btn-danger-bg, #dc3545);
+}
+
+.chip.attach-chip .chip-remove:hover {
+    background: color-mix(in srgb, var(--btn-danger-bg, #dc3545) 18%, transparent);
+}
+
 .input-row { 
     display: flex; 
     gap: 0.5rem; 
-    align-items: center; 
+    /* Phase 7.9 [5]: поле растёт вверх — кнопки держатся у нижнего края */
+    align-items: flex-end;
 }
 
 .input-area input { 
@@ -897,6 +960,49 @@ header h1 {
 
 .input-area input:focus { 
     border-color: var(--accent-color); 
+}
+
+/* ===== Phase 7.9 [5]: поле ввода — textarea с авто-ростом =====
+   Высоту считает autoGrowInput() (scrollHeight, но не выше max-height);
+   при переполнении включается внутренний вертикальный скролл. */
+#messageInput {
+    flex: 1;
+    min-width: 0;
+    box-sizing: border-box;
+    min-height: 46px;
+    height: 46px;
+    max-height: 38vh;
+    max-height: 38dvh;
+    padding: 0.7rem 1rem;
+    border: 1px solid var(--border-color);
+    border-radius: 23px;
+    font-family: inherit;
+    font-size: 1rem;
+    line-height: 1.35;
+    outline: none;
+    background: var(--input-bg);
+    color: var(--input-text, var(--text-primary, #333333));
+    resize: none;
+    overflow-y: hidden;         /* включается в auto из JS, когда упёрлись в max-height */
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-color) transparent;
+}
+
+#messageInput:focus {
+    border-color: var(--accent-color);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-color) 30%, transparent);
+}
+
+#messageInput::placeholder {
+    color: var(--text-secondary, #666666);
+    opacity: 1;
+}
+
+#messageInput::-webkit-scrollbar { width: 6px; }
+#messageInput::-webkit-scrollbar-track { background: transparent; }
+#messageInput::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 3px;
 }
 
 .input-area button { 
@@ -1927,6 +2033,34 @@ header h1 {
 /* swiping: hide action islands so they don't interfere */
 .message.swiping .bubble-actions { opacity: 0 !important; }
 
+/* ===== Phase 7.9 [9]: модерация объявлений канала =====
+   Объявление занимает почти всю ширину ленты — острова снаружи не поместились бы,
+   поэтому они живут ВНУТРИ пузыря, в правом верхнем углу. Видны на hover/тач-tap,
+   рисуются только creator'у и админам (JS их остальным не создаёт). */
+.message.system-announcement .channel-mod-actions {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    left: auto;
+    transform: none;
+}
+
+.message.system-announcement:hover .channel-mod-actions,
+.message.system-announcement:active .channel-mod-actions,
+.message.system-announcement:focus-within .channel-mod-actions {
+    opacity: 1;
+}
+
+@media (hover: none) {
+    /* на тач-устройствах hover не бывает — держим острова видимыми полупрозрачно */
+    .message.system-announcement .channel-mod-actions { opacity: 0.85; }
+}
+
+.message.system-announcement .channel-mod-actions .bubble-action-island {
+    width: 26px;
+    height: 26px;
+}
+
 /* mini-menu island anchored to a bubble - same material recipe as the mention menu */
 .msg-del-menu {
     position: absolute;
@@ -2565,6 +2699,14 @@ header h1 {
         font-size: 16px;
         height: 42px;
     }
+    /* Phase 7.9 [5]: на мобиле 16px — иначе iOS зумит страницу при фокусе */
+    #messageInput {
+        font-size: 16px;
+        min-height: 42px;
+        height: 42px;
+        max-height: 35vh;
+        max-height: 35dvh;
+    }
     .input-area button {
         height: 42px;
         font-size: 16px;
@@ -2620,7 +2762,8 @@ header h1 {
     .modal.active {
         display: flex;
     }
-    .profile-modal-content,
+    /* Phase 7.9 [8]: .profile-modal-content из этого списка УБРАН — профиль больше
+       не лист во весь экран, его геометрию целиком задаёт блок 7.8-fix3/7.9 ниже. */
     .settings-modal-content,
     .delete-modal-content,
     .delete-account-modal-content {
@@ -3109,6 +3252,19 @@ header h1 {
     /* =================================================================
        7.8-fix3: геометрия пузыря профиля на мобиле (свой / чужой / канал)
        ================================================================= */
+    /* Phase 7.9 [8]: оверлей профиля — обычный центрирующий flex + safe-area.
+       Раньше общий мобильный блок ставил .modal { align-items/justify-content: stretch },
+       и модалка прилипала к верхней кромке. */
+    #otherProfileModal,
+    #profileModal {
+        align-items: center;
+        justify-content: center;
+        padding: calc(env(safe-area-inset-top, 0px) + 12px)
+                 calc(env(safe-area-inset-right, 0px) + 12px)
+                 calc(env(safe-area-inset-bottom, 0px) + 12px)
+                 calc(env(safe-area-inset-left, 0px) + 12px);
+    }
+
     .profile-modal-content {
         /* ШИРИНА как на desktop — не узкая колонка по контенту */
         width: min(92vw, 420px);
@@ -3118,11 +3274,13 @@ header h1 {
         max-height: 85vh;
         max-height: 85dvh;
         overflow-y: auto;
+        overflow-x: hidden;
         -webkit-overflow-scrolling: touch;
-        /* ЦЕНТР по обеим осям: оверлей .modal на мобиле стоит
-           align-items/justify-content: stretch — auto-поля перебивают stretch */
+        /* ЦЕНТР по обеим осям: margin:auto работает и при stretch-оверлее,
+           и при центрирующем — поэтому оставлен как страховка */
         margin: auto;
         align-self: center;
+        justify-self: center;
         border-radius: 20px;
         box-shadow: 0 12px 40px var(--shadow-2, rgba(0, 0, 0, 0.3));
         animation: none;

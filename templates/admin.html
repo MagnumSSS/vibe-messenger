@@ -88,10 +88,57 @@
         .pulse-metrics .metric .value.bad { color: #dc3545; }
         .pulse-metrics .metric .value.good { color: #28a745; }
         
+        /* Phase 7.9 [7]: фильтр-чипы ленты пульса */
+        .pulse-filters { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 0.6rem; }
+        .pulse-chip {
+            background: #eef2f7; color: #334; border: 1px solid var(--border-color, #dde3ea);
+            border-radius: 999px; padding: 0.3rem 0.8rem; font-size: 0.82rem; cursor: pointer;
+        }
+        .pulse-chip:hover { filter: brightness(0.96); }
+        .pulse-chip.active { background: #0084ff; color: #fff; border-color: #0084ff; }
+        .pulse-kind {
+            display: inline-block; padding: 0.1rem 0.45rem; border-radius: 999px;
+            font-size: 0.72rem; font-weight: 600; background: #eef2f7; color: #445;
+        }
+        .pulse-kind-admin    { background: #e5f0ff; color: #0b5ed7; }
+        .pulse-kind-security { background: #fff3cd; color: #8a6100; }
+        .pulse-kind-error    { background: #f8d7da; color: #b02a37; }
+        .pulse-row-error td, .pulse-row-security td { background: rgba(220, 53, 69, 0.04); }
+
+        /* Phase 7.9 [6]: таблицы — внутри острова, скролл ГОРИЗОНТАЛЬНЫЙ и только внутри.
+           Секция ничего не выпускает за экран (min-width: 0 снимает авто-минимум грида/флекса). */
+        .section { min-width: 0; overflow: hidden; }
+        .table-scroll {
+            overflow-x: auto;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+            overscroll-behavior-x: contain;
+            max-width: 100%;
+            border-radius: 8px;
+        }
+        .table-scroll table { min-width: 640px; }
+        .table-scroll th, .table-scroll td { white-space: nowrap; }
+        .table-scroll::-webkit-scrollbar { height: 6px; width: 6px; }
+        .table-scroll::-webkit-scrollbar-thumb { background: #cbd3dc; border-radius: 3px; }
+        .table-scroll::-webkit-scrollbar-track { background: transparent; }
+        /* колонка «Детали» пульса может быть длинной — ей разрешаем переносы,
+           но не даём схлопнуться в ноль */
+        #pulseWrap table { min-width: 520px; }
+        #pulseWrap td:last-child { white-space: normal; min-width: 220px; word-break: break-word; }
+        /* список инвайтов — тоже остров со своим скроллом */
+        .invite-list { max-width: 100%; overflow-x: auto; }
+        .invite-item { gap: 0.75rem; }
+        .invite-item code { word-break: break-all; }
+
         @media (max-width: 768px) {
-            .container { padding: 0.5rem; }
+            body { overflow-x: hidden; }
+            .container { padding: 0.5rem; max-width: 100%; }
+            .section { padding: 1rem 0.75rem; }
             table { font-size: 0.85rem; }
             .action-btn { padding: 0.2rem 0.3rem; font-size: 0.75rem; }
+            .table-scroll table { min-width: 560px; }
+            /* Actions: кнопки не рвут строку на три этажа */
+            .table-scroll td:last-child { white-space: nowrap; }
         }
     </style>
 </head>
@@ -141,22 +188,21 @@
             </div>
         </div>
 
-        <!-- Phase 7.1c: Audit Log -->
-        <div class="section">
-            <h2>Аудит</h2>
-            <div style="max-height: 300px; overflow-y: auto;">
-                <table>
-                    <thead><tr><th>Время</th><th>Актор</th><th>Действие</th><th>Цель</th><th>Деталь</th></tr></thead>
-                    <tbody id="auditTable"></tbody>
-                </table>
-            </div>
-        </div>
-        
-        <!-- Phase 7.1c / R4: Pulse -->
+        <!-- Phase 7.9 [7]: секция «Аудит» упразднена — админ-действия читаются из
+             admin_log и живут в ленте пульса типом 'admin' (фильтр-чип «admin»). -->
+
+        <!-- Phase 7.1c / R4 / 7.9: Pulse -->
         <div class="section">
             <h2>Пульс <span id="pulseStatus" style="font-size: 0.75rem; color: #28a745; font-weight: normal;">● live</span></h2>
             <div id="pulseMetrics" class="pulse-metrics"></div>
-            <div style="max-height: 300px; overflow-y: auto;" id="pulseWrap">
+            <!-- Phase 7.9 [7]: фильтр-чипы ленты -->
+            <div class="pulse-filters" id="pulseFilters">
+                <button type="button" class="pulse-chip active" data-filter="all">все</button>
+                <button type="button" class="pulse-chip" data-filter="admin">admin</button>
+                <button type="button" class="pulse-chip" data-filter="errors">ошибки</button>
+                <button type="button" class="pulse-chip" data-filter="http">http</button>
+            </div>
+            <div class="table-scroll" style="max-height: 300px; overflow-y: auto;" id="pulseWrap">
                 <table>
                     <thead><tr><th>Время</th><th>Тип</th><th>Детали</th></tr></thead>
                     <tbody id="pulseTable"></tbody>
@@ -172,6 +218,8 @@
         <!-- Users Table -->
         <div class="section">
             <h2>Users</h2>
+            <!-- Phase 7.9 [6]: таблица внутри острова со СВОИМ горизонтальным скроллом -->
+            <div class="table-scroll">
             <table>
                 <thead>
                     <tr>
@@ -210,6 +258,7 @@
                     {% endfor %}
                 </tbody>
             </table>
+            </div>
         </div>
     </div>
     
@@ -250,17 +299,20 @@
     <script>
         // Phase R6 (CSRF, double-submit): cookie csrftoken → заголовок X-CSRF-Token
         // на каждом изменяющем fetch. Один патч на всю админку.
+        // Phase 7.9 [1]: тот же патч на XMLHttpRequest — чтобы ни один mutating-вызов
+        // не ушёл без токена, каким бы транспортом он ни пользовался.
         (function () {
             function getCookie(name) {
                 const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                 const match = document.cookie.match(new RegExp('(?:^|; )' + escaped + '=([^;]*)'));
                 return match ? decodeURIComponent(match[1]) : '';
             }
-            const originalFetch = window.fetch;
-            window.fetch = function (input, init) {
+            const SAFE = { GET: 1, HEAD: 1, OPTIONS: 1, TRACE: 1 };
+            const originalFetch = typeof window.fetch === 'function' ? window.fetch.bind(window) : null;
+            if (originalFetch) window.fetch = function (input, init) {
                 const options = init || {};
                 const method = String(options.method || (input && input.method) || 'GET').toUpperCase();
-                if (method !== 'GET' && method !== 'HEAD') {
+                if (!SAFE[method]) {
                     const token = getCookie('csrftoken');
                     if (token) {
                         const headers = new Headers(options.headers || (input && input.headers) || {});
@@ -269,6 +321,24 @@
                     }
                 }
                 return originalFetch(input, init);
+            };
+            const xhrOpen = XMLHttpRequest.prototype.open;
+            const xhrSend = XMLHttpRequest.prototype.send;
+            XMLHttpRequest.prototype.open = function (method, url) {
+                this.__vbMethod = String(method || 'GET').toUpperCase();
+                return xhrOpen.apply(this, arguments);
+            };
+            XMLHttpRequest.prototype.send = function (body) {
+                if (!SAFE[this.__vbMethod || 'GET']) {
+                    const token = getCookie('csrftoken');
+                    if (token) {
+                        try { this.setRequestHeader('X-CSRF-Token', token); } catch (e) {}
+                        if (body && typeof FormData !== 'undefined' && body instanceof FormData && !body.has('csrf_token')) {
+                            body.append('csrf_token', token);
+                        }
+                    }
+                }
+                return xhrSend.apply(this, arguments);
             };
         })();
 
@@ -285,7 +355,6 @@
         // Load invites, limits, audit and pulse on page load
         loadInvites();
         loadLimits();
-        loadAudit();
         loadPulse();
         setInterval(loadPulse, 5000);
         
@@ -465,7 +534,7 @@
                 showToast(data.deleted === 0
                     ? 'Сирот нет — удалять нечего'
                     : 'Удалено файлов-сирот: ' + data.deleted);
-                loadAudit();
+                loadPulse();
             } catch (err) {
                 showToast('Ошибка чистки: ' + err);
             } finally {
@@ -503,22 +572,35 @@
             }
         });
 
-        // Phase 7.1c: audit log
-        async function loadAudit() {
-            try {
-                const res = await fetch('/api/admin/audit');
-                const rows = await res.json();
-                const tbody = document.getElementById('auditTable');
-                tbody.innerHTML = rows.map(r => `<tr>
-                    <td style="white-space:nowrap">${escapeHtml(r.created_at || '')}</td>
-                    <td>${r.actor ? '@' + escapeHtml(r.actor) : '-'}</td>
-                    <td>${escapeHtml(r.action)}</td>
-                    <td>${r.target ? '@' + escapeHtml(r.target) : '-'}</td>
-                    <td>${escapeHtml(r.detail || '')}</td>
-                </tr>`).join('');
-            } catch (err) {
-                console.error('Failed to load audit:', err);
-            }
+        // Phase 7.9 [7]: «Аудит» больше не отдельная секция — записи admin_log приходят
+        // в /api/admin/pulse полем admin_events и рисуются в ленте типом 'admin'.
+        let pulseFilter = 'all';
+        let pulseCache = [];
+
+        const PULSE_FILTERS = {
+            all:    () => true,
+            admin:  (row) => row.kind === 'admin',
+            errors: (row) => row.kind === 'error' || row.kind === 'security',
+            http:   (row) => row.kind === 'http',
+        };
+
+        document.getElementById('pulseFilters').addEventListener('click', (e) => {
+            const btn = e.target.closest('.pulse-chip');
+            if (!btn) return;
+            pulseFilter = btn.dataset.filter;
+            document.querySelectorAll('#pulseFilters .pulse-chip')
+                .forEach(el => el.classList.toggle('active', el === btn));
+            renderPulseRows();
+        });
+
+        function renderPulseRows() {
+            const keep = PULSE_FILTERS[pulseFilter] || PULSE_FILTERS.all;
+            const tbody = document.getElementById('pulseTable');
+            tbody.innerHTML = pulseCache.filter(keep).map(r => `<tr class="pulse-row-${escapeHtml(r.kind)}">
+                <td style="white-space:nowrap">${escapeHtml(r.ts)}</td>
+                <td><span class="pulse-kind pulse-kind-${escapeHtml(r.kind)}">${escapeHtml(r.kind)}</span></td>
+                <td>${escapeHtml(r.detail)}</td>
+            </tr>`).join('');
         }
 
         // Phase R4: человеческие единицы для метрик
@@ -579,19 +661,16 @@
             }
         });
 
-        // Phase 7.1c / R4: pulse + метрики
+        // Phase 7.1c / R4 / 7.9: pulse + метрики + админ-действия из admin_log
         async function loadPulse() {
             try {
                 const res = await fetch('/api/admin/pulse');
                 const data = await res.json();
                 renderMetrics(data.metrics);
-                const rows = data.events || [];
-                const tbody = document.getElementById('pulseTable');
-                tbody.innerHTML = rows.slice().reverse().map(r => `<tr>
-                    <td style="white-space:nowrap">${escapeHtml(r.ts)}</td>
-                    <td>${escapeHtml(r.kind)}</td>
-                    <td>${escapeHtml(r.detail)}</td>
-                </tr>`).join('');
+                // ring-buffer (свежие сверху) + записи admin_log (уже DESC по id)
+                pulseCache = (data.events || []).slice().reverse()
+                    .concat(data.admin_events || []);
+                renderPulseRows();
             } catch (err) {
                 console.error('Failed to load pulse:', err);
             }

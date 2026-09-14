@@ -9,7 +9,7 @@
     <link rel="manifest" href="/static/manifest.webmanifest">
     <link rel="apple-touch-icon" href="/static/icon-192.png">
     <meta name="mobile-web-app-capable" content="yes">
-    <link rel="stylesheet" href="/static/style.css?v=7.8c">
+    <link rel="stylesheet" href="/static/style.css?v=7.9">
     <script>
       if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => {});
@@ -18,17 +18,23 @@
     <script>
       // Phase R6 (CSRF, double-submit): значение cookie csrftoken уходит заголовком
       // X-CSRF-Token на каждом изменяющем запросе. Один патч на все fetch в приложении.
+      // Phase 7.9 [1]: то же самое для XMLHttpRequest — аплоады с прогресс-баром идут
+      // через XHR, и без этого патча прод отдавал им 403 «CSRF token missing or invalid».
       (function () {
         function getCookie(name) {
           const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
           const match = document.cookie.match(new RegExp('(?:^|; )' + escaped + '=([^;]*)'));
           return match ? decodeURIComponent(match[1]) : '';
         }
-        const originalFetch = window.fetch;
-        window.fetch = function (input, init) {
+        window.getCsrfToken = function () { return getCookie('csrftoken'); };
+
+        const SAFE = { GET: 1, HEAD: 1, OPTIONS: 1, TRACE: 1 };
+
+        const originalFetch = typeof window.fetch === 'function' ? window.fetch.bind(window) : null;
+        if (originalFetch) window.fetch = function (input, init) {
           const options = init || {};
           const method = String(options.method || (input && input.method) || 'GET').toUpperCase();
-          if (method !== 'GET' && method !== 'HEAD') {
+          if (!SAFE[method]) {
             const token = getCookie('csrftoken');
             if (token) {
               const headers = new Headers(options.headers || (input && input.headers) || {});
@@ -37,6 +43,29 @@
             }
           }
           return originalFetch(input, init);
+        };
+
+        // XHR: метод запоминаем на open, заголовок ставим на send —
+        // в этот момент cookie csrftoken уже точно выдана сервером.
+        const xhrOpen = XMLHttpRequest.prototype.open;
+        const xhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function (method, url) {
+          this.__vbMethod = String(method || 'GET').toUpperCase();
+          return xhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function (body) {
+          if (!SAFE[this.__vbMethod || 'GET']) {
+            const token = getCookie('csrftoken');
+            if (token) {
+              try { this.setRequestHeader('X-CSRF-Token', token); } catch (e) {}
+              // Страховка для multipart: тот же токен полем формы —
+              // сервер принимает и заголовок, и поле csrf_token.
+              if (body && typeof FormData !== 'undefined' && body instanceof FormData && !body.has('csrf_token')) {
+                body.append('csrf_token', token);
+              }
+            }
+          }
+          return xhrSend.apply(this, arguments);
         };
       })();
     </script>
@@ -187,7 +216,9 @@
                     <button type="button" id="attachBtn" class="attach-btn" title="Attach files">📎</button>
                     <button type="button" id="emojiBtn" class="attach-btn" title="Эмодзи">😀</button>
                     <input type="file" id="fileInput" multiple style="display: none;" accept="image/*,*/*">
-                    <input type="text" id="messageInput" placeholder="Type a message..." autocomplete="off">
+                    <!-- Phase 7.9 [5]: textarea вместо input — авто-рост до max-height,
+                         дальше внутренний скролл. Enter по-прежнему отправляет (Shift+Enter — перенос). -->
+                    <textarea id="messageInput" rows="1" placeholder="Type a message..." autocomplete="off"></textarea>
                     <button id="sendBtn" class="send-btn" title="Отправить" aria-label="Отправить">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
                     </button>
@@ -2099,7 +2130,10 @@
         function applyChannelMode(isChannel) {
             if (isChannel === undefined) isChannel = selectedChannel;
             if (!inputRow || !channelNotice || !creatorNotice) return;
-            const readOnly = isChannel && !amCreator;
+            // Phase 7.9 [9]: админ-не-creator писать в канал не может, но правит объявления —
+            // на время правки ему нужно поле ввода, поэтому режим «только чтение» снимается.
+            const moderating = isChannel && !!editCtx && canModerateChannel();
+            const readOnly = isChannel && !amCreator && !moderating;
             inputRow.style.display = readOnly ? 'none' : '';
             channelNotice.style.display = readOnly ? '' : 'none';
             // плашка creator живёт только в пустом канале
@@ -2243,24 +2277,59 @@
         }
         
         // Update chips display
+        // Phase 7.9 [2]: чип = превью (для картинок) + имя + размер + крестик.
+        // Рисуется СРАЗУ после выбора файлов, одинаково на ПК и на мобиле.
+        let chipPreviewUrls = [];
+        function releaseChipPreviews() {
+            chipPreviewUrls.forEach(url => {
+                try { if (URL.revokeObjectURL) URL.revokeObjectURL(url); } catch (e) {}
+            });
+            chipPreviewUrls = [];
+        }
+
         function updateChips() {
+            releaseChipPreviews();
             chipsContainer.innerHTML = '';
             // Phase 6.4: an empty row must not reserve height above the input
             chipsContainer.style.display = attachedFiles.length ? 'flex' : 'none';
             attachedFiles.forEach((file, index) => {
                 const chip = document.createElement('div');
-                chip.className = 'chip';
-                chip.innerHTML = `
-                    <span>${escapeHtml(file.name)} (${formatFileSize(file.size)})</span>
-                    <span class="chip-remove" data-index="${index}">&times;</span>
-                `;
+                chip.className = 'chip attach-chip';
+
+                // превью — необязательная роскошь: если движок не умеет createObjectURL,
+                // чип всё равно рисуется (имя + размер + крестик)
+                if (isImage(file.type) && typeof URL !== 'undefined' && URL.createObjectURL) {
+                    try {
+                        const url = URL.createObjectURL(file);
+                        chipPreviewUrls.push(url);
+                        const img = document.createElement('img');
+                        img.className = 'chip-preview';
+                        img.src = url;
+                        img.alt = file.name;
+                        chip.appendChild(img);
+                    } catch (e) { /* превью не вышло — не беда */ }
+                }
+
+                const label = document.createElement('span');
+                label.className = 'chip-label';
+                label.textContent = `${file.name} (${formatFileSize(file.size)})`;
+                label.title = file.name;
+                chip.appendChild(label);
+
+                const remove = document.createElement('span');
+                remove.className = 'chip-remove';
+                remove.dataset.index = String(index);
+                remove.textContent = '×';
+                remove.title = 'Убрать файл';
+                chip.appendChild(remove);
+
                 chipsContainer.appendChild(chip);
             });
             
             // Add remove handlers
             chipsContainer.querySelectorAll('.chip-remove').forEach(btn => {
                 btn.addEventListener('click', (e) => {
-                    const index = parseInt(e.target.dataset.index);
+                    const index = parseInt(e.currentTarget.dataset.index);
                     attachedFiles.splice(index, 1);
                     updateChips();
                 });
@@ -2919,6 +2988,8 @@
             messageInput.placeholder = 'Type a message...';
             // Phase 7.2-fix: clear editing selection
             document.querySelectorAll('.message.editing-selected').forEach(el => el.classList.remove('editing-selected'));
+            // Phase 7.9 [9]: правка кончилась — канал снова только для чтения (если не creator)
+            if (selectedChannel) applyChannelMode(true);
         }
 
         function startEdit(msg) {
@@ -2930,6 +3001,8 @@
             // Phase 7.2-fix: keep frame on selected message
             const bubble = document.querySelector(`[data-msg-id="${msg.id}"]`);
             if (bubble) bubble.classList.add('editing-selected');
+            // Phase 7.9 [9]: в канале правка открывает поле ввода и админу-не-creator
+            if (selectedChannel) applyChannelMode(true);
             messageInput.focus();
             messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
         }
@@ -3407,7 +3480,61 @@
             // Phase 7.6d: объявления канала не свайпаются и не цитируются
             if (!isSystemMsg) {
                 attachBubbleGestures(div, msg);
+            } else {
+                // Phase 7.9 [9]: модерация канала — creator И админ правят/удаляют объявления
+                attachChannelModeration(div, msg);
             }
+        }
+
+        // ===== Phase 7.9 [9]: острова модерации на объявлении канала =====
+        // Видны только creator'у и админам; остальные видят объявление как есть.
+        function canModerateChannel() {
+            return !!amCreator || currentIsAdmin === 1 || currentIsAdmin === true;
+        }
+
+        function attachChannelModeration(div, msg) {
+            if (!msg.id || !canModerateChannel()) return;
+            div.dataset.msgId = msg.id;
+
+            const tools = document.createElement('div');
+            tools.className = 'bubble-actions bubble-actions-right channel-mod-actions';
+
+            const editBtn = document.createElement('span');
+            editBtn.className = 'bubble-action-island bubble-action-edit';
+            editBtn.title = 'Редактировать объявление';
+            editBtn.innerHTML = GESTURE_ICONS.edit;
+            editBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                startEdit(msg);
+            });
+
+            const delBtn = document.createElement('span');
+            delBtn.className = 'bubble-action-island bubble-action-del';
+            delBtn.title = 'Удалить объявление';
+            delBtn.innerHTML = GESTURE_ICONS.del;
+            delBtn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                if (!confirm('Удалить объявление у всех?')) return;
+                try {
+                    const body = new URLSearchParams({ message_id: msg.id, mode: 'all' }).toString();
+                    const res = await fetch('/api/delete-message', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: body
+                    });
+                    if (res.ok) { div.remove(); applyChannelMode(true); }
+                    else {
+                        const err = await res.json().catch(() => ({}));
+                        showToast(err.detail || 'Не удалось удалить объявление');
+                    }
+                } catch (err) {
+                    showToast('Ошибка сети при удалении объявления');
+                }
+            });
+
+            tools.appendChild(editBtn);
+            tools.appendChild(delBtn);
+            div.appendChild(tools);
         }
         
         // ===== Phase 6.6c: bubble gestures - Pointer Events (mouse + touch) =====
@@ -3420,7 +3547,9 @@
         
         const GESTURE_ICONS = {
             reply: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 6 6v4"/></svg>',
-            del: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>'
+            del: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>',
+            // Phase 7.9 [9]: карандаш для модерации объявлений канала
+            edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>'
         };
         
         function attachBubbleGestures(div, msg) {
@@ -4257,11 +4386,39 @@
         
         // Event listeners for send button (outside DOMContentLoaded since these are critical)
         sendBtn.addEventListener('click', sendMessage);
-        messageInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') sendMessage();
+        // Phase 7.9 [5]: поле стало textarea — Enter отправляет, Shift+Enter переносит строку.
+        // keypress не ловит Enter в textarea предсказуемо на всех платформах → keydown.
+        messageInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+                e.preventDefault();
+                sendMessage();
+            }
         });
         // Phase 7.3: typing indicator
         messageInput.addEventListener('input', sendTyping);
+
+        // Phase 7.9 [5]: авто-рост до max-height (CSS: ~38vh), дальше внутренний скролл
+        function autoGrowInput() {
+            messageInput.style.height = 'auto';
+            const max = parseFloat(getComputedStyle(messageInput).maxHeight) || Infinity;
+            const next = Math.min(messageInput.scrollHeight, max);
+            messageInput.style.height = next + 'px';
+            messageInput.style.overflowY = messageInput.scrollHeight > max ? 'auto' : 'hidden';
+        }
+        messageInput.addEventListener('input', autoGrowInput);
+        // value=... из кода (шаблон объявления, режим правки, очистка) события не шлёт —
+        // перехватываем сеттер и подгоняем высоту сами
+        (function () {
+            const proto = Object.getPrototypeOf(messageInput);
+            const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+            if (!desc || !desc.set) return;
+            Object.defineProperty(messageInput, 'value', {
+                get() { return desc.get.call(this); },
+                set(v) { desc.set.call(this, v); autoGrowInput(); },
+                configurable: true,
+            });
+        })();
+        autoGrowInput();
         
         // ===== Phase 6.4: @mention autocomplete =====
         // Typing "@prefix" (ending at the caret) opens a Liquid Glass island of
