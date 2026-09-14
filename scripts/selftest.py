@@ -58,6 +58,11 @@ WS_URL = f"ws://{HOST}:{PORT}/ws"
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5242880
 SECRET_KEY = "test"
 
+# Micro selftest-prod: сколько сценариев в наборе. Нужно только для честного
+# знаменателя в аварийной строке «SELFTEST: 0/N FAIL», когда до прогона дело не дошло
+# и report.total ещё равен нулю. Сверяется с фактом в конце run_scenarios.
+EXPECTED_SCENARIOS = 33
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 STARTUP_TIMEOUT = 20.0            # сколько ждём /health
 EVENT_TIMEOUT = 5.0               # сколько ждём WS-событие
@@ -245,11 +250,20 @@ def dialog_history(client: Client, peer_id: int) -> list:
 
 
 def _clean_env() -> dict:
-    """Окружение без переменных, которые сценарии r/s задают сами (из .env или явно)."""
+    """
+    Окружение без переменных, которые сценарии r/s задают сами (из .env или явно).
+
+    Micro selftest-prod: APP_MODE проставляется ЯВНО в "dev". Раньше переменная просто
+    удалялась — и на сервере с прод-.env дочерний процесс читал APP_MODE=prod из файла,
+    ловил прод-гвард на тестовом SECRET_KEY и падал ещё до сценариев. По контракту
+    load_env переменная окружения всегда важнее файла, поэтому явный dev надёжно
+    перебивает любой .env. Сценарий s, которому нужен prod, ставит его после вызова.
+    """
     env = dict(os.environ)
     for key in ("SECRET_KEY", "DATA_DIR", "APP_MODE", "PORT",
                 "MAX_UPLOAD_BYTES", "FIRST_USER_ADMIN", "BACKUP_DIR"):
         env.pop(key, None)
+    env["APP_MODE"] = "dev"
     return env
 
 
@@ -299,6 +313,11 @@ def start_server(data_dir: str) -> subprocess.Popen:
         PORT=str(PORT),
         DATA_DIR=data_dir,
         SECRET_KEY=SECRET_KEY,
+        # Micro selftest-prod: тестовый инстанс ВСЕГДА dev, независимо от .env репозитория.
+        # На проде в .env лежит APP_MODE=prod; без этой строки дочерний uvicorn подхватывал
+        # его через load_env и отвергал короткий SECRET_KEY='test' (прод-гвард >= 32 симв.),
+        # из-за чего сервер не стартовал и прогон давал вакуумные 0/0.
+        APP_MODE="dev",
         MAX_UPLOAD_BYTES=str(MAX_UPLOAD_BYTES),
         PYTHONUNBUFFERED="1",
         # тестовый инстанс всегда по HTTP и без iframe: фиксируем cookie-режим,
@@ -1457,21 +1476,30 @@ async def run_scenarios(report: Report, data_dir: str) -> None:
 # main
 # --------------------------------------------------------------------------- #
 
+def abort(reason: str) -> int:
+    """
+    Micro selftest-prod (VACUOUS-PASS GUARD): прогон не начался — это ПРОВАЛ, не успех.
+    Раньше здесь печаталось «SELFTEST: 0/0 OK»: любой грепающий OK (в т.ч. PRE-CHECK
+    в update.sh) читал упавший старт как зелёный прогон. Теперь в строке стоит FAIL
+    и ноль сценариев виден явно.
+    """
+    print(f"SELFTEST: 0/{EXPECTED_SCENARIOS} FAIL ({reason})")
+    return 1
+
+
 def main() -> int:
     busy = [port for port in (PORT, ENV_PORT) if port_is_busy(port)]
     if busy:
         print(f"FAIL предварительная проверка: порт(ы) {', '.join(map(str, busy))} заняты — "
               f"selftest не трогает чужие серверы. Освободите их и повторите.")
-        print("SELFTEST: 0/0 OK")
-        return 1
+        return abort("порты заняты")
 
     try:
         import uvicorn  # noqa: F401
     except ImportError:
         print("FAIL предварительная проверка: в текущем интерпретаторе нет uvicorn. "
               "Запускайте из venv: ./.venv/bin/python scripts/selftest.py")
-        print("SELFTEST: 0/0 OK")
-        return 1
+        return abort("нет uvicorn в интерпретаторе")
 
     data_dir = tempfile.mkdtemp(prefix="messenger-selftest-")
     proc: subprocess.Popen | None = None
@@ -1484,8 +1512,7 @@ def main() -> int:
             proc = start_server(data_dir)
         except Exception as exc:
             print(f"FAIL старт сервера: {exc}")
-            print("SELFTEST: 0/0 OK")
-            return 1
+            return abort("сервер не стартовал")
 
         # изоляция: БД и вложения обязаны лежать во временном DATA_DIR,
         # а не в ./data рабочего инстанса
@@ -1493,8 +1520,7 @@ def main() -> int:
         if not expected_db.exists():
             print(f"FAIL изоляция данных: {expected_db} не создан — "
                   f"DATA_DIR не respected")
-            print("SELFTEST: 0/0 OK")
-            return 1
+            return abort("DATA_DIR не respected")
 
         asyncio.run(run_scenarios(report, data_dir))
     finally:
@@ -1510,8 +1536,17 @@ def main() -> int:
 
     print("-" * 72)
     passed = report.total - report.failed
-    print(f"SELFTEST: {passed}/{report.total} OK "
-          f"[{time.monotonic() - report.t0:.1f}s, DATA_DIR очищен: {not os.path.exists(data_dir)}]")
+    tail = f"[{time.monotonic() - report.t0:.1f}s, DATA_DIR очищен: {not os.path.exists(data_dir)}]"
+    # Micro selftest-prod (VACUOUS-PASS GUARD): нулевой прогон не бывает зелёным.
+    # Сюда можно попасть, если run_scenarios упал до первого report.step.
+    if report.total == 0:
+        print(f"SELFTEST: 0/{EXPECTED_SCENARIOS} FAIL (сценарии не выполнялись) {tail}")
+        return 1
+    if report.total != EXPECTED_SCENARIOS:
+        # знаменатель в аварийной строке «0/N» разъехался с реальностью — поправьте константу
+        print(f"WARN: EXPECTED_SCENARIOS={EXPECTED_SCENARIOS}, "
+              f"а сценариев фактически {report.total}")
+    print(f"SELFTEST: {passed}/{report.total} OK {tail}")
     return 0 if report.failed == 0 else 1
 
 
